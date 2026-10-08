@@ -1,6 +1,6 @@
 # Unreal export
 
-Still exports a ZIP containing a skeletal `character.fbx`, matching `animation.fbx`, textures when present, a manifest, and `import_unreal.py`. The source skeleton and animation stay together; importing onto the Unreal mannequin or MetaHuman requires a separate IK Retargeter.
+Still exports a ZIP containing a skeletal `character.fbx`, matching `animation.fbx`, textures when present, a manifest, and Unreal Python import/retarget helpers. Keep the source skeleton, or choose **Manny** or **MetaHuman** to have the import helper create IK Rigs, an aligned IK Retargeter, and a baked animation for the selected target body.
 
 ## Import into Unreal
 
@@ -9,7 +9,7 @@ Still exports a ZIP containing a skeletal `character.fbx`, matching `animation.f
 3. Choose **Tools → Execute Python Script** and select the extracted `import_unreal.py`.
 4. Open the imported animation under `/Game/Still/<character name>` and play it with its imported skeletal mesh.
 
-The script creates a new destination when that name already exists. It imports the character first, assigns the resulting Skeleton to the animation, uses the manifest's sample rate, and leaves Enable Root Motion off. It does not create a Physics Asset. If import fails, it removes only that new partial destination; unsuccessful cleanup is reported in Unreal's Output Log. The script temporarily selects Unreal's legacy FBX importer and restores the previous importer setting, including on failure. This is the route validated below. Unreal 5.8's default Interchange import route has **not** been validated to the same standard; its options are different from the legacy `FbxImportUI` settings. Use the supplied script for the measured behavior rather than assuming default drag-and-drop imports reproduce these results.
+The script creates a new destination when that name already exists. It imports the character first, assigns the resulting Skeleton to the animation, and uses the manifest's sample rate. It explicitly saves the generated Skeleton and dependencies so the imported animation remains usable after restarting Unreal. It does not create a Physics Asset. If import fails, it removes only that new partial destination; unsuccessful cleanup is reported in Unreal's Output Log. The script temporarily selects Unreal's legacy FBX importer and restores the previous importer setting, including on failure. This is the route validated below. Unreal 5.8's default Interchange import route has **not** been validated to the same standard; its options are different from the legacy `FbxImportUI` settings. Use the supplied script for the measured behavior rather than assuming default drag-and-drop imports reproduce these results.
 
 The packaged `IMPORT.txt` also lists manual settings. Those settings refer to the legacy FBX dialog: scale 1, Convert Scene and Convert Scene Unit on, Force Front XAxis off, and neither T0-as-reference-pose nor reference-pose updates. Import `character.fbx` with a new Skeleton and no animation; import `animation.fbx` against that Skeleton with its manifest sample rate and full exported time range. Avoid assigning an unrelated existing Skeleton.
 
@@ -36,11 +36,29 @@ Reaction's 1.816666722-second duration does not end on a 30 fps frame boundary. 
 
 The optional importer was also executed directly in Unreal: it created new Bear assets, linked the correct Skeleton, imported a four-second sequence, and restored the Interchange setting from 1 → 0 → 1. Proof reports are local development artifacts at `.local/unreal-proof/final-legacy-1.json` and `.local/unreal-proof/import-package-smoke.json`.
 
-## Root motion and remaining scope
+## Gameplay root motion
 
-The default export preserves motion on the original root and does not automatically enable Unreal root-motion extraction. Both tested assets have a pelvis root. Extracting that root can include body bobbing, pitch, and roll; it is not equivalent to a dedicated ground-trajectory bone. For deliberate extraction, configure Enable Root Motion, root lock, and the project's Animation Blueprint as described in [Epic's root-motion guide](https://dev.epicgames.com/documentation/en-us/unreal-engine/root-motion-in-unreal-engine). In the isolated proof, Enable Root Motion plus Anim First Frame root lock produced zero sampled root-position drift on both clips; the validator then restored the original import settings. Gameplay capsule movement was not tested.
+Choose the root-motion mode in the Unreal export dialog:
 
-Materials and texture files use basic FBX material transfer. Check PBR connections, transparency, normal maps, and appearance in the target project; arbitrary shader graphs do not round-trip through [FBX's material pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-material-pipeline-in-unreal-engine). Physics Assets, collision behavior, LODs, cloth, facial morph targets, and mannequin retargeting are outside these skeletal animation checks.
+- **Preserve** keeps the original skeleton and movement, with Unreal root motion disabled.
+- **Extract** adds an unweighted `RootMotion` bone carrying horizontal travel and heading. The pelvis retains bobbing, jumping height, pitch, and roll. All original world-space poses are preserved. The import helper enables root motion and `Anim First Frame` root lock on the source and retargeted animations.
+- **In-place** adds the same root but removes the ground trajectory from playback. The character stays in place while retaining its body movement.
+
+This extraction is a planar locomotion convention, not a reconstruction of an animator's intended trajectory. At the exact heading singularity of a horizontal half-turn, the previous heading is retained. Full three-dimensional actor travel is not extracted: vertical motion remains in the pose. An Animation Blueprint or montage must still consume root motion according to the game's movement setup; see [Epic's root-motion guide](https://dev.epicgames.com/documentation/en-us/unreal-engine/root-motion-in-unreal-engine).
+
+A fresh four-second fixture traveled and turned 90 degrees. Actual Unreal 5.8 evaluation of all 121 frames measured a maximum **0.000076 cm** difference between preserve/exported source-joint positions, **zero root-track position error**, and **zero horizontal pelvis drift** for the in-place export. Blender also checked every skinned vertex at the beginning, middle, and end. These are asset-level tests; a particular project's networked CharacterMovement, collision, and Animation Blueprint still determine gameplay behavior.
+
+## Automatic Manny and MetaHuman retargeting
+
+Choose **Manny** when the destination project already contains the mannequin. The helper finds the standard `SKM_Manny`/`SKM_Manny_Simple` asset or accepts the exact target SkeletalMesh asset path. For **MetaHuman**, add the MetaHuman to the destination project first; the helper discovers a unique body under `/Game/MetaHumans/`. If there are multiple bodies, enter the desired body asset path in Still, for example `/Game/MetaHumans/Character/Body/f_med_nrw_body.f_med_nrw_body`. Enable Unreal's **IK Rig** plugin before running the helper.
+
+The helper recognizes standard Mixamo, Still, Manny and MetaHuman bone names, builds connected spine/head/limb chains, aligns the target pose, applies Unreal's automatic full-body IK setup where its template is recognized, and bakes a new target animation under the import's `Retargeted` folder. Unrecognized names or disconnected chains return an explicit error. Target mesh assets are never copied into the ZIP or modified.
+
+Executed tests retargeted both the traveling fixture and the supplied 38-bone Reaction animation onto the installed Manny skeleton. The results had the correct target Skeleton, finite transforms, preserved duration (4 seconds and 1.816666722 seconds), and a moving, turning root. All imported and retargeted assets were then reopened in a fresh Unreal process and evaluated successfully. The local proof files are `.local/readiness-unreal/measure.json` and `reopen-proof.json`. A MetaHuman body was not available for a comparable execution test; that path shares the same retargeting machinery and requires the user's existing body asset. Facial animation, cloth and MetaHuman facial rigs are outside this body-motion transfer.
+
+Agent export options are `rootMotion: "preserve" | "extract" | "in-place"`, `retarget: "none" | "manny" | "metahuman"`, and optional `targetMesh` containing the Unreal asset path. Defaults remain `preserve` and `none`.
+
+Materials and texture files use basic FBX material transfer. Check PBR connections, transparency, normal maps, and appearance in the target project; arbitrary shader graphs do not round-trip through [FBX's material pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-material-pipeline-in-unreal-engine). Physics Assets, collision behavior, LODs, cloth, and facial morph targets are outside these skeletal animation checks.
 
 The exporter writes Blender binary FBX 7400. Epic's importer uses the FBX 2020.2 SDK and warns that version differences can cause compatibility issues. The measured evidence above establishes this export path on the installed 5.8.2 engine and these fixtures; it is not a guarantee for every model, importer, engine release, or game runtime.
 

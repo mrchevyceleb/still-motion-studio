@@ -7,6 +7,7 @@ Only new assets are created; the temporary importer setting is restored.
 import json
 from pathlib import Path
 import re
+import sys
 
 import unreal
 
@@ -55,6 +56,14 @@ def import_fbx(filename, destination, skeleton=None, fps=30):
     assets = [unreal.load_asset(path) for path in paths]
     if not assets:
         raise RuntimeError("Unreal imported no assets from " + str(filename))
+    # Automated FBX import may leave the generated Skeleton unsaved even when
+    # AssetImportTask.save is true. Persist dependencies before saving animations
+    # so the package also works after the editor is closed and reopened.
+    for asset in assets:
+        if isinstance(asset, unreal.SkeletalMesh):
+            unreal.EditorAssetLibrary.save_loaded_asset(asset.get_editor_property("skeleton"), False)
+        unreal.EditorAssetLibrary.save_loaded_asset(asset, False)
+    unreal.EditorAssetLibrary.save_directory(destination, False, True)
     return assets, paths
 
 
@@ -89,13 +98,27 @@ def import_package(directory=None):
         sequences = [asset for asset in assets if isinstance(asset, unreal.AnimSequence)]
         if len(sequences) != 1 or sequences[0].get_editor_property("skeleton") != skeleton:
             raise RuntimeError("The animation could not be assigned to the imported skeleton.")
-        # Preserved pelvis motion is not silently reinterpreted as capsule
-        # motion. Root motion is a deliberate project/gameplay configuration.
-        unreal.AnimationLibrary.set_root_motion_enabled(sequences[0], False)
-        unreal.EditorAssetLibrary.save_loaded_asset(sequences[0])
+        root_motion = manifest.get("rootMotion", "preserve") == "extract"
+        unreal.AnimationLibrary.set_root_motion_enabled(sequences[0], root_motion)
+        if root_motion:
+            unreal.AnimationLibrary.set_root_motion_lock_type(sequences[0], unreal.RootMotionRootLock.ANIM_FIRST_FRAME)
+        unreal.EditorAssetLibrary.save_loaded_asset(sequences[0], False)
         result = {"destination": destination, "assets": paths + animation_paths,
                   "skeleton": skeleton.get_path_name(), "fps": fps,
-                  "duration": sequences[0].get_play_length(), "rootMotionEnabled": False}
+                  "duration": sequences[0].get_play_length(), "rootMotionEnabled": root_motion}
+        retarget = manifest.get("retarget", {})
+        if retarget.get("mode", "none") != "none":
+            helper = str(directory.resolve())
+            sys.path.insert(0, helper)
+            try:
+                # Reload so two extracted packages cannot accidentally use a cached helper.
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("still_package_retarget", directory / "unreal_retarget.py")
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                result["retarget"] = module.retarget_animation(meshes[0], sequences[0], destination, retarget["mode"], retarget.get("targetMesh", ""), root_motion)
+            finally:
+                sys.path.remove(helper)
         unreal.log("Still import complete: " + json.dumps(result))
         for warning in manifest.get("warnings", []):
             unreal.log_warning("Still export: " + str(warning))

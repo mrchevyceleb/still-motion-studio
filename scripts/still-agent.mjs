@@ -154,7 +154,7 @@ export async function createClient(options = {}) {
       try { await stat(filename); throw new StillError('Export destination exists. Choose another path or pass overwrite: true.', 'FILE_EXISTS'); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    const result = await call('export', { format, ...(settings.name !== undefined ? { name: settings.name } : {}), ...(settings.fps !== undefined ? { fps: settings.fps } : {}) }, settings);
+    const result = await call('export', { format, ...(settings.name !== undefined ? { name: settings.name } : {}), ...(settings.fps !== undefined ? { fps: settings.fps } : {}), ...(settings.rootMotion !== undefined ? { rootMotion: settings.rootMotion } : {}), ...(settings.retarget !== undefined ? { retarget: settings.retarget } : {}), ...(settings.targetMesh !== undefined ? { targetMesh: settings.targetMesh } : {}) }, settings);
     const file = result.file || result;
     const saved = await downloadFile(file.fileId, filename, settings);
     return { ...result, ...saved };

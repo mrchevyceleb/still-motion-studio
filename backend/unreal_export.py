@@ -122,7 +122,7 @@ def set_frame(value):
 def validate_package(path):
     # Reading the central directory and every CRC also detects truncated output.
     with zipfile.ZipFile(path) as archive:
-        required = {"character.fbx", "animation.fbx", "manifest.json", "import_unreal.py", "IMPORT.txt"}
+        required = {"character.fbx", "animation.fbx", "manifest.json", "import_unreal.py", "unreal_retarget.py", "IMPORT.txt"}
         if not required.issubset(archive.namelist()):
             raise ValueError("The Unreal archive is missing required files.")
         if any(archive.getinfo(name).file_size == 0 for name in required):
@@ -132,12 +132,62 @@ def validate_package(path):
             raise ValueError(f"The Unreal archive failed its integrity check: {damaged}")
 
 
+def add_ground_trajectory(entries, sampled, expected_vertices, mode):
+    """Factor planar travel/yaw into an unweighted root without changing the skin."""
+    if mode == "preserve":
+        return None
+    candidates = [entry for entry in entries if entry["source"] is not None]
+    source = next((entry for entry in candidates if re.sub(r"[^a-z]", "", entry["name"].lower()).replace("mixamorig", "") in ("hips", "pelvis")), candidates[0])
+    source_name = source["name"]
+    root_name = safe_name("RootMotion", {entry["name"].lower() for entry in entries})
+    origin = sampled[0][source_name].translation.copy()
+    initial_rotation = sampled[0][source_name].to_quaternion()
+    trajectory, previous_yaw = [], 0.0
+    for index, values in enumerate(sampled):
+        delta = values[source_name].to_quaternion() @ initial_rotation.inverted()
+        # Swing/twist decomposition retains unwrapped heading through flips.
+        # At the exact horizontal half-turn singularity, retain the last heading.
+        yaw = 2 * math.atan2(delta.z, delta.w) if math.hypot(delta.z, delta.w) > 1e-7 else previous_yaw
+        while yaw - previous_yaw > math.pi:
+            yaw -= 2 * math.pi
+        while yaw - previous_yaw < -math.pi:
+            yaw += 2 * math.pi
+        previous_yaw = yaw
+        rotation = Matrix.Rotation(yaw, 4, "Z")
+        translation = values[source_name].translation - rotation @ origin
+        translation.z = 0
+        ground = Matrix.Translation(translation) @ rotation
+        trajectory.append({"frame": index, "positionCm": [float(translation.x), float(-translation.y), 0.], "yawDegrees": -math.degrees(yaw)})
+        if mode == "in-place":
+            inverse = ground.inverted()
+            for name in list(values):
+                values[name] = inverse @ values[name]
+            if index in expected_vertices:
+                matrix = np.array(inverse, dtype=float)
+                expected_vertices[index] = [vertices @ matrix[:3, :3].T + matrix[:3, 3] for vertices in expected_vertices[index]]
+            values[root_name] = Matrix.Identity(4)
+        else:
+            values[root_name] = ground
+    for entry in entries:
+        if entry["parent"] is None:
+            entry["parent"] = root_name
+    entries.insert(0, {"name": root_name, "parent": None, "source": None, "kind": "trajectory", "rest": Matrix.Identity(4), "rest_export": Matrix.Identity(4), "rest_scale": 1.})
+    return {"bone": root_name, "sourceBone": source_name, "axes": "ground XY translation and unwrapped Z yaw; vertical/body motion stays on the source skeleton", "samples": trajectory}
+
+
 def convert(input_path, output_path, options):
     fps = options.get("fps", 30)
     if isinstance(fps, bool) or fps not in (24, 30, 60):
         raise ValueError("Unreal export frame rate must be 24, 30, or 60 fps.")
-    if options.get("rootMotion", "preserve") != "preserve":
-        raise ValueError("Only preserve-motion export is supported. Root-motion extraction is an Unreal import setting.")
+    root_motion = options.get("rootMotion", "preserve")
+    if root_motion not in ("preserve", "extract", "in-place"):
+        raise ValueError("Choose preserve, extract, or in-place root motion.")
+    retarget = options.get("retarget", "none")
+    if retarget not in ("none", "manny", "metahuman"):
+        raise ValueError("Choose no retargeting, Manny, or MetaHuman.")
+    target_mesh = options.get("targetMesh", "")
+    if not isinstance(target_mesh, str) or (target_mesh and not re.fullmatch(r"/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?", target_mesh)):
+        raise ValueError("The target mesh must be an Unreal asset path such as /Game/Characters/MyBody.MyBody.")
     name = safe_name(options.get("name", input_path.stem), set())
     doc, trailing, source_sha = read_glb(input_path)
     if len(doc.get("animations", [])) != 1:
@@ -164,7 +214,14 @@ def convert(input_path, output_path, options):
         warnings.append(f"Export uses {fps} fps instead of {requested_fps} fps to preserve the exact clip duration and final pose.")
     if abs(export_duration - duration) > 1e-5:
         warnings.append(f"The {duration:.6f}s source was resampled to {export_duration:.6f}s at {fps} fps ({(export_duration-duration)*1000:+.3f} ms). The exact first and last poses are retained.")
-    warnings.append("Movement is preserved on the original skeleton. Enable Root Motion is off by default; a pelvis root may include bobbing, pitch, and roll and is not a dedicated ground trajectory.")
+    if root_motion == "preserve":
+        warnings.append("Movement is preserved on the original skeleton. Enable Root Motion is off by default; a pelvis root may include bobbing, pitch, and roll and is not a dedicated ground trajectory.")
+    elif root_motion == "extract":
+        warnings.append("A dedicated ground-motion root carries horizontal travel and heading. Body height, pitch and roll remain on the source skeleton; the Unreal helper enables root motion and first-frame root lock.")
+    else:
+        warnings.append("Horizontal travel and heading are removed for in-place playback. Body height, pitch and roll remain on the source skeleton.")
+    if retarget != "none":
+        warnings.append(f"The Unreal import helper will retarget to {retarget}. The target SkeletalMesh must already exist in that Unreal project; no Epic character assets are included.")
     progress("Reading the character, skin weights, and animation", .05)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="still-unreal-") as temporary:
@@ -265,6 +322,7 @@ def convert(input_path, output_path, options):
             sampled.append(values)
             if i in sample_indices:
                 expected_vertices[i] = [(vertices_world(o, True) @ np.array(conversion)[:3, :3].T) for o in meshes]
+        ground_trajectory = add_ground_trajectory(entries, sampled, expected_vertices, root_motion)
         progress("Preparing the shared skeleton and materials", .45)
         # Copy vertex groups and mesh topology before unlinking source objects.
         export_meshes = []
@@ -415,8 +473,9 @@ def convert(input_path, output_path, options):
                     "fbxVersion": struct.unpack_from("<I", (work / "character.fbx").read_bytes(), 23)[0],
                     "units": "centimeters", "forward": "+X", "up": "+Z", "objectScale": [1, 1, 1],
                     "requestedFps": requested_fps, "fps": fps, "frameCount": intervals + 1, "sourceDuration": duration, "duration": export_duration,
-                    "timeScale": export_duration / duration, "rootMotion": "preserve", "rootBone": entries[0]["name"],
-                    "addedStationaryRoot": added_root, "enableRootMotionByDefault": False,
+                    "timeScale": export_duration / duration, "rootMotion": root_motion, "rootBone": entries[0]["name"],
+                    "addedStationaryRoot": added_root, "enableRootMotionByDefault": root_motion == "extract",
+                    "groundTrajectory": ground_trajectory, "retarget": {"mode": retarget, "targetMesh": target_mesh},
                     "boneCount": len(entries), "meshCount": len(export_meshes), "vertexCount": len(bounds),
                     "heightCm": float(bounds[:, 2].max() - bounds[:, 2].min()), "skinConversionMaxErrorCm": verification_error,
                     "bones": [{"name": e["name"], "parent": e["parent"], "restWorldCm": to_ue(e["rest_export"].translation)} for e in entries],
@@ -436,6 +495,10 @@ def convert(input_path, output_path, options):
         if not importer.is_file():
             raise ValueError("The Unreal import helper is missing from this installation.")
         (work / "import_unreal.py").write_bytes(importer.read_bytes())
+        retargeter = importer.with_name("unreal_retarget.py")
+        if not retargeter.is_file():
+            raise ValueError("The Unreal retarget helper is missing from this installation.")
+        (work / "unreal_retarget.py").write_bytes(retargeter.read_bytes())
         (work / "IMPORT.txt").write_text(
             "STILL — UNREAL CHARACTER AND ANIMATION\n\n"
             "AUTOMATIC IMPORT (Unreal 5.8 verified)\n"
@@ -451,9 +514,9 @@ def convert(input_path, output_path, options):
             "   Import Animation OFF; Use T0 As Ref Pose OFF; Update Skeleton Reference Pose OFF.\n"
             "3. Import animation.fbx as Animation and select the Skeleton from step 2.\n"
             f"   Set custom sample rate {fps}, Import Bone Tracks ON, and preserve the exported range.\n"
-            "4. Play the Animation Sequence with the imported Skeletal Mesh. Enable Root Motion remains OFF.\n"
-            "   Motion is on the original root. A pelvis root is not a dedicated ground-motion bone.\n"
-            "   Mannequin/MetaHuman compatibility requires a separate Unreal IK Retargeter.\n"
+            f"4. Root-motion mode: {root_motion}. Enable Root Motion is {'ON with first-frame lock' if root_motion == 'extract' else 'OFF'}.\n"
+            f"   Retargeting: {retarget}. The helper creates IK Rigs and a retargeter when requested.\n"
+            "   Manny/MetaHuman target meshes must already exist in the destination Unreal project.\n"
             "5. Material conversion is basic FBX material support. Check base color, normal, opacity, and other PBR maps in Unreal.\n\n"
             + "\n".join("NOTE: " + w for w in warnings) + "\n", encoding="utf-8")
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:

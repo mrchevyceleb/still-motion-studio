@@ -9,14 +9,14 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const json = (res, status, value) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
 const exists = filename => stat(filename).then(info => info.isFile(), () => false);
 
-export function createUnrealExportService({ root, reserve, release }) {
-  const jobs = new Map(), directory = path.join(root, '.local/unreal-exports');
+export function createUnrealExportService({ root, dataRoot = root, reserve, release }) {
+  const jobs = new Map(), directory = path.join(dataRoot, '.local/unreal-exports');
   let stopping = false, converterCache = null;
 
   async function converter() {
     if (converterCache && Date.now() < converterCache.expires) return converterCache.filename;
     const candidates = [process.env.STILL_BLENDER_EXECUTABLE];
-    try { candidates.push(JSON.parse(await readFile(path.join(root, '.local/unreal-export/runtime.json'), 'utf8')).blender); } catch { /* Optional configuration. */ }
+    try { candidates.push(JSON.parse(await readFile(path.join(dataRoot, '.local/unreal-export/runtime.json'), 'utf8')).blender); } catch { /* Optional configuration. */ }
     const foundation = path.join(process.env.ProgramFiles || 'C:/Program Files', 'Blender Foundation');
     try {
       const versions = (await readdir(foundation, { withFileTypes: true })).filter(item => item.isDirectory() && /^Blender /i.test(item.name)).sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }));
@@ -116,7 +116,9 @@ export function createUnrealExportService({ root, reserve, release }) {
       if (!['model/gltf-binary', 'application/octet-stream'].includes((req.headers['content-type'] || '').split(';')[0])) { json(res, 415, { error: 'Upload a binary GLB character.' }); return true; }
       if (Number(req.headers['content-length']) > MAX_BYTES) { json(res, 413, { error: 'This export exceeds 180 MB. Use smaller textures or a lighter character.' }); return true; }
       const fps = Number(url.searchParams.get('fps') || 30), rootMotion = url.searchParams.get('rootMotion') || 'preserve';
-      if (![24, 30, 60].includes(fps) || rootMotion !== 'preserve') { json(res, 400, { error: 'Choose 24, 30, or 60 fps with original movement preserved.' }); return true; }
+      const retarget = url.searchParams.get('retarget') || 'none', targetMesh = url.searchParams.get('targetMesh') || '';
+      if (![24, 30, 60].includes(fps) || !['preserve', 'extract', 'in-place'].includes(rootMotion) || !['none', 'manny', 'metahuman'].includes(retarget)) { json(res, 400, { error: 'Choose 24, 30, or 60 fps and a supported root-motion and retarget mode.' }); return true; }
+      if (targetMesh && (targetMesh.length > 512 || !/^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/.test(targetMesh))) { json(res, 400, { error: 'Choose a valid Unreal target mesh asset path.' }); return true; }
       const executable = await converter();
       if (!executable) { json(res, 503, { error: 'The local Unreal exporter needs Blender installed.' }); return true; }
       const id = url.searchParams.get('id') || crypto.randomUUID();
@@ -137,7 +139,7 @@ export function createUnrealExportService({ root, reserve, release }) {
       try {
         await job.upload; job.request = null;
         if (stopping || job.status === 'cancelled') { release(id); json(res, 409, { error: 'Export was cancelled. Your project is unchanged.' }); return true; }
-        job.work = run(job, executable, { name, fps, rootMotion });
+        job.work = run(job, executable, { name, fps, rootMotion, retarget, targetMesh });
         json(res, 202, publicJob(job));
       } catch (error) {
         if (job.status !== 'cancelled') { job.status = 'error'; job.error = String(error.message || error); }

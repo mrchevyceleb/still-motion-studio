@@ -253,6 +253,16 @@
         30,
         60
       ]
+    },
+    "cameraVector": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number",
+        "minimum": -10000,
+        "maximum": 10000
+      }
     }
   },
   "methods": {
@@ -722,17 +732,18 @@
             ],
             "properties": {
               "position": {
-                "$ref": "#/$defs/vec3"
+                "$ref": "#/$defs/cameraVector"
               },
               "target": {
-                "$ref": "#/$defs/vec3"
+                "$ref": "#/$defs/cameraVector"
               },
               "fov": {
                 "type": "number",
                 "minimum": 10,
-                "maximum": 120
+                "maximum": 100
               }
-            }
+            },
+            "description": "Exact camera coordinates; position-to-target distance must be 1.2\u201315 world units. Read camera limits in scene.inspect."
           }
         },
         "not": {
@@ -835,6 +846,27 @@
           },
           "fps": {
             "$ref": "#/$defs/exportFps"
+          },
+          "rootMotion": {
+            "type": "string",
+            "enum": [
+              "preserve",
+              "extract",
+              "in-place"
+            ]
+          },
+          "retarget": {
+            "type": "string",
+            "enum": [
+              "none",
+              "manny",
+              "metahuman"
+            ]
+          },
+          "targetMesh": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\\.[A-Za-z0-9_]+)?$"
           }
         }
       },

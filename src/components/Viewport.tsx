@@ -7,7 +7,7 @@ import { solveIK } from '../engine/motion';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
 import './Viewport.css';
 
-export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number }
+export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number; limits: { coordinates: number; fov: [number, number]; distance: [number, number] } }
 export interface ViewportAPI {
   capture: () => Promise<string>;
   getCamera: () => CameraSnapshot;
@@ -366,7 +366,7 @@ export default function Viewport(props: ViewportProps) {
     }
     const getCamera = (): CameraSnapshot => {
       if (disposed) throw new Error('This viewport is no longer active.');
-      return { position: camera.position.toArray() as Vec3, target: orbit.target.toArray() as Vec3, fov: camera.fov, width, height };
+      return { position: camera.position.toArray() as Vec3, target: orbit.target.toArray() as Vec3, fov: camera.fov, width, height, limits: { coordinates: 10000, fov: [10, 100], distance: [orbit.minDistance, orbit.maxDistance] } };
     };
     const api: Runtime = {
       frame, ghosts: updateGhosts, getCamera,

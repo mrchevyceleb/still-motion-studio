@@ -260,7 +260,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         const clip = buildAnimationClip(asset, sequence, studio.duration, { ...studio.settings, interpolation: mode });
         const binary = await exportCharacterGLB(asset, clip); signal.throwIfAborted();
         if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: studio.generation ?? null };
-        const result = await exportUnrealPackage(binary, { name, fps: fps as number }, editor.progress, signal);
+        const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | undefined, targetMesh: params.targetMesh as string | undefined }, editor.progress, signal);
         return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: studio.generation ?? null };
       } finally { applyPose(asset, editor.pose); }
     }

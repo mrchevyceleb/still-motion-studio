@@ -1,5 +1,6 @@
 export interface UnrealExportCapability { available: boolean; reason?: string }
 export interface UnrealExportResult { package: Blob; warnings: string[] }
+export interface UnrealExportOptions { name: string; fps: number; rootMotion?: 'preserve' | 'extract' | 'in-place'; retarget?: 'none' | 'manny' | 'metahuman'; targetMesh?: string }
 
 const unavailable = 'The Unreal exporter is unavailable. Start Still with its launcher, then try again.';
 
@@ -34,7 +35,7 @@ function pause(signal: AbortSignal): Promise<void> {
 /** Convert the editor's baked GLB locally; source rig, motion, and scene stay untouched. */
 export async function exportUnrealPackage(
   binary: ArrayBuffer,
-  options: { name: string; fps: number },
+  options: UnrealExportOptions,
   onProgress: (message: string, progress: number) => void,
   signal: AbortSignal,
 ): Promise<UnrealExportResult> {
@@ -53,6 +54,9 @@ export async function exportUnrealPackage(
     const id = crypto.randomUUID();
     jobPath = `/api/exports/${id}`;
     const query = new URLSearchParams({ name: options.name, fps: String(options.fps), id });
+    if (options.rootMotion) query.set('rootMotion', options.rootMotion);
+    if (options.retarget) query.set('retarget', options.retarget);
+    if (options.targetMesh) query.set('targetMesh', options.targetMesh);
     // The ID exists before upload, so Cancel can abort the request and stop its worker.
     const job = await readResponse(await fetch(`/api/exports/unreal?${query}`, {
       method: 'POST', headers: { 'Content-Type': 'model/gltf-binary' }, body: binary,
