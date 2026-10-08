@@ -80,8 +80,8 @@ function validate(value, rule, schema, location = 'params', depth = 0) {
   }
 }
 
-export function createAgentService({ root, port }) {
-  const directory = path.resolve(root, '.local', 'agent');
+export function createAgentService({ root, dataRoot = root, port }) {
+  const directory = path.resolve(dataRoot, '.local', 'agent');
   const fileDirectory = path.join(directory, 'files');
   const journalDirectory = path.join(directory, 'commands');
   const sessions = new Map();

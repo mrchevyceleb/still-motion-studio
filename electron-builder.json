@@ -1,0 +1,11 @@
+{
+  "appId": "studio.still.motion",
+  "productName": "Still Motion Studio",
+  "directories": { "output": ".local/installers" },
+  "files": ["desktop/**/*", "public/still-icon.png", "package.json", "!node_modules/**/*"],
+  "extraResources": [{ "from": ".local/desktop-bundle", "to": "runtime" }],
+  "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "desktop/still.ico", "signExecutable": false },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false, "createDesktopShortcut": true },
+  "compression": "normal",
+  "asar": true
+}

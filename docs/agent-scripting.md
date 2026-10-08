@@ -1,10 +1,10 @@
 # Script Still from an agent
 
-Still exposes the editor through a local authenticated API, a Node SDK and CLI, and an optional MCP stdio server. Scripts can inspect the skeleton, author poses and keys, run available motion engines, change the view, undo edits, and export files. **Keep Still open in a browser.** It may be in the background, but the editor performs the scene operations; this is not a renderer that works with every browser tab closed.
+Still exposes the editor through a local authenticated API, a Node SDK and CLI, and an optional MCP stdio server. Scripts can inspect the skeleton, author poses and keys, run available motion engines, change the view, undo edits, and export files. **The Electron app keeps its editor running when its window is closed to the tray.** No browser tab is needed. Choose Quit Still to stop it. The development browser version still needs its tab open.
 
 ## Start and discover
 
-Start Still with `npm run dev` and open its browser editor. The service writes `.local/agent/connection.json` with its actual loopback address and access token. The client reads this file automatically; keep it private and do not paste it into prompts or commit it. There are no cloud uploads in this control path.
+Start the desktop app, or run `npm run dev` for browser development. Desktop agent tools live at `%APPDATA%/Still Motion Studio/agent-tools/`; the connection file is in its sibling `.local/agent/` directory. The Still menu opens these folders. For the development version, The service writes `.local/agent/connection.json` with its actual loopback address and access token. The client reads this file automatically; keep it private and do not paste it into prompts or commit it. There are no cloud uploads in this control path.
 
 ```powershell
 node scripts/still-agent.mjs sessions
@@ -113,3 +113,9 @@ The dependency-free transport implements newline-delimited JSON-RPC, initializat
 Focused local transport checks cover session ambiguity and pinning, stable command IDs, revision failures, timeout cancellation, upload/import, export overwrite protection, and a real MCP subprocess handshake, discovery, command execution, cancellation, and shutdown. Their development report is `.local/agent-sdk-smoke.json`.
 
 The live editor check also passed: the CLI example authored six keys with distinct wave poses between matching rest endpoints, exercised undo/redo, and downloaded valid `.still`, GLB, and Unreal ZIP outputs. The ZIP contained both FBXs, manifest, instructions, and the Unreal import script. A separate MCP subprocess discovered all 35 live methods and inspected that scene's 21-bone skeleton. Evidence is `.local/agent-live-verify.json`; broader editor coverage is tracked in `docs/verification.md`.
+
+## Camera and Unreal options
+
+`scene.inspect` includes camera limits. `view.set` accepts coordinates between -10000 and 10000, a 10–100 degree field of view, and a position-to-target distance of 1.2–15 world units.
+
+For Unreal exports, `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"manny"})` adds a gameplay root and prepares automatic target retargeting during Unreal import. `targetMesh` is an optional `/Game/...` SkeletalMesh object path; use it to select a particular MetaHuman body. The same fields can be passed in SDK `exportFile` settings.

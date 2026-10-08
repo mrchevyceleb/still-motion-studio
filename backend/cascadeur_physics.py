@@ -266,7 +266,7 @@ def correct_motion(request, progress):
     progress("Connecting to the installed Cascadeur physical solver…", .08)
     _load_runtime()
     job = uuid.uuid4().hex
-    local = ROOT / ".local" / "cascadeur-jobs"
+    local = Path(os.environ.get('STILL_DATA_ROOT', str(ROOT))) / ".local" / "cascadeur-jobs"
     local.mkdir(parents=True, exist_ok=True)
     try:
         progress("Preparing an isolated physics rig with learned tools disabled…", .15)

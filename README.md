@@ -1,91 +1,47 @@
 # Still — motion made simple
 
-A local, browser-based character animation editor. Import a rigged Mixamo character, drag its joints, save a few poses, and preview the motion between them.
+A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-## Run
+Release 0.2 is a **fresh-install preview**. Standalone humanoid AI and two desktop upgrade/recovery defects remain open; see [validation and review findings](reports/Release-0.2-validation.md).
 
-Requires Node.js 22.12+ (Node 24 recommended).
+## Install or develop
 
-```sh
-npm install
-npm run dev
-```
+The Windows installer is built with `npm run desktop:dist`. It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup, GPU, account, or internet connection is needed on the destination Windows x64 computer. See [desktop setup](docs/desktop.md).
 
-Open [localhost:5173](http://127.0.0.1:5173). The server binds to your own computer. Character import is parsed in the browser; motion assistance and Unreal conversion use the local service. No account or external character upload is required. The UI downloads its fonts from Google Fonts, with local font fallbacks.
+For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 
-## The workflow
+## Animate
 
-1. Try the built-in human or quadruped, or import **FBX / GLB**. For Mixamo, choose **FBX Binary → With Skin**.
-2. Imported skeletons, bind matrices, and skin weights are retained. Animation tracks are sampled at 30 fps, including the exact endpoint. Supported channels are bone translation, rotation, and scale.
-3. For dense motion capture, choose **Simplify to 6 poses** before making broad pose changes. This is lossy and undoable; save a project first to keep a separate original.
-4. Select a time and drag a joint. Inverse kinematics moves the limb without changing bone lengths. Edits create/update a pose automatically. **W** moves, **E** rotates, and the joint panel provides numeric rotation.
-5. Choose **Generate motion** for learned in-betweening. **Still Quadruped** is trained from scratch on CC0 animal motion. Human choices include CondMDI, installed **Cascadeur AI**, and the new **Still humanoid (experimental)** model. Dense imports can go straight through **Find 6 poses & generate**. Your six poses stay exact. For imported animals, **Moves like** selects two or four legs without replacing the skeleton.
-6. Choose **Correct with physics** and select **MuJoCo dynamics** or installed **Cascadeur AutoPhysics**. Enable **Keep feet planted** for the full-rate contact pass in MuJoCo. Native AutoPhysics uses Earth gravity and floor contacts. Corrections may adjust authored poses; unresolved constraints are marked for review. Undo restores the preceding motion.
+1. Import a rigged Mixamo FBX with skin, or try a built-in character. Existing joints, bindings, and skin weights are preserved.
+2. For unrigged neutral-pose characters, choose **Add a rig**. Geometry fitting estimates body landmarks, blends skin weights, and validates binding. Inspect a small limb bend before animating.
+3. Simplify a dense clip to six poses if desired. Drag joints or type rotations. **W/E** switches move/rotate; **Space** plays; **K** saves a pose.
+4. Generate animal motion with the owned learned prior, or human motion with installed licensed Cascadeur, then apply MuJoCo contact correction or installed licensed Cascadeur engines. Authored poses stay exact during learned generation; physics can adjust them. Editing a pose clears an outdated generated take.
+5. Export an editable `.still`, animated GLB, or **Unreal FBX package**. Unreal options include planar gameplay root motion, in-place movement, and automatic Manny/MetaHuman body retargeting. [Import and validation](docs/unreal-export.md).
 
-Generated frames live separately from the editable pose timeline and are included in playback, saves, and exports. Editing a key clears the old generated take; click Generate motion again. The **Curve interpolation** section still offers Smooth, Direct, and Hold without running a model. **Space** previews, **K** saves a pose, and dragging timeline diamonds changes timing.
-7. Choose **Export → Unreal Engine · FBX** for a ZIP containing a skeletal character, baked animation, textures, and import guide. Animated **GLB** and editable **.still** downloads are also available. **Ctrl/Cmd+S** saves a project file.
+Autosave and the last five replaced scenes stay in local IndexedDB. Save a `.still` file for a portable backup before clearing local app data.
 
-Changes automatically persist in IndexedDB for this browser and origin. Replacing a scene through import or New keeps a copy in **New scene → Recent scenes** (the last five replacements). Save a `.still` file for permanent storage or before clearing browser data. Undo/redo covers motion and settings within the current scene; importing or starting a new character resets that scene's undo history.
+## Agent scripting
 
-## Work with an AI agent
+The desktop app keeps scripting alive when closed to its tray; no browser tab is required. **Quit Still** stops the service. The browser development version still needs its tab open. Use **Still → Agent tools** for the local SDK and MCP server. Development commands: `node scripts/still-agent.mjs sessions` and `node scripts/still-agent.mjs schema`.
 
-Click **Agent** to see this tab's connection and copy instructions for an assistant. Still provides **35 discoverable scripting commands**, a dependency-free Node SDK/CLI, and an MCP stdio server. An agent can inspect the rig, manipulate joints, author a complete pose sequence, run installed AI/physics tools, control the viewport, and save or export results without clicking through the UI.
+There are 35 authenticated commands for inspection, posing, generation, history, camera control, imports, and exports. Explicit sessions, revision checks, cancellation, and persisted command identities prevent accidental replay. See [agent scripting](docs/agent-scripting.md).
 
-```sh
-node scripts/still-agent.mjs sessions
-node scripts/still-agent.mjs schema
-```
+## Quality and rights
 
-Give the agent [the scripting guide](docs/agent-scripting.md). It includes an executable six-pose example and MCP configuration. Keep the browser tab open; it can stay in the background. Access is authenticated and restricted to this computer. Commands target a specific tab, support revision checks and cancellation, and never replay uncertain mutations automatically. Exports refuse to overwrite files unless explicitly requested.
+The shipped quadruped prior is a small learned curvature model trained from scratch on documented Quaternius CC0 motion. It is **not a deep generative model or a Cascadeur equivalent**. The revised benchmark predicts every interior frame across 13 held-out clips (520 source frames, 494 predicted frames), using overlapping windows and two six-key layouts. Its normalized-position RMS improves **1.86%** over interpolation; authored poses remain exact.
 
-## What this version does—and its limits
+**The standalone humanoid AI gap remains open.** The previous 1.30% claim did not measure every interior frame. On the corrected benchmark the original candidate achieved only 0.94%, below the unchanged 1% release gate. Calibration and six-pose retraining did not pass either. Those candidates were rejected and the old runtime was backed up and disabled; no humanoid checkpoint ships in this release. Human animation still supports curve editing, physics correction and the installed licensed Cascadeur adapter.
 
-- A working editor with two example characters, skeleton-preserving FBX/GLB input, direct posing, timeline editing, onion skin, camera presets, undo/redo, local recovery, animated GLB output, and local Unreal FBX packages.
-- **Learned animal motion:** the fresh 856k-parameter Still Quadruped network supports the starter animal skeleton and recognized Quaternius joint names. Held-out Horse validation improves normalized position RMS by about 65% over interpolation; this is a dataset metric, not a guarantee for every animal. Source lengths and authored poses remain exact.
-- **Human motion:** CondMDI (235M parameters) supports up to 60 seconds; native Cascadeur AI supports up to 20 seconds. Long native intervals are retimed with a warning. The independently trained CC0 humanoid model supports 12 seconds, but has not beaten interpolation on held-out clips and is explicitly experimental.
-- **Dynamics and contacts:** MuJoCo evaluates gravity, inertia, joint torque, and frictional floor contacts. A full-rate contact pass holds detected stance centers and eases through nearby swing frames. Full-frame metrics reject major regressions and expose unresolved defects. Native Cascadeur AutoPhysics now runs its solver and applies **All Frames** through the installed application's public scripting/Qt interface, then retargets that baked result back to the source skeleton.
-- Curve interpolation and **Quick ground pass** remain separate procedural options.
-- Unrigged meshes can receive an approximate humanoid or quadruped template with distance-based skinning. Upright neutral T-pose humans and standing +Z-facing quadrupeds work best. It does not guarantee correct anatomical placement or production-quality weights on arbitrary models.
-- Imported non-bone animation tracks (including morph animation) are rejected with a visible explanation rather than silently discarded. Embedded textures work best. External glTF resources and compressed geometry requiring extra decoders are not supported.
-- **Unreal FBX export** uses a detected Blender installation, centimeters, +X forward, +Z up, and matching character/animation skeletons. Export scale matches Still's preview (normally about 240 cm tall), rather than recovering the source file's physical height. It preserves movement on the original skeleton; Unreal's **Enable Root Motion** stays off. Mannequin/MetaHuman retargeting, automatic locomotion-root extraction, and identical complex PBR materials are separate work. See [Unreal export and verified import settings](docs/unreal-export.md).
-- Physics assumes one connected skeleton, a flat floor, recognizable feet, and inferred masses/foot shapes. Native physics supports humanoids through a proxy and can produce large corrections or residual foot penetration on different proportions. Full-body collision, exact anatomy, props, moving platforms, and guaranteed contact on arbitrary acrobatics remain open work. Review flags expose remaining force, torque, penetration, and pose-drift problems.
+CondMDI's unresolved weight/output rights have not been cleared. Its checkpoint is excluded from desktop builds and disabled by default. Only deliberate development opt-in (`STILL_ALLOW_UNCLEARED_MODELS=1`) exposes that research provider. Build-time checks verify owned model hashes and CC0 provenance; new training activates only complete, validated immutable bundles.
 
-See [import details](docs/imports.md) and [motion details](docs/motion.md).
+Contacts use time-based stance/liftoff handling and preserve airborne motion. Reaction's measured sliding dropped from 0.224 m/s to below 0.000001 m/s, but about 9.6 mm maximum penetration and significant inferred-force residuals remain. **Difficult acrobatics, hand/prop contacts, moving platforms, and arbitrary anatomy still require review.** Geometry fitting is not learned anatomical understanding.
 
-## Local engines
+Manny retargeting and root-motion assets were executed and reopened in Unreal 5.8. MetaHuman uses the same automated body-retarget pipeline but requires a body asset in the destination project; no MetaHuman asset was available for equivalent execution validation. Materials, facial rigs, cloth, collisions, and gameplay/network behavior need project-specific setup.
 
-On this computer, the learned model, dynamics environment, and native adapter are installed. `npm run dev` starts the editor and loopback motion service together. No character is sent to an external service. Models and isolated Python environments live in ignored `.local/` storage.
+Cascadeur integration uses its installed licensed app and public scripting bridge. No vendor weights or Epic character assets are redistributed. [Native setup](docs/cascadeur-integration.md).
 
-For a fresh Windows setup, install [uv](https://docs.astral.sh/uv/) and Git, then run:
+## Reliability and verification
 
-```powershell
-./scripts/setup-ai-motion.ps1
-./scripts/setup-physics.ps1
-./scripts/setup-owned-quadruped.ps1
-./scripts/setup-owned-humanoid.ps1
-./scripts/setup-cascadeur.ps1
-```
+Model training writes immutable candidates, validates full held-out coverage and provenance, then atomically switches one runtime manifest. Interrupted/rejected training preserves the active model. Native operations journal cleanup before starting; failed cleanup survives service restarts and is retried. Camera schema and runtime limits agree.
 
-The local learned models need a CUDA-capable NVIDIA GPU. CondMDI setup converts the authors' averaged weights to SafeTensors and verifies tensor equality and SHA-256. Its commercial checkpoint/output permissions remain unresolved. The new Still networks start from random weights and use documented CC0 assets; their exact checkpoints and source provenance have a separate release check in `backend/model-rights.json`. See [commercial model evidence](reports/Motion%20readiness%20and%20rights.md). A rights check is not a motion-quality claim.
-
-Cascadeur AI and AutoPhysics use your installed, licensed application through its public scripting server at `127.0.0.1:8765`; no vendor weights are extracted or redistributed. Both operate on an isolated proxy and preserve the imported skin/rig. See [native setup](docs/cascadeur-integration.md), [learned model setup](docs/neural-motion.md), and the [new research and validation report](reports/Motion%20readiness%20and%20rights.md).
-
-## Verification
-
-```sh
-npm run build
-npm test
-npx playwright install chromium
-node scripts/smoke.mjs
-node scripts/smoke-engines.mjs
-```
-
-The browser smoke run needs the dev server running. It checks real joint dragging, playback, undo/redo, timeline edits, project round trips, local recovery, GLB export, and desktop layout. Outputs are kept in ignored `.local/` storage. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can select an existing Chromium install.
-
-Verified with the Three.js [Mixamo Samba Dancing FBX fixture](https://github.com/mrdoob/three.js/tree/dev/examples/models/fbx): 119 bones and two source clips, full import → six poses → animated GLB → reimport.
-
-## Implementation
-
-React + TypeScript + Three.js, served with Vite. `server/engine.mjs` runs a loopback-only job service on port 5175, which starts isolated Python workers. `src/engine/assistance.ts` normalizes source transforms to meters and returns motion without replacing skeletons, mesh bindings, or skin weights. Backend modules implement CondMDI, MuJoCo, and the native Cascadeur adapter. Jobs have progress, cancellation, bounded execution, and saved diagnostic reports. The service retains 20 motion jobs and 10 Unreal export folders; stopping the launcher waits for worker and native scene cleanup. Unreal conversion runs Blender in the background with a clean startup scene and script auto-execution disabled. Blender is detected from a standard installation or `STILL_BLENDER_EXECUTABLE`.
-
-Primary API references: [FBXLoader](https://threejs.org/docs/pages/FBXLoader.html), [GLTFExporter](https://threejs.org/docs/pages/GLTFExporter.html), and [AnimationMixer](https://threejs.org/docs/pages/AnimationMixer.html).
+Run `npm run build` and `npm test`. See [the 0.2 validation report](reports/Release-0.2-validation.md). Development proofs are ignored local files, not a sprawling permanent test suite.

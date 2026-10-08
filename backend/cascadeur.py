@@ -225,7 +225,7 @@ def generate_motion(request, progress):
         raise RuntimeError("Install Cascadeur with its Cascy sample, or set CASCADEUR_HOME to your installation directory.")
     runtime = Path(__file__).with_name("cascadeur_runtime.py")
     job = uuid.uuid4().hex
-    local = ROOT / ".local" / "cascadeur-jobs"
+    local = Path(os.environ.get('STILL_DATA_ROOT', str(ROOT))) / ".local" / "cascadeur-jobs"
     local.mkdir(parents=True, exist_ok=True)
     progress("Connecting to the installed Cascadeur learned engine…", .08)
     # Reuse a module only while its owned scene objects are alive. Never reload

@@ -4,10 +4,13 @@ import { mkdir, readFile, writeFile, access, readdir, stat, rm, realpath } from 
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { createUnrealExportService } from './unreal-export.mjs';
 import { createAgentService } from './agent-api.mjs';
+import { nativeRecoveryJournal } from './native-recovery.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dataRoot = path.resolve(process.env.STILL_DATA_ROOT || root);
 const port = Number(process.env.STILL_ENGINE_PORT || 5175);
 const jobs = new Map();
 const configurations = {
@@ -25,17 +28,21 @@ let nativeRecoveryConfig = null;
 let recoveryWork = null;
 const recoveryMessage = 'Cascadeur could not restore its temporary scene. Open Cascadeur with its scripting bridge, then retry cleanup. Your animation is unchanged.';
 let stopping = false;
-const jobRoot = path.join(root, '.local', 'engine-jobs');
-const origins = new Set(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://localhost:4173']);
-const agentService = createAgentService({ root, port });
-const exportsService = createUnrealExportService({ root,
+const jobRoot = path.join(dataRoot, '.local', 'engine-jobs');
+const journal = nativeRecoveryJournal(dataRoot);
+nativeRecoveryConfig = await journal.read();
+nativeCleanupPending = !!nativeRecoveryConfig;
+const origins = new Set(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://localhost:4173', `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+const agentService = createAgentService({ root, dataRoot, port });
+const exportsService = createUnrealExportService({ root, dataRoot,
   reserve(id) { if (activeJob || stopping) return false; activeJob = `export:${id}`; return true; },
   release(id) { if (activeJob === `export:${id}`) activeJob = null; },
 });
 
 async function configuration(id) {
   try {
-    const config = JSON.parse(await readFile(path.join(root, configurations[id]), 'utf8'));
+    if (id === 'inbetween' && process.env.STILL_ALLOW_UNCLEARED_MODELS !== '1') return null;
+    const config = JSON.parse(await readFile(path.join(dataRoot, configurations[id]), 'utf8'));
     await access(config.python);
     await access(path.join(root, 'backend', `${id}.py`));
     for (const filename of config.requiredFiles || []) await access(filename);
@@ -95,6 +102,10 @@ async function restoreNative(config) {
   if (!restored && !stopping) restored = await cleanupNative(config);
   nativeCleanupPending = !restored;
   nativeRecoveryConfig = restored ? null : config;
+  if (restored) {
+    try { await journal.clear(); }
+    catch (error) { nativeCleanupPending = true; nativeRecoveryConfig = config; restored = false; console.error('Native recovery journal:', error.message); }
+  }
   cascadeurHealth.expires = 0;
   return restored;
 }
@@ -122,6 +133,7 @@ async function run(job, request, config) {
     const output = path.join(folder, 'result.json');
     await writeFile(input, JSON.stringify({ ...request, runtime: config.config || {} }));
     if (job.status === 'cancelled') return;
+    if (job.provider.startsWith('cascadeur')) await journal.begin(config);
     const child = spawn(config.python, ['-u', path.join(root, 'backend/worker.py'), '--provider', job.provider, '--input', input, '--output', output], {
       cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', OMP_NUM_THREADS: '4' },
@@ -217,11 +229,31 @@ const server = http.createServer(async (req, res) => {
       if (job.status === 'running') { job.status = 'cancelled'; job.message = 'Generation cancelled. Your poses are unchanged.'; job.child?.kill(); }
       reply(res, 200, publicJob(job)); return;
     }
+    if (req.method === 'GET' && !url.pathname.startsWith('/api/') && process.env.STILL_STATIC_ROOT) {
+      const staticRoot = path.resolve(process.env.STILL_STATIC_ROOT);
+      const requested = path.resolve(staticRoot, '.' + decodeURIComponent(url.pathname));
+      if (requested !== staticRoot && !requested.startsWith(staticRoot + path.sep)) { reply(res, 403, { error: 'Invalid asset path.' }); return; }
+      const filename = path.extname(requested) ? requested : path.join(staticRoot, 'index.html');
+      const info = await stat(filename).catch(() => null);
+      if (!info?.isFile()) { reply(res, 404, { error: 'Asset not found.' }); return; }
+      const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
+      res.writeHead(200, { 'Content-Type': mime[path.extname(filename)] || 'application/octet-stream', 'Content-Length': info.size, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'", 'Cache-Control': 'no-cache' });
+      const stream = createReadStream(filename); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return;
+    }
     reply(res, 404, { error: 'That local engine request was not found.' });
   } catch (error) { reply(res, 400, { error: error instanceof SyntaxError ? 'The motion request was not valid JSON.' : String(error.message || error) }); }
 });
 
-server.listen(port, '127.0.0.1', () => console.log(`Still motion engine: http://127.0.0.1:${port}`));
+server.listen(port, '127.0.0.1', () => {
+  console.log(`Still motion engine: http://127.0.0.1:${port}`);
+  process.send?.({ type: 'ready', port });
+  process.parentPort?.postMessage({ type: 'ready', port });
+  if (nativeRecoveryConfig) {
+    activeJob = 'native-recovery';
+    recoveryWork = restoreNative(nativeRecoveryConfig).catch(error => console.error('Native recovery:', error.message))
+      .finally(() => { activeJob = null; recoveryWork = null; });
+  }
+});
 server.on('error', error => { console.error(error.message); process.exitCode = 1; });
 void pruneJobFiles().catch(error => console.error('Diagnostic cleanup:', error.message));
 async function stop() {
@@ -235,9 +267,10 @@ async function stop() {
   await exportsService.stop();
   await Promise.allSettled([...jobs.values()].map(job => job.work).concat(recoveryWork));
   server.closeAllConnections();
-  process.exit(0);
+  process.exit(nativeCleanupPending ? 2 : 0);
 }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
 process.on('message', message => { if (message?.type === 'shutdown') void stop(); });
+process.parentPort?.on('message', event => { if (event.data?.type === 'shutdown') void stop(); });
 // The IPC parent disappearing also requests cleanup, including on Windows.
 if (process.connected) process.on('disconnect', stop);
