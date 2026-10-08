@@ -1,0 +1,140 @@
+:root { color-scheme: light; }
+.brand-symbol { padding: 0; background: transparent; }
+.brand-symbol img { display: block; width: 100%; height: 100%; }
+.theme-toggle { flex-shrink: 0; }
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  color: #e5eddf;
+  background: #141d19;
+  --ink: #e5eddf;
+  --muted: #a6b5a7;
+  --green: #b7d293;
+  --lime: #e7edb5;
+  --paper: #1c2821;
+  --line: #35473a;
+  --accent: #dfaa7f;
+  --surface: #24332a;
+  --hover: #304435;
+}
+
+[data-theme='dark'] ::selection { background: #566e40; color: #fff; }
+[data-theme='dark'] :is(button, input, select, a):focus-visible { outline-color: #c3df9e; }
+[data-theme='dark'] button:hover { color: #edf5e7; }
+[data-theme='dark'] .topbar { background: #19241e; }
+[data-theme='dark'] .left-sidebar,
+[data-theme='dark'] .timeline-section,
+[data-theme='dark'] .modal { background: var(--paper); }
+
+[data-theme='dark'] :is(.project-heading input:hover, .project-heading input:focus,
+  .character-art, .import-button, .local-badge, .tiny-badge, .motion-icon,
+  .clip-select, .little-pointer, .joint-controls select, .axis-fields label,
+  .help-card, .assist-icon, .blend-options, .beta-tag, .setting-row select,
+  .add-pose-button, .pose-card, kbd, .secondary, .modal-icon, .modal-dropzone,
+  .modal-tip, .export-choice, .new-choices button, .engine-tag, .engine-select,
+  .simplify-timeline, .mobile-inspector-toggle > span, .agent-command,
+  .unreal-options select, .unreal-options input) { background: var(--surface); }
+
+[data-theme='dark'] :is(.viewport-shell, .motion-viewport) { background: #202c26; }
+[data-theme='dark'] :is(.mode-pill, .viewport-icon, .viewport-tools,
+  .view-picker, .rig-overlay) { background: #1b2923ed; }
+[data-theme='dark'] .viewport-tools > div { background: var(--line); }
+
+[data-theme='dark'] :is(.project-heading input:hover, .project-heading input:focus,
+  .import-button, .viewport-shell, .mode-pill, .viewport-icon, .viewport-tools,
+  .view-picker, .rig-overlay, .blend-options, .switch, .add-pose-button,
+  .pose-card, .new-pose-card, .secondary, kbd, .modal, .modal-dropzone,
+  .modal-tip, .export-choice, .new-choices button, .engine-select,
+  .engine-tag, .agent-button, .agent-command, .agent-last,
+  .unreal-options select, .unreal-options input, .export-result, .timeline-section,
+  .transport) { border-color: var(--line); }
+
+[data-theme='dark'] :is(.import-button:hover, .help-card:hover, .icon-button:not(:disabled):hover,
+  .viewport-tools button:hover, .view-picker button:hover, .blend-options button:hover,
+  .pose-card:hover, .new-pose-card:hover, .secondary:hover, .modal-dropzone:hover,
+  .export-choice:hover, .new-choices button:hover, .recent-scenes > button:hover) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* Secondary copy stays readable on both the editor and elevated surfaces. */
+[data-theme='dark'] :is(.project-heading > svg, .local-badge, .save-status,
+  .icon-button, .eyebrow, .rig-status, .rig-status > span, .plus-small,
+  .format-note, .tiny-badge, .animation-name div > span, .animation-name > svg,
+  .selection-section > .section-heading > svg, .selection-empty p,
+  .axis-fields label > span, .axis-fields small, .help-card small, .help-card > svg,
+  .sidebar-footer, .scene-heading > div, .scene-name, .scene-heading > .text-button,
+  .mode-pill > span:last-child, .viewport-tools button, .viewport-kicker,
+  .viewport-big-word, .viewport-instruction, .view-picker button, .rig-overlay > p,
+  .assist-heading > p, .blend-options button, .curve-preview > span, .micro-copy,
+  .beta-tag, .setting-row, .setting-row > div > svg, .strength-label,
+  .strength-label > span, .physics-note, .simplify-card p, .timeline-title > span,
+  .pose-card-top > span:first-child, .pose-card-caption, .pose-card-caption > span:first-child,
+  .new-pose-card, .ruler-labels, .timecode > span, .transport-tip, .duration-controls,
+  .editor-footer, .editor-footer button, .ticker, .modal p, .modal-dropzone > span,
+  .export-choice small, .new-choices button > span, .tour-step > span, .shortcut-grid,
+  .modal .help-honesty, .engine-caption, .generation-details, .generation-details summary,
+  .recent-scenes small, .agent-button, .agent-last, .unreal-options small, .modal-tip, .timecode,
+  .modal .export-caption, .modal .export-result p) { color: var(--muted); }
+
+[data-theme='dark'] :is(.character-art, .character-spark, .motion-icon, .little-pointer,
+  .help-illustration, .text-button, .assist-icon, .six-dots, .pose-card .pose-sketch,
+  .pose-card.selected .pose-sketch, .new-choices .pose-sketch, .modal-tip > svg,
+  .engine-tag, .engine-tag.ready, .recent-scenes svg, .mobile-inspector-toggle,
+  .agent-command, .export-recommendation, .export-result) { color: #b7ce9e; }
+
+[data-theme='dark'] :is(.setting-row select, .duration-controls input,
+  .duration-controls select, .unreal-options select, .unreal-options input,
+  .secondary, .export-choice strong) { color: var(--ink); }
+[data-theme='dark'] .scene-separator { color: #677b6c; }
+[data-theme='dark'] .mode-pill > span:last-child { border-color: var(--line); }
+[data-theme='dark'] .orbit-ring { border-color: #6f895e; }
+[data-theme='dark'] .curve-guide { stroke: #435641; }
+[data-theme='dark'] .curve-path { stroke: #a7c47e; }
+[data-theme='dark'] .curve-preview circle { fill: #35492e; stroke: #b0cc87; }
+[data-theme='dark'] input[type='range'] { accent-color: #b1cd8a; }
+[data-theme='dark'] .switch { background: #3c4c3d; }
+[data-theme='dark'] .switch.on { background: #8cab66; border-color: #8cab66; }
+[data-theme='dark'] .switch > span { background: #f0f4e8; }
+
+[data-theme='dark'] :is(.viewport-icon.active, .viewport-tools button.active.secondary,
+  .view-picker button.active, .blend-options button.active, .pose-card.selected,
+  .new-choices button.selected, .engine-tag.ready, .unreal-export.recommended,
+  .export-result) { background: #33492e; border-color: #718b53; color: #d6e7c2; }
+[data-theme='dark'] .unreal-export.recommended:hover { background: #3e5735; }
+[data-theme='dark'] .pose-card.selected { box-shadow: 0 0 0 1px #718b53; }
+[data-theme='dark'] :is(.primary, .export-button, .assist-button, .play-button,
+  .viewport-tools button.active:not(.secondary)) {
+  color: #1e301f;
+  background: #b7d293;
+  border-color: #b7d293;
+}
+[data-theme='dark'] :is(.primary, .export-button, .assist-button, .play-button):not(:disabled):hover {
+  color: #172416;
+  background: #c7dfa7 !important;
+}
+[data-theme='dark'] .add-pose-button kbd { background: #384b2f; color: #d4e7be; }
+[data-theme='dark'] .timeline-track {
+  background: repeating-linear-gradient(90deg, transparent 0, transparent calc(10% - 1px), #45563b calc(10% - 1px), #45563b 10%), #2b3d2b;
+}
+[data-theme='dark'] .timeline-progress { background: #4b653b; }
+[data-theme='dark'] .timeline-key { background: #a6bf7a; }
+[data-theme='dark'] .timeline-key.selected,
+[data-theme='dark'] .timeline-key:hover { background: #d9e9ab; }
+[data-theme='dark'] .playhead > span { background: #c9df9b; color: #22321d; }
+[data-theme='dark'] .busy-overlay { background: #18251eeF; }
+[data-theme='dark'] .drop-overlay { background: #253d25ef; color: #d2e6bb; }
+[data-theme='dark'] .modal::backdrop { background: #040b08b8; }
+[data-theme='dark'] .modal-busy { background: #1c2821f2; color: var(--ink); }
+[data-theme='dark'] :is(.import-notes, .generation-details.needs-review summary) { color: #e5be87; }
+[data-theme='dark'] .export-result.export-error { background: #423125; border-color: #73543c; color: #f1c49c; }
+[data-theme='dark'] .modal .export-error p { color: #e8bea0; }
+[data-theme='dark'] .motion-viewport-error { color: var(--ink); }
+
+@media (max-width: 1000px) {
+  .header-right { gap: 12px; }
+}
+@media (max-width: 720px) {
+  .header-right { gap: 5px; }
+  .theme-toggle { width: 28px; height: 28px; }
+}

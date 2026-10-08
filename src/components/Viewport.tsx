@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
 import { solveIK } from '../engine/motion';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
+import type { Theme } from '../theme';
 import './Viewport.css';
 
 export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number; limits: { coordinates: number; fov: [number, number]; distance: [number, number] } }
@@ -15,6 +16,7 @@ export interface ViewportAPI {
 }
 
 export interface ViewportProps {
+  theme: Theme;
   asset: CharacterAsset;
   pose: Pose;
   selectedBone: number | null;
@@ -30,6 +32,7 @@ export interface ViewportProps {
 }
 
 type Runtime = ViewportAPI & {
+  setTheme: (theme: Theme) => void;
   frame: (view: ViewportProps['cameraView']) => void;
   ghosts: (poses: Pose[], visible: boolean) => void;
 };
@@ -114,7 +117,8 @@ export default function Viewport(props: ViewportProps) {
     orbit.screenSpacePanning = true;
     orbit.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
 
-    scene.add(new THREE.HemisphereLight('#ffffff', '#a5ae9b', 2.7));
+    const hemisphere = new THREE.HemisphereLight('#ffffff', '#a5ae9b', 2.7);
+    scene.add(hemisphere);
     const keyLight = new THREE.DirectionalLight('#fff5df', 3.6);
     keyLight.position.set(-3, 7, 5);
     keyLight.castShadow = true;
@@ -166,6 +170,27 @@ export default function Viewport(props: ViewportProps) {
     const lineGeometry = new THREE.BufferGeometry();
     lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
     const lineMaterial = new THREE.LineBasicMaterial({ color: '#4d6947', transparent: true, opacity: 0.25, depthTest: false });
+    const gridColors = grid.geometry.getAttribute('color') as THREE.BufferAttribute;
+    const lightGridColors = new Float32Array(gridColors.array);
+    const darkGridColor = new THREE.Color('#597663');
+    function setTheme(theme: Theme) {
+      const dark = theme === 'dark';
+      (scene.background as THREE.Color).set(dark ? '#202c26' : '#e9ece5');
+      (scene.fog as THREE.Fog).color.set(dark ? '#202c26' : '#e9ece5');
+      floorMaterial.color.set(dark ? '#25362b' : '#e9ece4');
+      for (let i = 0; i < gridColors.count; i++) {
+        if (dark) gridColors.setXYZ(i, darkGridColor.r, darkGridColor.g, darkGridColor.b);
+        else gridColors.setXYZ(i, lightGridColors[i * 3], lightGridColors[i * 3 + 1], lightGridColors[i * 3 + 2]);
+      }
+      gridColors.needsUpdate = true;
+      hemisphere.groundColor.set(dark ? '#25362d' : '#a5ae9b');
+      hemisphere.intensity = dark ? 1.8 : 2.7;
+      keyLight.intensity = dark ? 3.0 : 3.6;
+      rim.intensity = dark ? 1.5 : 1.7;
+      lineMaterial.color.set(dark ? '#b1cc94' : '#4d6947');
+      lineMaterial.opacity = dark ? 0.5 : 0.25;
+    }
+    setTheme(latest.current.theme);
     const rigLines = new THREE.LineSegments(lineGeometry, lineMaterial);
     rigLines.renderOrder = 10;
     rigLines.frustumCulled = false;
@@ -369,7 +394,7 @@ export default function Viewport(props: ViewportProps) {
       return { position: camera.position.toArray() as Vec3, target: orbit.target.toArray() as Vec3, fov: camera.fov, width, height, limits: { coordinates: 10000, fov: [10, 100], distance: [orbit.minDistance, orbit.maxDistance] } };
     };
     const api: Runtime = {
-      frame, ghosts: updateGhosts, getCamera,
+      frame, ghosts: updateGhosts, getCamera, setTheme,
       capture: async () => {
         if (disposed) throw new Error('This viewport is no longer active.');
         resize();
@@ -451,6 +476,7 @@ export default function Viewport(props: ViewportProps) {
   }, [props.asset, props.pose]);
 
   useEffect(() => { runtime.current?.frame(props.cameraView); }, [props.cameraView]);
+  useEffect(() => { runtime.current?.setTheme(props.theme); }, [props.theme, props.asset]);
   useEffect(() => { runtime.current?.ghosts(props.ghostPoses, props.showGhosts); }, [props.asset, props.ghostPoses, props.showGhosts]);
 
   return <div ref={container} className="motion-viewport" data-testid="viewport">

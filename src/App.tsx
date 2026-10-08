@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
+import { Moon, Sun } from 'lucide-react';
+import { useTheme } from './theme';
 import './unreal-export.css';
 import './agent-scripting.css';
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
@@ -44,6 +46,7 @@ export default function App() {
   const [asset, setAsset] = useState<CharacterAsset>(() => createDemoCharacter('humanoid'));
   const [studio, setStudio] = useState<Studio>(() => ({ title: 'A little hello', keys: createDemoKeys(asset), duration: 4, settings: { ...DEFAULT_SETTINGS } }));
   const [time, setTime] = useState(0.8);
+  const { theme, toggleTheme } = useTheme();
   const [fps, setFps] = useState(30);
   const [playing, setPlaying] = useState(false);
   const [selectedBone, setSelectedBone] = useState<number | null>(null);
@@ -513,10 +516,10 @@ export default function App() {
     const id = performance.now(); setSparks(s => [...s.slice(-5), { id, x: e.clientX, y: e.clientY }]); setTimeout(() => setSparks(s => s.filter(v => v.id !== id)), 700);
   }}>
     <header className="topbar">
-      <a className="wordmark" href="#" aria-label="Still home" onClick={e => { e.preventDefault(); setDialog('new'); }}><span className="brand-symbol">s</span>still<span className="wordmark-dot">.</span></a>
+      <a className="wordmark" href="#" aria-label="Still home" onClick={e => { e.preventDefault(); setDialog('new'); }}><span className="brand-symbol"><img src="/still-icon.png" alt=""/></span>still<span className="wordmark-dot">.</span></a>
       <div className="header-divider" />
       <div className="project-heading"><input aria-label="Project name" value={studio.title} maxLength={80} onChange={e => { dirty.current = true; setStudio({ ...studio, title: e.target.value }); }}/><ChevronDown size={13}/><span className="local-badge">LOCAL PROJECT</span></div>
-      <div className="header-right"><span className="save-status"><span className="status-dot"/>{saveStatus}</span><button className={`button agent-button ${agentConnection.connected ? 'connected' : ''}`} aria-label="Agent scripting" onClick={() => setDialog('agent')}><span className="status-dot"/>Agent</button><div className="history-tools" data-version={historyVersion}><button className="icon-button" title="Undo · Ctrl Z" aria-label="Undo" disabled={!history.current.past.length} onClick={undo}><Undo2 size={17}/></button><button className="icon-button" title="Redo · Ctrl Shift Z" aria-label="Redo" disabled={!history.current.future.length} onClick={redo}><Redo2 size={17}/></button></div><button className="button export-button" onClick={() => setDialog('export')}><ArrowUpRight size={16}/>Export<span className="key-hint">↗</span></button></div>
+      <div className="header-right"><span className="save-status"><span className="status-dot"/>{saveStatus}</span><button className="icon-button theme-toggle" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} onClick={toggleTheme}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button><button className={`button agent-button ${agentConnection.connected ? 'connected' : ''}`} aria-label="Agent scripting" onClick={() => setDialog('agent')}><span className="status-dot"/>Agent</button><div className="history-tools" data-version={historyVersion}><button className="icon-button" title="Undo · Ctrl Z" aria-label="Undo" disabled={!history.current.past.length} onClick={undo}><Undo2 size={17}/></button><button className="icon-button" title="Redo · Ctrl Shift Z" aria-label="Redo" disabled={!history.current.future.length} onClick={redo}><Redo2 size={17}/></button></div><button className="button export-button" onClick={() => setDialog('export')}><ArrowUpRight size={16}/>Export<span className="key-hint">↗</span></button></div>
     </header>
 
     <div className="workspace">
@@ -546,7 +549,7 @@ export default function App() {
         <div className="scene-heading"><div><span className="scene-dot"/>YOUR PLAYGROUND<span className="scene-separator">/</span><span className="scene-name">{studio.title || 'Untitled'}</span></div><button className="text-button" onClick={() => setDialog('help')}><CircleHelp size={14}/><span>A quick tour</span></button></div>
         <div className="stage-and-assists">
           <section className="viewport-shell" aria-label="Character editor">
-            <Viewport apiRef={viewportAPI} asset={asset} pose={currentPose} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} showRig={showRig} showGhosts={showGhosts} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
+            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={currentPose} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} showRig={showRig} showGhosts={showGhosts} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
             <div className="viewport-top"><div className="mode-pill"><span className={playing ? 'live-dot' : 'mode-dot'}/>{playing ? 'In motion' : 'Pose mode'}<span>{selectedKey ? `Pose ${keyIndex + 1}` : 'Between poses'}</span></div><button className={`icon-button viewport-icon ${showGhosts ? 'active' : ''}`} aria-label="Toggle onion skin" aria-pressed={showGhosts} title="Show neighboring poses" onClick={() => setShowGhosts(v => !v)}><Layers2 size={17}/></button></div>
             <div className="viewport-tools"><button aria-label="Move joint" title="Move joint · W" className={tool === 'move' ? 'active' : ''} onClick={() => setTool('move')}><Move size={18}/></button><button aria-label="Rotate joint" title="Rotate joint · E" className={tool === 'rotate' ? 'active' : ''} onClick={() => setTool('rotate')}><RotateCw size={18}/></button><div/><button aria-label="Show joints" title="Show joints" aria-pressed={showRig} className={showRig ? 'active secondary' : ''} onClick={() => setShowRig(v => !v)}><Bone size={18}/></button></div>
             <div className="viewport-label"><span className="viewport-kicker">LESS LEARNING. MORE MAKING.</span><span className="viewport-big-word">Let’s move.</span></div>

@@ -1,1 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#264f43"/><path d="M39 14c-15-3-24 13-12 18l9 4c10 5 0 17-12 12" fill="none" stroke="#e9efab" stroke-width="8" stroke-linecap="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <linearGradient id="tile" x1="18" y1="8" x2="113" y2="125" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#345d4b"/><stop offset="1" stop-color="#172e27"/>
+    </linearGradient>
+    <linearGradient id="motion" x1="83" y1="27" x2="43" y2="102" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ecf2c5"/><stop offset="1" stop-color="#adc98c"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="32" fill="url(#tile)"/>
+  <rect x="3" y="3" width="122" height="122" rx="31" stroke="#789681" stroke-opacity=".25" stroke-width="2"/>
+  <path d="M87 32C66 19 39 31 39 49C39 65 87 63 87 81C87 99 59 109 40 96" stroke="#0b211a" stroke-opacity=".28" stroke-width="15" stroke-linecap="round" transform="translate(0 3)"/>
+  <path d="M87 32C66 19 39 31 39 49C39 65 87 63 87 81C87 99 59 109 40 96" stroke="url(#motion)" stroke-width="13" stroke-linecap="round"/>
+  <circle cx="87" cy="32" r="9" fill="#f0f4ce"/>
+  <circle cx="40" cy="96" r="9" fill="#bad69a"/>
+  <circle cx="64" cy="64" r="5" fill="#254635"/>
+</svg>
