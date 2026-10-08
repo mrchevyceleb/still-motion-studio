@@ -4,6 +4,7 @@ import { Moon, Sun } from 'lucide-react';
 import { useTheme } from './theme';
 import './unreal-export.css';
 import './agent-scripting.css';
+import './timeline.css';
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { Euler, MathUtils, Quaternion } from 'three';
 import Viewport from './components/Viewport';
@@ -22,9 +23,11 @@ import type { UnrealExportCapability } from './engine/unrealExport';
 import { archiveLocal, downloadFile, embedCharacter, listArchives, loadLocal, readArchive, saveLocal, validateProject } from './engine/project';
 import type { ArchiveEntry } from './engine/project';
 import { DEFAULT_SETTINGS } from './types';
+import { duplicateMoment, nearestFreeKeyTime } from './engine/keyframeEditing';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind } from './types';
 
 interface Studio { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
+interface KeyDrag { id: string; pointerId: number; startX: number; startTime: number; time: number; beforeTime: number; moved: boolean; studio: Studio; asset: CharacterAsset; fps: number }
 type Dialog = 'import' | 'export' | 'help' | 'rig' | 'new' | 'agent' | null;
 const clone = <T,>(value: T): T => structuredClone(value);
 const niceName = (name: string) => name.replace(/^mixamorig[:_]?/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_:]/g, ' ');
@@ -43,12 +46,14 @@ function Switch({ checked, onChange, label, disabled = false }: { checked: boole
 }
 
 export default function App() {
+  const { theme, toggleTheme } = useTheme();
   const [asset, setAsset] = useState<CharacterAsset>(() => createDemoCharacter('humanoid'));
   const [studio, setStudio] = useState<Studio>(() => ({ title: 'A little hello', keys: createDemoKeys(asset), duration: 4, settings: { ...DEFAULT_SETTINGS } }));
   const [time, setTime] = useState(0.8);
-  const { theme, toggleTheme } = useTheme();
   const [fps, setFps] = useState(30);
   const [playing, setPlaying] = useState(false);
+  const [dragPreview, setDragPreview] = useState<{ id: string; time: number } | null>(null);
+  const keyDrag = useRef<KeyDrag | null>(null);
   const [selectedBone, setSelectedBone] = useState<number | null>(null);
   const [showRig, setShowRig] = useState(true);
   const [showGhosts, setShowGhosts] = useState(false);
@@ -64,6 +69,9 @@ export default function App() {
   const engineOperation = useRef<AbortController | null>(null);
   const exportOperation = useRef<AbortController | null>(null);
   const [unrealCapability, setUnrealCapability] = useState<UnrealExportCapability | null>(null);
+  const [rootMotion, setRootMotion] = useState<'preserve' | 'extract' | 'in-place'>('preserve');
+  const [retarget, setRetarget] = useState<'none' | 'manny' | 'metahuman'>('none');
+  const [targetMesh, setTargetMesh] = useState('');
   const [exportRunning, setExportRunning] = useState(false);
   const [exportCancelling, setExportCancelling] = useState(false);
   const [exportSummary, setExportSummary] = useState<{ warnings: string[]; error?: string; cancelled?: boolean } | null>(null);
@@ -72,9 +80,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [saveStatus, setSaveStatus] = useState('Saved on this device');
-  const [rootMotion, setRootMotion] = useState<'preserve' | 'extract' | 'in-place'>('preserve');
-  const [retarget, setRetarget] = useState<'none' | 'manny' | 'metahuman'>('none');
-  const [targetMesh, setTargetMesh] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [archives, setArchives] = useState<ArchiveEntry[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -101,8 +106,9 @@ export default function App() {
   const dirty = useRef(false);
   const saveGeneration = useRef(0);
   const embedded = useMemo(() => embedCharacter(asset), [asset]);
-  const motionKeys = studio.generated ?? studio.keys;
-  const playbackMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const poseKeys = useMemo(() => dragPreview ? studio.keys.map(key => key.id === dragPreview.id ? { ...key, time: dragPreview.time } : key).sort((a, b) => a.time - b.time) : studio.keys, [studio.keys, dragPreview]);
+  const motionKeys = dragPreview ? poseKeys : studio.generated ?? poseKeys;
+  const playbackMode = !dragPreview && studio.generated ? 'linear' : studio.settings.interpolation;
   const currentPose = useMemo(() => samplePose(motionKeys, time, playbackMode), [motionKeys, playbackMode, time]);
   const compatible = (provider: EngineProvider) => !(provider.limits?.humanoidOnly && asset.kind !== 'humanoid') && !(provider.limits?.quadrupedOnly && asset.kind !== 'quadruped');
   const learnedProviders = engine?.providers.filter(provider => provider.kind !== 'physics' && provider.learned && compatible(provider)) ?? [];
@@ -110,15 +116,36 @@ export default function App() {
   const physicsProviders = engine?.providers.filter(provider => (provider.kind === 'physics' || provider.id === 'physics') && compatible(provider)) ?? [];
   const physicsProvider = physicsProviders.find(provider => provider.id === physicsChoice) ?? physicsProviders[0];
   const needsReview = (studio.generation?.metrics.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
-  const selectedKey = studio.keys.find(key => Math.abs(key.time - time) < 0.5 / fps);
-  const keyIndex = selectedKey ? studio.keys.indexOf(selectedKey) : -1;
-  const shownKeys = useMemo(() => studio.keys.length <= 8 ? studio.keys : simplifyKeys(studio.keys, 6), [studio.keys]);
+  const selectedKey = poseKeys.find(key => Math.abs(key.time - time) < 0.5 / fps);
+  const keyIndex = selectedKey ? poseKeys.indexOf(selectedKey) : -1;
+  const shownKeys = useMemo(() => {
+    const shown = poseKeys.length <= 8 ? poseKeys : simplifyKeys(poseKeys, 6);
+    return selectedKey && !shown.includes(selectedKey) ? [...shown, selectedKey].sort((a, b) => a.time - b.time) : shown;
+  }, [poseKeys, selectedKey]);
   const ghostPoses = useMemo(() => showGhosts ? [samplePose(motionKeys, Math.max(0, time - .22), playbackMode), samplePose(motionKeys, Math.min(studio.duration, time + .22), playbackMode)] : [], [showGhosts, motionKeys, studio.duration, playbackMode, time]);
   const selectedRotation = useMemo(() => {
     if (selectedBone === null || !currentPose[selectedBone]) return [0, 0, 0];
     const e = new Euler().setFromQuaternion(new Quaternion().fromArray(currentPose[selectedBone].quaternion), 'XYZ');
     return [e.x, e.y, e.z].map(v => Math.round(MathUtils.radToDeg(v) * 10) / 10);
   }, [selectedBone, currentPose]);
+
+  function cancelKeyDrag() {
+    const drag = keyDrag.current;
+    if (!drag) return;
+    keyDrag.current = null;
+    setDragPreview(null);
+    if (drag.studio === agentVersion.current.studio && drag.asset === agentVersion.current.asset && drag.fps === agentVersion.current.fps) setTime(Math.min(drag.beforeTime, drag.studio.duration));
+    if (timeline.current?.hasPointerCapture(drag.pointerId)) timeline.current.releasePointerCapture(drag.pointerId);
+  }
+  useEffect(() => {
+    const drag = keyDrag.current;
+    if (drag && (drag.studio !== studio || drag.asset !== asset || drag.fps !== fps || dialog || busy)) cancelKeyDrag();
+  }, [studio, asset, fps, dialog, busy]);
+  useEffect(() => {
+    const cancel = () => cancelKeyDrag();
+    window.addEventListener('blur', cancel);
+    return () => window.removeEventListener('blur', cancel);
+  }, []);
 
   useEffect(() => { durationRef.current = studio.duration; }, [studio.duration]);
   useEffect(() => { timeRef.current = time; }, [time]);
@@ -237,6 +264,13 @@ export default function App() {
   }, [studio, fps, commit]);
 
   const addKey = useCallback(() => { writePose(currentPose); notify(selectedKey ? 'Pose updated. The motion follows automatically.' : 'New pose added. The motion follows automatically.'); }, [writePose, currentPose, selectedKey, notify]);
+  const duplicateKey = useCallback(() => {
+    if (!selectedKey || keyDrag.current) return;
+    const duplicate = duplicateMoment(studio.keys, selectedKey, studio.duration, fps);
+    if (!duplicate) { notify('The timeline has no empty frames. Increase its duration or remove a pose.'); return; }
+    commit({ ...studio, keys: duplicate.keys, duration: duplicate.duration, sourceClip: null }, 'Moment duplicated. Drag its diamond to change the timing.');
+    setPlaying(false); setTime(duplicate.key.time);
+  }, [selectedKey, studio, fps, commit, notify]);
   const deleteKey = useCallback(() => {
     if (!selectedKey || studio.keys.length <= 2) return;
     commit({ ...studio, sourceClip: null, keys: studio.keys.filter(k => k.id !== selectedKey.id) }, 'Pose removed. Undo is always here.');
@@ -249,10 +283,12 @@ export default function App() {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
+      if (keyDrag.current) { if (event.key === 'Escape') { event.preventDefault(); cancelKeyDrag(); } return; }
       if ((event.target as HTMLElement).matches('input, textarea, select, [contenteditable="true"]') || dialog || busy || !hydrated) return;
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); saveProject(); }
+      else if (mod && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateKey(); }
       else if (event.code === 'Space') { event.preventDefault(); setPlaying(v => !v); }
       else if (event.key.toLowerCase() === 'k') { event.preventDefault(); addKey(); }
       else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); deleteKey(); }
@@ -263,7 +299,7 @@ export default function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [dialog, busy, hydrated, redo, undo, saveProject, addKey, deleteKey, studio.duration, fps]);
+  }, [dialog, busy, hydrated, redo, undo, saveProject, addKey, duplicateKey, deleteKey, studio.duration, fps]);
 
   const handleImport = async (file: File) => {
     if (busy) return;
@@ -429,11 +465,34 @@ export default function App() {
     const rect = timeline.current?.getBoundingClientRect(); if (!rect) return;
     setPlaying(false); setTime(Math.round(Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) * studio.duration * fps) / fps);
   };
-  const retimeKey = (id: string, clientX: number) => {
+  const previewKeyDrag = (clientX: number, pointerId: number) => {
+    const drag = keyDrag.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+    if (!drag.moved && Math.abs(clientX - drag.startX) <= 4) return;
     const rect = timeline.current?.getBoundingClientRect(); if (!rect) return;
-    const nextTime = Math.max(0, Math.min(studio.duration, Math.round((clientX - rect.left) / rect.width * studio.duration * fps) / fps));
-    if (studio.keys.some(k => k.id !== id && Math.abs(k.time - nextTime) < .5 / fps)) { notify('There is already a pose at that frame.'); return; }
-    commit({ ...studio, sourceClip: null, keys: studio.keys.map(k => k.id === id ? { ...k, time: nextTime } : k).sort((a, b) => a.time - b.time) }); setTime(nextTime);
+    if (rect.width <= 0) return;
+    const nextTime = nearestFreeKeyTime(drag.studio.keys, drag.id, drag.startTime + (clientX - drag.startX) / rect.width * drag.studio.duration, drag.studio.duration, drag.fps);
+    if (nextTime === null) return;
+    drag.moved = true; drag.time = nextTime;
+    setDragPreview(current => current?.id === drag.id && current.time === nextTime ? current : { id: drag.id, time: nextTime });
+    setTime(nextTime);
+  };
+  const finishKeyDrag = (clientX: number, pointerId: number) => {
+    const drag = keyDrag.current;
+    if (!drag || drag.pointerId !== pointerId) return;
+    previewKeyDrag(clientX, pointerId);
+    keyDrag.current = null; setDragPreview(null);
+    if (drag.studio === studio && drag.asset === asset && drag.moved && drag.time !== drag.startTime) {
+      commit({ ...studio, sourceClip: null, keys: studio.keys.map(key => key.id === drag.id ? { ...key, time: drag.time } : key).sort((a, b) => a.time - b.time) });
+      setTime(drag.time);
+    }
+  };
+  const nudgeKey = (key: PoseKey, direction: number) => {
+    if (busy || keyDrag.current) return;
+    const nextTime = nearestFreeKeyTime(studio.keys, key.id, key.time + direction / fps, studio.duration, fps, direction);
+    if (nextTime === null || direction * (nextTime - key.time) <= 0) return;
+    commit({ ...studio, sourceClip: null, keys: studio.keys.map(item => item.id === key.id ? { ...item, time: nextTime } : item).sort((a, b) => a.time - b.time) });
+    setPlaying(false); setTime(nextTime);
   };
   const changeDuration = (value: number) => {
     if (!Number.isFinite(value) || value < .1 || value > 120) return;
@@ -447,6 +506,7 @@ export default function App() {
     character: { name: asset.name, kind: asset.kind, rigged: asset.rigged, boneCount: asset.bones.length },
     timeline: { time, playing, keyCount: studio.keys.length, generatedFrames: studio.generated?.length ?? 0 },
     view: { cameraView, showRig, showGhosts, tool, selectedBone },
+    camera: viewportAPI.current?.getCamera() ?? null,
     history: { canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 },
     providers: engine?.providers ?? [], busy, progress,
   });
@@ -509,7 +569,6 @@ export default function App() {
       },
     });
   }, [hydrated]);
-    camera: viewportAPI.current?.getCamera() ?? null,
 
   return <div className="studio-app" onDragOver={e => { e.preventDefault(); if (!busy) setDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }} onDrop={e => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files[0]) void handleImport(e.dataTransfer.files[0]); }} onClick={e => {
     if ((e.target as HTMLElement).closest('canvas, input, select, dialog') || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -567,9 +626,21 @@ export default function App() {
           </aside>
         </div>
 
-        <section className="timeline-section" aria-label="Animation timeline"><div className="timeline-heading"><div className="timeline-title"><h2>Your moments</h2><span>{studio.keys.length} poses<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generated ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions">{studio.keys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={!selectedKey || studio.keys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button><button className="button add-pose-button" disabled={!asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
-          <div className="pose-cards">{shownKeys.map((key) => <button className={`pose-card ${selectedKey?.id === key.id ? 'selected' : ''}`} key={key.id} onClick={() => { setPlaying(false); setTime(key.time); }} aria-label={`Go to pose ${studio.keys.findIndex(k => k.id === key.id) + 1}`}><div className="pose-card-top"><span>{String(studio.keys.findIndex(k => k.id === key.id) + 1).padStart(2, '0')}</span><span className="key-diamond"/></div><PoseThumbnail asset={asset} pose={key.pose}/><div className="pose-card-caption"><span>{key.label || `Pose ${studio.keys.findIndex(k => k.id === key.id) + 1}`}</span><span>{key.time.toFixed(2)}s</span></div></button>)}<button className="new-pose-card" title="Add a pose at the playhead" disabled={!asset.rigged} onClick={addKey}><Plus size={19}/><span>A new moment</span></button></div>
-          <div className="scrubber" ref={timeline} onPointerDown={e => { if ((e.target as HTMLElement).closest('.timeline-key')) return; e.currentTarget.setPointerCapture(e.pointerId); scrub(e.clientX); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) scrub(e.clientX); }} onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}><div className="ruler-labels">{Array.from({ length: 9 }, (_, i) => <span key={i}>{(studio.duration * i / 8).toFixed(1)}<small>s</small></span>)}</div><div className="timeline-track"><div className="timeline-progress" style={{ width: `${time / studio.duration * 100}%` }}/>{studio.keys.map((key, i) => <button key={key.id} className={`timeline-key ${selectedKey?.id === key.id ? 'selected' : ''}`} style={{ left: `${key.time / studio.duration * 100}%` }} aria-label={`Pose ${i + 1} at ${key.time.toFixed(2)} seconds. Drag to retime.`} title={`Pose ${i + 1} · ${key.time.toFixed(2)}s · drag to retime`} onPointerDown={e => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); e.currentTarget.dataset.startX = String(e.clientX); setPlaying(false); setTime(key.time); }} onPointerUp={e => { e.stopPropagation(); e.currentTarget.releasePointerCapture(e.pointerId); if (Math.abs(e.clientX - Number(e.currentTarget.dataset.startX)) > 4) retimeKey(key.id, e.clientX); }}/>)}</div><div className="playhead" style={{ left: `${time / studio.duration * 100}%` }}><span/></div><input className="accessible-scrubber" aria-label="Timeline playhead" type="range" min="0" max={studio.duration} step={1 / fps} value={time} onChange={e => { setPlaying(false); setTime(Number(e.target.value)); }}/></div>
+        <section className="timeline-section" aria-label="Animation timeline"><div className="timeline-heading"><div className="timeline-title"><h2>Your moments</h2><span>{studio.keys.length} poses<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generated ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions">{studio.keys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="button duplicate-pose-button" title="Duplicate selected moment · Ctrl D" aria-label="Duplicate selected moment" disabled={!selectedKey || !asset.rigged || !!dragPreview} onClick={duplicateKey}><Copy size={14}/><span>Duplicate</span></button><button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={!selectedKey || studio.keys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button><button className="button add-pose-button" disabled={!asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
+          <div className="pose-cards">{shownKeys.map((key) => <button className={`pose-card ${selectedKey?.id === key.id ? 'selected' : ''}`} key={key.id} onClick={() => { setPlaying(false); setTime(key.time); }} aria-label={`Go to pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}><div className="pose-card-top"><span>{String(poseKeys.findIndex(k => k.id === key.id) + 1).padStart(2, '0')}</span><span className="key-diamond"/></div><PoseThumbnail asset={asset} pose={key.pose}/><div className="pose-card-caption"><span>{key.label || `Pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}</span><span>{key.time.toFixed(2)}s</span></div></button>)}<button className="new-pose-card" title="Add a pose at the playhead" disabled={!asset.rigged} onClick={addKey}><Plus size={19}/><span>A new moment</span></button></div>
+          <div className="scrubber" ref={timeline} data-dragging={!!dragPreview}
+            onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('.timeline-key')) return; e.currentTarget.setPointerCapture(e.pointerId); scrub(e.clientX); }}
+            onPointerMove={e => { if (!e.currentTarget.hasPointerCapture(e.pointerId)) return; if (keyDrag.current) previewKeyDrag(e.clientX, e.pointerId); else scrub(e.clientX); }}
+            onPointerUp={e => { if (keyDrag.current) finishKeyDrag(e.clientX, e.pointerId); if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
+            onPointerCancel={() => cancelKeyDrag()} onLostPointerCapture={() => cancelKeyDrag()}>
+            <div className="ruler-labels">{Array.from({ length: 9 }, (_, i) => <span key={i}>{(studio.duration * i / 8).toFixed(1)}<small>s</small></span>)}</div>
+            <div className="timeline-track"><div className="timeline-progress" style={{ width: `${time / studio.duration * 100}%` }}/>{poseKeys.map((key, i) => <button key={key.id} className={`timeline-key ${selectedKey?.id === key.id ? 'selected' : ''} ${dragPreview?.id === key.id ? 'dragging' : ''}`} style={{ left: `${key.time / studio.duration * 100}%` }}
+              aria-label={`Pose ${i + 1} at ${key.time.toFixed(2)} seconds. Drag or use Alt and arrow keys to retime.`} title={`Pose ${i + 1} · ${key.time.toFixed(2)}s · drag or Alt ← → to retime`} disabled={!!busy}
+              onKeyDown={e => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); e.stopPropagation(); nudgeKey(key, e.key === 'ArrowLeft' ? -1 : 1); } }}
+              onClick={e => { if (e.detail === 0) { setPlaying(false); setTime(key.time); } }}
+              onPointerDown={e => { if (e.button !== 0 || !timeline.current) return; e.stopPropagation(); cancelKeyDrag(); keyDrag.current = { id: key.id, pointerId: e.pointerId, startX: e.clientX, startTime: key.time, time: key.time, beforeTime: time, moved: false, studio, asset, fps }; timeline.current.setPointerCapture(e.pointerId); setPlaying(false); setTime(key.time); }}/>)}</div>
+            <div className="playhead" style={{ left: `${time / studio.duration * 100}%` }}><span/></div><input className="accessible-scrubber" aria-label="Timeline playhead" type="range" min="0" max={studio.duration} step={1 / fps} value={time} onChange={e => { setPlaying(false); setTime(Number(e.target.value)); }}/>
+          </div>
           <div className="transport"><div className="playback-buttons"><button className="icon-button" aria-label="Go to beginning" onClick={() => { setPlaying(false); setTime(0); }}><SkipBack size={15}/></button><button className="icon-button" aria-label="Previous frame" onClick={() => { setPlaying(false); setTime(t => Math.max(0, t - 1 / fps)); }}><ChevronLeft size={19}/></button><button className="play-button" aria-label={playing ? 'Pause animation' : 'Play animation'} onClick={() => setPlaying(v => !v)}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="icon-button" aria-label="Next frame" onClick={() => { setPlaying(false); setTime(t => Math.min(studio.duration, t + 1 / fps)); }}><ChevronRight size={19}/></button><button className="icon-button" aria-label="Go to end" onClick={() => { setPlaying(false); setTime(studio.duration); }}><SkipForward size={15}/></button><span className="timecode">{time.toFixed(2)}<span>/ {studio.duration.toFixed(2)} s</span></span></div><span className="transport-tip"><kbd>space</kbd> to play. Curiosity to create.</span><div className="duration-controls"><label><input aria-label="Animation duration seconds" type="number" min=".1" max="120" step=".5" value={Number(studio.duration.toFixed(3))} onChange={e => changeDuration(Number(e.target.value))}/>sec</label><select aria-label="Frames per second" value={fps} onChange={e => setFps(Number(e.target.value))}><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div></div>
         </section>
         <footer className="editor-footer"><span><span className="status-dot"/>Everything stays on your device.</span><div className="ticker"><span>SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY. &nbsp;✳&nbsp; SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY.</span></div><button onClick={() => setDialog('help')}><Keyboard size={13}/><span>Shortcuts</span></button></footer>
@@ -595,7 +666,7 @@ export default function App() {
       {dialog === 'new' && <><span className="modal-icon"><Sparkles size={25}/></span><div className="eyebrow">A FRESH START</div><h2>What’s your<br/>next move?</h2><p>Try a practice character, start from a blank pose, or bring one of your own. Your last five replaced scenes stay available here on this device. Save a project file for a permanent copy.</p><button className="button secondary full-width" onClick={saveProject}><Save size={16}/>Save current project</button><div className="new-choices"><button onClick={() => createNew('humanoid')}><PoseSketch index={3}/><strong>A friendly wave</strong><span>Human · 6 poses</span></button><button onClick={() => createNew('quadruped')}><PoseSketch quadruped/><strong>Four little steps</strong><span>Quadruped · 6 poses</span></button></div><button className="export-choice compact" onClick={() => createNew('humanoid', true)}><Plus size={20}/><span><strong>Start from a blank pose</strong></span><ArrowRight size={17}/></button><button className="export-choice compact" onClick={() => setDialog('import')}><Upload size={20}/><span><strong>Import your own character</strong></span><ArrowRight size={17}/></button></>}
       {dialog === 'new' && archives.length > 0 && <div className="recent-scenes"><h3>Recent scenes</h3>{archives.map(entry => <button key={entry.id} onClick={() => void openArchive(entry.id)}><RotateCcw size={13}/><span>{entry.name}</span><small>{new Date(entry.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</small></button>)}</div>}
       {dialog === 'rig' && <><span className="modal-icon"><Bone size={25}/></span><div className="eyebrow">A SIMPLE STARTING SKELETON</div><h2>A little structure.<br/>A lot of freedom.</h2><p>Pick the shape that fits your character. We’ll fit joints to the shape of your mesh and blend the skin around its limbs.</p><div className="new-choices rig-choices">{(['humanoid', 'quadruped'] as RigKind[]).map(kind => <button key={kind} className={rigKind === kind ? 'selected' : ''} onClick={() => setRigKind(kind)}><PoseSketch quadruped={kind === 'quadruped'}/><strong>{kind === 'humanoid' ? 'Two legs' : 'Four legs'}</strong><span>{kind === 'humanoid' ? 'Upright human · A or T pose' : 'Animal · head facing +Z'}</span></button>)}</div><div className="modal-tip"><CircleHelp size={19}/><span>Use an upright, neutral pose. Geometry fitting checks the skin binding; inspect a small bend before making larger poses.</span></div><button className="button primary full-width" onClick={() => void makeRig()} disabled={asset.rigged}>Fit my rig <ArrowRight size={16}/></button></>}
-      {dialog === 'help' && <><span className="modal-icon"><Hand size={25}/></span><div className="eyebrow">YOU ALREADY KNOW ENOUGH</div><h2>Three steps.<br/>Your first animation.</h2><div className="tour-step"><span>01</span><div><strong>Bring a character.</strong><p>Use the practice partner or import an FBX from Mixamo. Existing rigs are preserved.</p></div></div><div className="tour-step"><span>02</span><div><strong>Make a few moments.</strong><p>Move the playhead. Drag a joint into place. Your pose is saved automatically. Drag a diamond to change its timing.</p></div></div><div className="tour-step"><span>03</span><div><strong>Let them flow.</strong><p>Choose Generate motion to fill the gaps with AI. Preview with Space, correct with physics, then export an animated GLB.</p></div></div><div className="shortcut-grid"><span><kbd>Space</kbd>Play / pause</span><span><kbd>K</kbd>Save a pose</span><span><kbd>W / E</kbd>Move / rotate</span><span><kbd>← →</kbd>One frame</span><span><kbd>Ctrl Z</kbd>Undo</span><span><kbd>Ctrl S</kbd>Save project</span></div><p className="help-honesty">AI in-betweening runs trained human or animal motion models on this computer. The owned models have limited training coverage; inspect difficult contacts and acrobatics. Physics offers articulated-body correction and native Cascadeur AutoPhysics when installed. Curve interpolation and the quick ground pass are lightweight procedural tools. Generated motion stays separate from your editable key poses.</p><button className="button primary full-width" onClick={() => setDialog(null)}>Let’s make something move <ArrowRight size={16}/></button></>}
+      {dialog === 'help' && <><span className="modal-icon"><Hand size={25}/></span><div className="eyebrow">YOU ALREADY KNOW ENOUGH</div><h2>Three steps.<br/>Your first animation.</h2><div className="tour-step"><span>01</span><div><strong>Bring a character.</strong><p>Use the practice partner or import an FBX from Mixamo. Existing rigs are preserved.</p></div></div><div className="tour-step"><span>02</span><div><strong>Make a few moments.</strong><p>Move the playhead. Drag a joint into place. Your pose is saved automatically. Drag a diamond to change its timing.</p></div></div><div className="tour-step"><span>03</span><div><strong>Let them flow.</strong><p>Choose Generate motion to fill the gaps with AI. Preview with Space, correct with physics, then export an animated GLB.</p></div></div><div className="shortcut-grid"><span><kbd>Space</kbd>Play / pause</span><span><kbd>K</kbd>Save a pose</span><span><kbd>Ctrl D</kbd>Duplicate moment</span><span><kbd>W / E</kbd>Move / rotate</span><span><kbd>← →</kbd>One frame</span><span><kbd>Ctrl Z</kbd>Undo</span><span><kbd>Ctrl S</kbd>Save project</span></div><p className="help-honesty">AI in-betweening runs trained human or animal motion models on this computer. The owned models have limited training coverage; inspect difficult contacts and acrobatics. Physics offers articulated-body correction and native Cascadeur AutoPhysics when installed. Curve interpolation and the quick ground pass are lightweight procedural tools. Generated motion stays separate from your editable key poses.</p><button className="button primary full-width" onClick={() => setDialog(null)}>Let’s make something move <ArrowRight size={16}/></button></>}
       {busy && <div className="modal-busy" role="status"><LoaderCircle size={25} className="spin"/><strong>{busy}</strong>{exportRunning && <><progress className="engine-progress" aria-label="Unreal export progress" max="1" value={progress ?? 0}/><button className="button secondary" disabled={exportCancelling} onClick={cancelUnrealExport}>{exportCancelling ? 'Cancelling…' : 'Cancel export'}</button><p className="micro-copy">Preparing the package locally. Your animation stays unchanged.</p></>}</div>}
     </div></dialog>
   </div>;

@@ -1,0 +1,8 @@
+.duplicate-pose-button { padding: 7px 10px; font-size: 10px; gap: 6px; }
+.scrubber { touch-action: none; }
+.timeline-key.dragging { z-index: 4; cursor: grabbing; box-shadow: 0 0 0 4px #8ea86640; }
+.scrubber[data-dragging='true'] { cursor: grabbing; }
+@media (max-width: 720px) {
+  .duplicate-pose-button { padding: 7px; }
+  .duplicate-pose-button span { display: none; }
+}
