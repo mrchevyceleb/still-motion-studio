@@ -1,0 +1,8 @@
+.agent-button{gap:6px;background:transparent;border:1px solid #d8dfcd;border-radius:6px;padding:7px 10px;font-size:10px;color:#647259;white-space:nowrap}
+.agent-button .status-dot{display:inline-block;width:5px;height:5px;background:#a9afa3}
+.agent-button.connected .status-dot{background:#648956;box-shadow:0 0 0 3px #64895615}
+.agent-command{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;background:#edf0e5;border:1px solid #dce2d2;border-radius:7px;padding:12px;color:#40583b;margin:14px 0}
+.agent-session{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;overflow-wrap:anywhere;user-select:all}
+.agent-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.agent-last{border-top:1px solid #dce2d2;margin-top:16px;padding-top:12px;font-size:11px;line-height:1.7;color:#637458;overflow-wrap:anywhere}
+@media(max-width:700px){.agent-button{padding:6px;font-size:9px}.header-right{gap:6px}}

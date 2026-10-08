@@ -1,0 +1,13 @@
+.unreal-export.recommended{background:#e8efd5;border-color:#a5b77f;box-shadow:0 0 0 1px #c9d7b180}
+.unreal-export.recommended:hover{background:#e0ebc8;border-color:#819d60}
+.unreal-export:disabled{opacity:.68}
+.export-recommendation{display:inline-block;font-size:7px;font-weight:650;letter-spacing:.45px;text-transform:uppercase;color:#637c46;margin-top:10px}
+.modal .export-caption{font-size:9px;line-height:1.7;margin:9px 2px 16px;color:#7b8c68}
+.export-result{background:#eaf0df;border:1px solid #d6e0c7;border-radius:8px;padding:14px;margin:14px 0;color:#557143}
+.export-result>strong{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:600}
+.modal .export-result p{font-size:10px;line-height:1.7;margin-top:7px;color:#738364}
+.export-result details{font-size:10px;margin-top:10px;line-height:1.65}
+.export-result summary{cursor:pointer;font-weight:600}
+.export-result.export-error{background:#f4eadd;border-color:#e1cbb0;color:#8a603c}
+.modal .export-error p{color:#8a6f55}
+.modal-busy .engine-progress{max-width:100%}

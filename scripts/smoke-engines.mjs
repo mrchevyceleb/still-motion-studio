@@ -1,0 +1,80 @@
+// Real local model/physics integration; no mocked inference.
+import { chromium, expect } from '@playwright/test';
+import { mkdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+const output = path.resolve('.local/engine-verification');
+await mkdir(output, { recursive: true });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+const errors = []; page.on('pageerror', error => errors.push(error.message));
+const provider = process.env.STILL_TEST_PROVIDER || 'inbetween';
+page.on('dialog', dialog => dialog.accept());
+page.setDefaultTimeout(20000);
+async function save(name) {
+  await page.locator('.export-button').click();
+  const downloading = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Editable Still project/ }).click();
+  const download = await downloading;
+  const target = path.join(output, name);
+  await download.saveAs(target);
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  return JSON.parse(await readFile(target, 'utf8'));
+}
+try {
+  await page.goto('http://127.0.0.1:5173');
+  await expect(page.locator('.busy-overlay')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Generate motion', exact: true })).toBeEnabled();
+  await page.getByRole('combobox', { name: 'AI motion engine' }).selectOption(provider);
+  const before = await save('before.still');
+  await page.getByRole('button', { name: 'Generate motion', exact: true }).click();
+  await expect(page.locator('.busy-overlay')).toBeVisible();
+  await expect(page.locator('.busy-overlay')).toHaveCount(0, { timeout: 180000 });
+  await expect(page.locator('.error-toast')).toHaveCount(0);
+  await expect(page.locator('.generation-details')).toContainText(/AI take ready|Motion · review needed/);
+  const after = await save('ai.still');
+  assert.deepEqual(after.keys, before.keys, 'Authored poses are unchanged');
+  assert.equal(after.generated.length, 121);
+  assert.equal(after.generation.kind, 'inbetween');
+  assert.equal(after.boneNames.length, before.boneNames.length);
+  console.log('PASS real AI generation; 6 exact keys, 121 baked frames, original skeleton');
+  await page.screenshot({ path: path.join(output, 'ai-editor.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  const undone = await save('undone.still');
+  assert.deepEqual(undone.keys, before.keys); assert.equal(undone.generated, undefined);
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await page.reload();
+  await expect(page.locator('.busy-overlay')).toHaveCount(0);
+  await expect(page.locator('.generation-details')).toContainText(/AI take ready|Motion · review needed/);
+  const restored = await save('restored.still'); assert.deepEqual(restored.generated, after.generated);
+  console.log('PASS undo, redo, local recovery retain generated motion separately');
+  await page.getByRole('combobox', { name: 'AI motion engine' }).selectOption(provider);
+  const submitted = page.waitForResponse(response => response.url().endsWith('/api/engine/jobs') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Generate another take', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Cancel generation' })).toBeVisible();
+  await submitted;
+  await page.waitForTimeout(750);
+  await page.getByRole('button', { name: 'Cancel generation' }).click();
+  await expect(page.locator('.busy-overlay')).toHaveCount(0);
+  const cancelled = await save('cancelled.still'); assert.deepEqual(cancelled.generated, after.generated);
+  console.log('PASS cancellation preserves completed take');
+  await page.getByRole('button', { name: 'Try the right hand' }).click();
+  await page.getByRole('spinbutton', { name: 'X joint rotation', exact: true }).fill('20');
+  const edited = await save('edited.still'); assert.equal(edited.generated, undefined); assert.equal(edited.keys.length, 6);
+  console.log('PASS editing clears stale generated frames and keeps simple pose timeline');
+  if (provider !== 'cascadeur') {
+  await page.getByRole('switch', { name: 'Floor contact' }).click();
+  await expect(page.getByRole('button', { name: 'Correct with physics' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Correct with physics' }).click();
+  await expect(page.locator('.busy-overlay')).toBeVisible();
+  await expect(page.locator('.busy-overlay')).toHaveCount(0, { timeout: 180000 });
+  await expect(page.locator('.error-toast')).toHaveCount(0);
+  const dynamics = await save('physics.still');
+  assert.equal(dynamics.generation.kind, 'physics');
+  assert.equal(dynamics.generated.length, 121);
+  assert(dynamics.generation.metrics.after.rootForceResidualRmsN < dynamics.generation.metrics.before.rootForceResidualRmsN);
+  console.log(`PASS real dynamics: residual force ${dynamics.generation.metrics.before.rootForceResidualRmsN.toFixed(1)} → ${dynamics.generation.metrics.after.rootForceResidualRmsN.toFixed(1)} N`);
+  await page.screenshot({ path: path.join(output, 'physics-editor.png'), fullPage: true });
+  }
+  assert.deepEqual(errors, []);
+} finally { await browser.close(); }

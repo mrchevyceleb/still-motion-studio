@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-10-08",
+  "scope": "Documented permission and provenance for the named model assets only. Not legal certification, third-party patent clearance, a complete dependency audit, or permission for arbitrary user-uploaded content. This check does not gate local inference.",
+  "providers": {
+    "condmdi": {
+      "name": "CondMDI author random-frames checkpoint",
+      "summary": "MIT code is documented. Commercial permission for the exact checkpoint and downstream outputs is unresolved; the training-data license is restrictive.",
+      "model": {
+        "checkpointPath": ".local/ai-motion/checkpoint/model.safetensors",
+        "sha256": "ffc0429202d91043d0c96ca3473d506a9df17ab5486e442a11f46330f81db361",
+        "source": "https://drive.google.com/file/d/15mYPp2U0VamWfu1SnwCukUUHczY9RPIP/view",
+        "sourceState": "model000750000.pt/model_avg"
+      },
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "license": "MIT",
+          "conditions": [
+            "Retain copyright and permission notices; audit separate dependencies."
+          ],
+          "source": "https://github.com/setarehc/diffusion-motion-inbetweening/blob/main/LICENSE"
+        },
+        "weights": {
+          "status": "unresolved",
+          "detail": "README grants MIT to code; no separate commercial checkpoint grant found in README or downloaded archive.",
+          "source": "https://github.com/setarehc/diffusion-motion-inbetweening#license"
+        },
+        "trainingData": {
+          "status": "restricted",
+          "detail": "HumanML3D originates from AMASS/HumanAct12. AMASS prohibits commercial-use model training under its public dataset license. Downstream pretrained-weight implications require clarification; this is not a blanket determination about every output.",
+          "source": "https://amass.is.tue.mpg.de/license.html"
+        },
+        "outputs": {
+          "status": "unresolved",
+          "detail": "Commercial generated-motion rights and any upstream obligations are not explicitly resolved in the reviewed model terms.",
+          "source": "https://github.com/setarehc/diffusion-motion-inbetweening#license"
+        }
+      },
+      "blockers": [
+        "Obtain a written checkpoint commercial-use/distribution/output grant and resolve the upstream dataset permission chain, or replace this checkpoint with freshly trained cleared-data weights."
+      ],
+      "permissionDraft": "docs/model-permission-requests.md"
+    },
+    "dart": {
+      "name": "DART / DartControl pretrained models",
+      "summary": "Authors explicitly license their code and model Apache-2.0 while retaining separate AMASS/SMPL obligations.",
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "license": "Apache-2.0",
+          "source": "https://github.com/zkf1997/DART#license"
+        },
+        "weights": {
+          "status": "permitted",
+          "license": "Apache-2.0",
+          "source": "https://github.com/zkf1997/DART#license"
+        },
+        "trainingData": {
+          "status": "restricted",
+          "detail": "AMASS/BABEL/HumanML3D and SMPL-X/H retain their respective terms.",
+          "source": "https://github.com/zkf1997/DART#data-and-model-checkpoints"
+        },
+        "outputs": {
+          "status": "unresolved",
+          "detail": "Third-party body-model/data obligations and the intended output pipeline need clearance.",
+          "source": "https://github.com/zkf1997/DART#license"
+        }
+      },
+      "blockers": [
+        "Not a verified commercial substitute until its exact checkpoint and body-model/data dependencies are cleared."
+      ]
+    },
+    "anytop": {
+      "name": "AnyTop published checkpoints",
+      "summary": "Model repository expressly limits pretrained checkpoints to non-commercial research, separate from MIT code.",
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "license": "MIT",
+          "source": "https://github.com/Anytop2025/Anytop#license"
+        },
+        "weights": {
+          "status": "restricted",
+          "license": "Research-only",
+          "source": "https://huggingface.co/inbar2344/AnyTop/raw/main/LICENSE"
+        },
+        "trainingData": {
+          "status": "unresolved",
+          "detail": "Truebones ZOO rights are not granted by model terms; processed data is withheld pending clarification.",
+          "source": "https://github.com/Anytop2025/Anytop"
+        },
+        "outputs": {
+          "status": "unresolved",
+          "detail": "No commercial inference/output permission is established by research-only checkpoint terms.",
+          "source": "https://huggingface.co/inbar2344/AnyTop/raw/main/LICENSE"
+        }
+      }
+    },
+    "unimate": {
+      "name": "UniMate published checkpoints",
+      "summary": "Checkpoint license is CC-BY-NC-4.0; MIT applies separately to code.",
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "license": "MIT",
+          "source": "https://github.com/Friedrich-M/UniMate"
+        },
+        "weights": {
+          "status": "restricted",
+          "license": "CC-BY-NC-4.0",
+          "source": "https://huggingface.co/Linzhan/UniMate/raw/main/LICENSE"
+        },
+        "trainingData": {
+          "status": "unresolved",
+          "detail": "License excludes third-party Truebones ZOO, Mixamo, and Objaverse-XL rights.",
+          "source": "https://huggingface.co/Linzhan/UniMate/raw/main/LICENSE"
+        },
+        "outputs": {
+          "status": "unresolved",
+          "detail": "Commercial checkpoint use is outside this published grant.",
+          "source": "https://huggingface.co/Linzhan/UniMate/raw/main/LICENSE"
+        }
+      }
+    },
+    "owned_humanoid": {
+      "name": "Still humanoid CC0 motion prior",
+      "summary": "Fresh project-trained weights from the recorded author CC0 motion assets. This establishes an asset-permission path, not motion-quality or legal certification.",
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "detail": "Project-authored network/trainer/geometry; package dependency notices remain separate."
+        },
+        "weights": {
+          "status": "project_trained",
+          "detail": "Fresh random initialization, no external pretrained model; exact trained artifact pinned above."
+        },
+        "trainingData": {
+          "status": "permitted",
+          "license": "CC0-1.0",
+          "source": "https://quaternius.com/packs/universalanimationlibrary.html",
+          "provenance": ".local/owned-humanoid/sources.json",
+          "detail": "Only recorded author CC0 clips were used; train-only statistics, entire source clip identities held out."
+        },
+        "outputs": {
+          "status": "permitted",
+          "detail": "No additional project model-output restriction; copyright/data permission derives from the documented CC0 source. User inputs and unrelated third-party rights remain separate.",
+          "source": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.en"
+        }
+      },
+      "blockers": [],
+      "model": {
+        "checkpointPath": ".local/owned-humanoid/model/model.safetensors",
+        "sha256": "9cf001f219c4200d143122734da2839e01301f7e2135aebfe2d04b61f14732f7",
+        "initializedFrom": "random",
+        "pretrainedWeightsUsed": false,
+        "parameters": 860479,
+        "trainingClipCount": 65,
+        "heldOutClipCount": 16
+      },
+      "evidenceArtifacts": [
+        {
+          "path": ".local/owned-humanoid/model/model.json",
+          "sha256": "ff9c6180779910d7c29162caa9f463bd34ffe99931f9134724e6e1da4b51298e"
+        },
+        {
+          "path": ".local/owned-humanoid/dataset/index.json",
+          "sha256": "2294109407f070eeaef8a6bad11fae0f52609dff3f862f5f7c5881e3303f261d"
+        },
+        {
+          "path": ".local/owned-humanoid/sources.json",
+          "sha256": "5345c07f9c43ee363a7178e726884e301e7f68a31161bc52a8d602da2878b341"
+        }
+      ],
+      "conditions": [
+        "Preserve dependency notices when packaging code/libraries.",
+        "Do not silently mix restricted training data or pretrained weights into this model lineage.",
+        "Keep the source and training provenance with the exact checkpoint."
+      ]
+    },
+    "quadruped": {
+      "name": "Still Quadruped",
+      "rights": {
+        "code": {
+          "status": "permitted",
+          "detail": "Project-authored network/trainer/geometry; package dependency notices remain separate."
+        },
+        "weights": {
+          "status": "project_trained",
+          "detail": "Fresh random initialization, no external pretrained model; exact trained artifact pinned above."
+        },
+        "trainingData": {
+          "status": "permitted",
+          "license": "CC0-1.0",
+          "source": "https://quaternius.com/packs/ultimateanimatedanimals.html",
+          "provenance": ".local/quadruped/quaternius/provenance.json",
+          "detail": "Only recorded author CC0 clips were used; train-only statistics, entire source clip identities held out."
+        },
+        "outputs": {
+          "status": "permitted",
+          "detail": "No additional project model-output restriction; copyright/data permission derives from the documented CC0 source. User inputs and unrelated third-party rights remain separate.",
+          "source": "https://creativecommons.org/publicdomain/zero/1.0/legalcode.en"
+        }
+      },
+      "summary": "Fresh project-trained weights from the recorded author CC0 motion assets. This establishes an asset-permission path, not motion-quality or legal certification.",
+      "model": {
+        "checkpointPath": ".local/quadruped/model/model.safetensors",
+        "sha256": "74990bcc8f6e25a424a387a302bd6c2435d22cf2e224e03ba810120c63751747",
+        "initializedFrom": "random",
+        "pretrainedWeightsUsed": false,
+        "parameters": 855862,
+        "trainingClipCount": 126,
+        "heldOutClipCount": 13
+      },
+      "blockers": [],
+      "evidenceArtifacts": [
+        {
+          "path": ".local/quadruped/model/model.json",
+          "sha256": "0b1aabdf3eaf636ce4758a64801d1cc604b0aaca5e330475b2f57ad22c6cc9e6"
+        },
+        {
+          "path": ".local/quadruped/corpus/index.json",
+          "sha256": "3fd692e1fd5037c4363facbf123eb92bd8a76bd4d9e5e4eff477483844fdd492"
+        },
+        {
+          "path": ".local/quadruped/quaternius/provenance.json",
+          "sha256": "4928c63e1e92ad6d139bea20d24329f3183c95e0776a568b3150d787b826c689"
+        }
+      ],
+      "conditions": [
+        "Preserve dependency notices when packaging code/libraries.",
+        "Do not silently mix restricted training data or pretrained weights into this model lineage.",
+        "Keep the source and training provenance with the exact checkpoint."
+      ]
+    }
+  },
+  "aliases": {
+    "inbetween": "condmdi",
+    "owned_quadruped": "quadruped"
+  }
+}

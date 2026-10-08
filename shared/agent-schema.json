@@ -1,0 +1,952 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://still.local/schemas/agent-api-v1.json",
+  "title": "Still local agent API",
+  "version": 1,
+  "description": "Authenticated commands operate on one connected browser session. Bone positions and scales preserve source-local units (imported FBX local positions may use centimeters); quaternions use x,y,z,w. pose.move targets use normalized editor-world meters in the Y-up, +Z-forward scene. Commands are never retried after dispatch. Use explicit UUID command IDs for idempotency and expectedRevision to protect concurrent edits. Revision tracks document, rig, and FPS changes, not playback ticks. Set expectedRevision when an operation depends on an inspected document.",
+  "transport": {
+    "basePath": "/api/agent",
+    "authentication": "Bearer token from .local/agent/connection.json. Browser bridge obtains it from same-origin GET /bootstrap.",
+    "commandStates": [
+      "queued",
+      "running",
+      "done",
+      "error",
+      "cancelled"
+    ],
+    "pollSeconds": 15,
+    "sessionStaleSeconds": 60,
+    "commandTimeoutSeconds": 900,
+    "cancelAcknowledgementGraceSeconds": 30,
+    "retentionSeconds": 86400,
+    "maxUploadBytes": 209715200,
+    "maxJsonBytes": 209715200,
+    "maxSessions": 16,
+    "maxJobs": 512,
+    "maxQueuedPerSession": 64,
+    "maxStoredFiles": 128,
+    "maxStoredFileBytes": 2147483648,
+    "maxStoredJobBytes": 536870912,
+    "errors": "HTTP failures return {error:{code,message,details?}}. Job failures use the same error object. Disconnection or missing completion acknowledgement can produce an error with details.uncertain=true; inspect the scene before issuing a new mutation. Cancelling a running command remains pending until browser acknowledgement, or ends as an uncertain timeout if acknowledgement is lost.",
+    "files": "POST /files?name=<filename> with raw bytes returns {fileId,name,size,mime,downloadUrl}; authenticated GET /files/:fileId downloads. URLs are relative to the engine origin. Files referenced by retained jobs are protected. Unreferenced files expire after 24 hours; capacity exhaustion returns a useful error instead of removing referenced files.",
+    "idempotency": "Command identities are journaled for 24 hours. A restarted service never redispatches journaled commands; interrupted or unavailable results require scene inspection. Expired identities must not be used as automatic retries."
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "humanoid",
+        "quadruped"
+      ]
+    },
+    "time": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 600
+    },
+    "fps": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "vec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number",
+        "minimum": -100000,
+        "maximum": 100000
+      }
+    },
+    "quat": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "number",
+        "minimum": -1,
+        "maximum": 1
+      }
+    },
+    "scale": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number",
+        "minimum": 0.001,
+        "maximum": 100
+      }
+    },
+    "bone": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      ],
+      "description": "Stable skeleton index is preferred. A name must identify exactly one bone; duplicate names are rejected."
+    },
+    "bonePose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "quaternion",
+        "scale"
+      ],
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/vec3"
+        },
+        "quaternion": {
+          "$ref": "#/$defs/quat"
+        },
+        "scale": {
+          "$ref": "#/$defs/scale"
+        }
+      }
+    },
+    "pose": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "#/$defs/bonePose"
+      },
+      "description": "One local transform for every bone, in skeleton.inspect order. Quaternions must be nonzero and are normalized by the browser."
+    },
+    "boneEdit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bone"
+      ],
+      "properties": {
+        "bone": {
+          "$ref": "#/$defs/bone"
+        },
+        "position": {
+          "$ref": "#/$defs/vec3"
+        },
+        "quaternion": {
+          "$ref": "#/$defs/quat"
+        },
+        "rotationDegrees": {
+          "$ref": "#/$defs/vec3",
+          "description": "Local XYZ Euler rotation in degrees."
+        },
+        "scale": {
+          "$ref": "#/$defs/scale"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "position"
+          ]
+        },
+        {
+          "required": [
+            "quaternion"
+          ]
+        },
+        {
+          "required": [
+            "rotationDegrees"
+          ]
+        },
+        {
+          "required": [
+            "scale"
+          ]
+        }
+      ],
+      "not": {
+        "required": [
+          "quaternion",
+          "rotationDegrees"
+        ]
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "interpolation": {
+          "type": "string",
+          "enum": [
+            "smooth",
+            "linear",
+            "stepped"
+          ]
+        },
+        "floorContact": {
+          "type": "boolean"
+        },
+        "gravity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 30
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "required": [
+        "fileId",
+        "name",
+        "size",
+        "mime",
+        "downloadUrl"
+      ],
+      "properties": {
+        "fileId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mime": {
+          "type": "string"
+        },
+        "downloadUrl": {
+          "type": "string"
+        }
+      }
+    },
+    "empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "exportFps": {
+      "type": "integer",
+      "enum": [
+        24,
+        30,
+        60
+      ]
+    }
+  },
+  "methods": {
+    "scene.inspect": {
+      "description": "Inspect the scene, current revision, timeline, selection, warnings, and available engines.",
+      "mutating": false,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Compact scene state including revision."
+    },
+    "scene.new": {
+      "description": "Create a new humanoid or quadruped scene. Existing work is archived by the application.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          },
+          "blank": {
+            "type": "boolean"
+          },
+          "name": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "scene.import": {
+      "description": "Import a previously uploaded FBX, GLB, or supported project file.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fileId"
+        ],
+        "properties": {
+          "fileId": {
+            "$ref": "#/$defs/uuid"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "scene.project": {
+      "description": "Read the complete editable project document.",
+      "mutating": false,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "{document,revision} where document is the complete ProjectDocument."
+    },
+    "scene.restore": {
+      "description": "Restore a complete project document after application validation; existing work is archived.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "document"
+        ],
+        "properties": {
+          "document": {
+            "type": "object",
+            "required": [
+              "version",
+              "name",
+              "duration",
+              "fps",
+              "keys",
+              "settings",
+              "boneNames",
+              "character"
+            ],
+            "properties": {
+              "version": {
+                "const": 1
+              },
+              "name": {
+                "$ref": "#/$defs/name"
+              },
+              "duration": {
+                "type": "number",
+                "minimum": 0.1,
+                "maximum": 600
+              },
+              "fps": {
+                "$ref": "#/$defs/fps"
+              },
+              "keys": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 20000
+              },
+              "settings": {
+                "type": "object"
+              },
+              "boneNames": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "character": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state. Full project structure and embedded objects are additionally validated by the browser."
+    },
+    "scene.save": {
+      "description": "Save browser recovery and export the current project to a downloadable local .still file.",
+      "mutating": false,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "File reference {fileId,name,size,mime,downloadUrl}."
+    },
+    "scene.archives": {
+      "description": "List recoverable scene archives stored by the application.",
+      "mutating": false,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Archive metadata."
+    },
+    "scene.restoreArchive": {
+      "description": "Restore an application archive by its returned ID.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "skeleton.inspect": {
+      "description": "Inspect stable bone indices, unique names, parent indices, local poses, and world positions.",
+      "mutating": false,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Skeleton inspection including bones and rest pose."
+    },
+    "skeleton.rig": {
+      "description": "Add a heuristic starter rig to an unrigged model. Existing skin bindings are preserved.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state including rig warnings."
+    },
+    "skeleton.kind": {
+      "description": "Set the humanoid/quadruped classification without replacing the existing skeleton.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/kind"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "pose.get": {
+      "description": "Sample the current animation at time or the playhead.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "{time,pose}."
+    },
+    "pose.set": {
+      "description": "Set a full pose or a batch of local bone edits, creating/updating a keyframe. Generated motion is invalidated.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          },
+          "pose": {
+            "$ref": "#/$defs/pose"
+          },
+          "bones": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4096,
+            "items": {
+              "$ref": "#/$defs/boneEdit"
+            }
+          },
+          "label": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "pose"
+            ]
+          },
+          {
+            "required": [
+              "bones"
+            ]
+          }
+        ]
+      },
+      "resultDescription": "Updated pose/key and revision."
+    },
+    "pose.move": {
+      "description": "Move a joint toward a world-space target using the application's IK solver and record the resulting pose. IK uses the existing four-ancestor chain.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bone",
+          "target"
+        ],
+        "properties": {
+          "bone": {
+            "$ref": "#/$defs/bone"
+          },
+          "target": {
+            "$ref": "#/$defs/vec3"
+          },
+          "time": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "Updated pose/key and revision. An unreachable target may only be approached."
+    },
+    "keys.list": {
+      "description": "List authored keyframes; includePoses returns full local transforms.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "includePoses": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultDescription": "{keys:[{id,time,label?,pose?}]} including revision where available."
+    },
+    "keys.put": {
+      "description": "Create or replace a keyframe at time using the supplied pose or a sample of the current animation.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "time"
+        ],
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          },
+          "pose": {
+            "$ref": "#/$defs/pose"
+          },
+          "label": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "resultDescription": "Updated keyframe and revision."
+    },
+    "keys.delete": {
+      "description": "Delete one authored keyframe, subject to the application's minimum-key constraints.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "resultDescription": "Updated keys and revision."
+    },
+    "keys.move": {
+      "description": "Move an authored keyframe to a new time.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "time"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "time": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "Updated keys and revision."
+    },
+    "keys.simplify": {
+      "description": "Reduce authored keys to important poses, retaining animation endpoints.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 120
+          }
+        }
+      },
+      "resultDescription": "Updated authored keys and revision."
+    },
+    "timeline.set": {
+      "description": "Set playhead, frame rate, or duration. retime scales authored times when changing duration.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          },
+          "fps": {
+            "$ref": "#/$defs/fps"
+          },
+          "duration": {
+            "type": "number",
+            "minimum": 0.1,
+            "maximum": 600
+          },
+          "retime": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultDescription": "Updated timeline state and revision."
+    },
+    "playback.set": {
+      "description": "Start or pause browser playback.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "playing"
+        ],
+        "properties": {
+          "playing": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultDescription": "Updated playback state."
+    },
+    "settings.set": {
+      "description": "Update interpolation or physics settings.",
+      "mutating": true,
+      "paramsSchema": {
+        "$ref": "#/$defs/settings"
+      },
+      "resultDescription": "Updated settings and revision."
+    },
+    "view.set": {
+      "description": "Change viewport camera, overlays, editing tool, or selected joint.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "cameraView": {
+            "type": "string",
+            "enum": [
+              "perspective",
+              "front",
+              "side"
+            ]
+          },
+          "showRig": {
+            "type": "boolean"
+          },
+          "showGhosts": {
+            "type": "boolean"
+          },
+          "tool": {
+            "type": "string",
+            "enum": [
+              "move",
+              "rotate"
+            ]
+          },
+          "selectedBone": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/bone"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "camera": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "position",
+              "target"
+            ],
+            "properties": {
+              "position": {
+                "$ref": "#/$defs/vec3"
+              },
+              "target": {
+                "$ref": "#/$defs/vec3"
+              },
+              "fov": {
+                "type": "number",
+                "minimum": 10,
+                "maximum": 120
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "camera",
+            "cameraView"
+          ]
+        }
+      },
+      "resultDescription": "Updated view state."
+    },
+    "history.undo": {
+      "description": "Undo the most recent edit.",
+      "mutating": true,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "history.redo": {
+      "description": "Redo the most recently undone edit.",
+      "mutating": true,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "motion.run": {
+      "description": "Run an available local learned-motion or physics provider. The command remains active until completion or acknowledged cancellation.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "owned_humanoid",
+              "quadruped",
+              "inbetween",
+              "physics",
+              "cascadeur",
+              "cascadeur_physics"
+            ]
+          },
+          "seed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "simplifyCount": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 120
+          }
+        }
+      },
+      "resultDescription": "Updated scene state, provider metrics, and warnings."
+    },
+    "motion.clear": {
+      "description": "Discard generated motion while keeping editable authored poses.",
+      "mutating": true,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Updated compact scene state."
+    },
+    "motion.recover": {
+      "description": "Request cleanup/recovery of a interrupted native motion-engine session.",
+      "mutating": true,
+      "paramsSchema": {
+        "$ref": "#/$defs/empty"
+      },
+      "resultDescription": "Recovery status."
+    },
+    "export": {
+      "description": "Export the scene as GLB, editable project, Unreal package, or viewport PNG to local staging.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "format"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "enum": [
+              "glb",
+              "still",
+              "unreal",
+              "png"
+            ]
+          },
+          "name": {
+            "$ref": "#/$defs/name"
+          },
+          "fps": {
+            "$ref": "#/$defs/exportFps"
+          }
+        }
+      },
+      "resultDescription": "File reference {fileId,name,size,mime,downloadUrl}, plus optional warnings."
+    },
+    "scene.rename": {
+      "description": "Rename the current scene.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "$ref": "#/$defs/name"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "resultDescription": "Updated compact scene state including revision."
+    },
+    "clips.list": {
+      "description": "List animation clips embedded in the imported character.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "resultDescription": "{clips,revision}."
+    },
+    "clips.select": {
+      "description": "Load an embedded source animation by its clips.list index.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          }
+        },
+        "required": [
+          "index"
+        ]
+      },
+      "resultDescription": "Updated compact scene state including revision."
+    },
+    "pose.reset": {
+      "description": "Record the character rest pose at time or the current playhead.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state including revision."
+    },
+    "motion.quickGround": {
+      "description": "Apply the existing procedural floor correction, not a learned motion model.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "resultDescription": "Updated compact scene state including revision."
+    },
+    "keys.replace": {
+      "description": "Replace all authored keys atomically as one undoable edit. Supply at least two full poses and distinct times within the timeline.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "keys": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 72001,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "time",
+                "pose"
+              ],
+              "properties": {
+                "time": {
+                  "$ref": "#/$defs/time"
+                },
+                "pose": {
+                  "$ref": "#/$defs/pose"
+                },
+                "label": {
+                  "$ref": "#/$defs/name"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "keys"
+        ]
+      },
+      "resultDescription": "Updated compact scene state including revision."
+    }
+  }
+}
