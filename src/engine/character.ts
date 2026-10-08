@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import type { CharacterAsset, Pose, RigKind, Vec3 } from '../types';
+import { fitAnatomicalRig, influenceFamily, type AutoRigDiagnostics } from './anatomicalRig';
 
 const DISPLAY_HEIGHT = 2.4;
 const WHITE_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -349,30 +350,47 @@ function cloneMaterials(root: THREE.Object3D): void {
   });
 }
 
-function fittedJoints(kind: RigKind, bounds: THREE.Box3): JointSpec[] {
-  const size = bounds.getSize(new THREE.Vector3());
-  const center = bounds.getCenter(new THREE.Vector3());
-  const specifications = kind === 'humanoid' ? humanoidJoints() : quadrupedJoints();
-  return specifications.map((spec) => {
-    let [x, y, z] = spec.position;
-    if (kind === 'humanoid') {
-      // The starter rig assumes an upright, centered T-pose. It is deliberately
-      // conservative; arbitrary meshes need landmark fitting for production use.
-      if (/Shoulder$/.test(spec.name)) { x = Math.sign(x) * 0.26; y = 1.84; }
-      if (/^(Left|Right)Arm$/.test(spec.name)) { x = Math.sign(x) * 0.39; y = 1.84; }
-      if (/ForeArm$/.test(spec.name)) { x = Math.sign(x) * 0.70; y = 1.84; }
-      if (/Hand$/.test(spec.name)) { x = Math.sign(x) * 1.02; y = 1.84; }
-      const widthScale = size.x / 2.22;
-      x *= widthScale;
-      z *= Math.min(size.y / 2.4, size.z / 0.45);
-      y = y / 2.4 * size.y;
-    } else {
-      x = x / 0.80 * size.x;
-      y = y / 2.48 * size.y;
-      z = z / 2.75 * size.z;
+export function getAutoRigDiagnostics(asset: CharacterAsset): AutoRigDiagnostics | null {
+  const value = asset.root.userData.stillAutoRig as AutoRigDiagnostics | undefined;
+  return value?.version === 1 && value.method === 'geometry-sections' ? structuredClone(value) : null;
+}
+
+function smoothSkinWeights(geometry: THREE.BufferGeometry, bones: THREE.Bone[], indices: Uint16Array, weights: Float32Array): void {
+  const vertices = geometry.getAttribute('position').count;
+  // Bound scratch storage to ~25 MB. Large meshes still receive the same
+  // anatomical weights; a lighter export enables the topology smoothing pass.
+  if (vertices > 250_000) return;
+  const totals = new Float32Array(vertices * bones.length);
+  const families = bones.map(bone => influenceFamily(bone.name));
+  for (let v = 0; v < vertices; v++) for (let n = 0; n < 4; n++) totals[v * bones.length + indices[v * 4 + n]] += weights[v * 4 + n] * 4;
+  const addNeighbor = (destination: number, source: number) => {
+    const a = families[indices[destination * 4]], b = families[indices[source * 4]];
+    if (a !== b && a !== 'Torso' && b !== 'Torso') return;
+    for (let n = 0; n < 4; n++) totals[destination * bones.length + indices[source * 4 + n]] += weights[source * 4 + n];
+  };
+  const index = geometry.getIndex();
+  const count = index?.count ?? vertices;
+  for (let triangle = 0; triangle + 2 < count; triangle += 3) {
+    const a = index ? index.getX(triangle) : triangle;
+    const b = index ? index.getX(triangle + 1) : triangle + 1;
+    const c = index ? index.getX(triangle + 2) : triangle + 2;
+    if (a >= vertices || b >= vertices || c >= vertices || Math.min(a, b, c) < 0) throw new Error('The mesh contains an invalid triangle index. Re-export its geometry before adding a rig.');
+    addNeighbor(a, b); addNeighbor(a, c); addNeighbor(b, a); addNeighbor(b, c); addNeighbor(c, a); addNeighbor(c, b);
+  }
+  for (let v = 0; v < vertices; v++) {
+    const best = [0, 0, 0, 0], scores = [0, 0, 0, 0];
+    for (let bone = 0; bone < bones.length; bone++) {
+      const score = totals[v * bones.length + bone];
+      for (let slot = 0; slot < 4; slot++) if (score > scores[slot]) {
+        best.splice(slot, 0, bone); best.length = 4;
+        scores.splice(slot, 0, score); scores.length = 4;
+        break;
+      }
     }
-    return { ...spec, position: [center.x + x, bounds.min.y + y, center.z + z] };
-  });
+    const sum = scores.reduce((a, b) => a + b, 0);
+    if (!(sum > 0) || !Number.isFinite(sum)) throw new Error('The mesh produced invalid skin weights. Re-export a clean neutral-pose mesh.');
+    for (let slot = 0; slot < 4; slot++) { indices[v * 4 + slot] = best[slot]; weights[v * 4 + slot] = scores[slot] / sum; }
+  }
 }
 
 export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): CharacterAsset {
@@ -384,21 +402,59 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
   }
   const root = cloneSkeleton(asset.root) as THREE.Group;
   cloneMaterials(root);
+  try {
   root.updateMatrixWorld(true);
   const rootInverse = root.matrixWorld.clone().invert();
   const meshes: THREE.Mesh[] = [];
   const bounds = new THREE.Box3();
   const point = new THREE.Vector3();
+  let vertexCount = 0;
+  let triangleCount = 0;
+  root.traverse(object => {
+    if (object instanceof THREE.Mesh) {
+      const count = object.geometry.getAttribute('position')?.count ?? 0;
+      vertexCount += count;
+      triangleCount += Math.floor((object.geometry.getIndex()?.count ?? count) / 3);
+    }
+  });
+  if (vertexCount > 2_000_000) throw new Error('This mesh has over two million vertices. Export a lighter character before adding an automatic rig.');
+  const sampleStride = Math.max(1, Math.ceil(vertexCount / 30_000));
+  const triangleStride = Math.max(1, Math.ceil(triangleCount / 30_000));
+  const vertices: THREE.Vector3[] = [];
+  let cursor = 0;
+  let triangleCursor = 0;
+  const trianglePoint = new THREE.Vector3();
+  const triangleCorner = new THREE.Vector3();
   root.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     const position = object.geometry.getAttribute('position');
     if (!position) return;
     meshes.push(object);
     const transform = rootInverse.clone().multiply(object.matrixWorld);
-    for (let index = 0; index < position.count; index++) bounds.expandByPoint(point.fromBufferAttribute(position, index).applyMatrix4(transform));
+    for (let index = 0; index < position.count; index++) {
+      point.fromBufferAttribute(position, index).applyMatrix4(transform);
+      if (![point.x, point.y, point.z].every(Number.isFinite)) throw new Error('This mesh contains invalid vertex coordinates. Re-export a clean mesh before adding a rig.');
+      bounds.expandByPoint(point);
+      if (cursor++ % sampleStride === 0) vertices.push(point.clone());
+    }
+    // Face samples fill the gaps between sparse polygon rings. Without these,
+    // a low-poly belly can look like two separate legs to a point-only fitter.
+    const indices = object.geometry.getIndex();
+    const count = indices?.count ?? position.count;
+    for (let offset = 0; offset + 2 < count; offset += 3) {
+      trianglePoint.set(0, 0, 0);
+      for (let corner = 0; corner < 3; corner++) {
+        const index = indices ? indices.getX(offset + corner) : offset + corner;
+        if (!Number.isInteger(index) || index < 0 || index >= position.count) throw new Error('The mesh contains an invalid triangle index. Re-export its geometry before adding a rig.');
+        trianglePoint.add(triangleCorner.fromBufferAttribute(position, index));
+      }
+      if (triangleCursor++ % triangleStride === 0) vertices.push(trianglePoint.clone().multiplyScalar(1 / 3).applyMatrix4(transform));
+    }
   });
   if (meshes.length === 0 || bounds.isEmpty()) throw new Error('A mesh is needed to create a starter rig.');
-  createSkeleton(root, fittedJoints(kind, bounds));
+  if (vertices.length < 32) throw new Error('There is not enough character geometry to identify its limbs. Import a complete character mesh.');
+  const fitted = fitAnatomicalRig(kind, vertices, bounds);
+  createSkeleton(root, fitted.joints);
   const bones: THREE.Bone[] = [];
   root.traverse((object) => { if (object instanceof THREE.Bone) bones.push(object); });
   const skeleton = new THREE.Skeleton(bones);
@@ -411,6 +467,7 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
   });
   const closest = new THREE.Vector3();
   const epsilon = Math.max(bounds.getSize(new THREE.Vector3()).y * 0.018, 0.001);
+  const families = bones.map(bone => influenceFamily(bone.name));
   for (const mesh of meshes) {
     const positions = mesh.geometry.getAttribute('position');
     const indices = new Uint16Array(positions.count * 4);
@@ -420,15 +477,26 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
       point.fromBufferAttribute(positions, vertex).applyMatrix4(transform);
       const candidates = segments.map((lines, index) => ({
         index,
-        distance: Math.min(...lines.map((line) => line.closestPointToPoint(point, true, closest).distanceToSquared(point))),
-      })).sort((a, b) => a.distance - b.distance).slice(0, 4);
-      const scores = candidates.map((candidate) => 1 / Math.pow(candidate.distance + epsilon * epsilon, 2));
+        distance: Math.min(...lines.map(line => line.start.distanceToSquared(line.end) < 1e-16
+          ? line.start.distanceToSquared(point)
+          : line.closestPointToPoint(point, true, closest).distanceToSquared(point))),
+      })).sort((a, b) => a.distance - b.distance);
+      const family = families[candidates[0].index];
+      const scored = candidates.map(candidate => {
+        const other = families[candidate.index];
+        const attachment = family === 'Torso' || other === 'Torso';
+        const factor = other === family ? 1 : attachment ? .2 : .002;
+        return { ...candidate, score: factor / Math.pow(candidate.distance + epsilon * epsilon, 2) };
+      }).sort((a, b) => b.score - a.score).slice(0, 4);
+      const scores = scored.map(candidate => candidate.score);
       const total = scores.reduce((sum, score) => sum + score, 0);
-      candidates.forEach((candidate, influence) => {
+      if (!(total > 0) || !Number.isFinite(total)) throw new Error('The mesh could not be bound safely. Re-export a clean neutral-pose character.');
+      scored.forEach((candidate, influence) => {
         indices[vertex * 4 + influence] = candidate.index;
         weights[vertex * 4 + influence] = scores[influence] / total;
       });
     }
+    smoothSkinWeights(mesh.geometry, bones, indices, weights);
     mesh.geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4));
     mesh.geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4));
     const skinned = new THREE.SkinnedMesh(mesh.geometry, mesh.material);
@@ -457,11 +525,61 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
   // All mesh bindings use the same rest-pose skeleton. Calculate inverses once
   // after the skeleton has its final parent transforms.
   skeleton.calculateInverses();
+  skeleton.update();
+  const height = bounds.getSize(new THREE.Vector3()).y;
+  let maxBindError = 0;
+  const skin = new THREE.Vector3();
+  const original = new THREE.Vector3();
+  const skinnedMeshes: THREE.SkinnedMesh[] = [];
+  root.traverse(object => { if (object instanceof THREE.SkinnedMesh) skinnedMeshes.push(object); });
+  for (const mesh of skinnedMeshes) {
+    const positions = mesh.geometry.getAttribute('position');
+    for (let vertex = 0; vertex < positions.count; vertex += Math.max(1, Math.floor(positions.count / 4096))) {
+      original.fromBufferAttribute(positions, vertex);
+      mesh.applyBoneTransform(vertex, skin.copy(original));
+      const error = original.distanceTo(skin);
+      if (!Number.isFinite(error)) throw new Error('The mesh produced an invalid bind pose. Its original mesh has been kept.');
+      maxBindError = Math.max(maxBindError, error * mesh.getWorldScale(point).length() / Math.sqrt(3));
+    }
+  }
+  if (maxBindError > height * 1e-4) throw new Error('The new rig would move the mesh in its rest pose. Apply its transforms and re-export before rigging.');
+  const savedQuaternions = bones.map(bone => bone.quaternion.clone());
+  bones.forEach(bone => {
+    if (/ForeArm$/.test(bone.name)) bone.rotateZ(.2);
+    else if (/^(Left|Right)Leg$|LowerLeg$/.test(bone.name)) bone.rotateX(.2);
+  });
+  root.updateMatrixWorld(true);
+  skeleton.update();
+  let maxBendDisplacement = 0;
+  for (const mesh of skinnedMeshes) {
+    const positions = mesh.geometry.getAttribute('position');
+    const localToRoot = rootInverse.clone().multiply(mesh.matrixWorld);
+    for (let vertex = 0; vertex < positions.count; vertex += Math.max(1, Math.floor(positions.count / 1024))) {
+      original.fromBufferAttribute(positions, vertex);
+      mesh.applyBoneTransform(vertex, skin.copy(original));
+      original.applyMatrix4(localToRoot); skin.applyMatrix4(localToRoot);
+      const distance = original.distanceTo(skin);
+      if (!Number.isFinite(distance)) throw new Error('The mesh produced invalid vertices during a bend check. Its original mesh has been kept.');
+      maxBendDisplacement = Math.max(maxBendDisplacement, distance);
+    }
+  }
+  bones.forEach((bone, index) => bone.quaternion.copy(savedQuaternions[index]));
+  root.updateMatrixWorld(true);
+  skeleton.update();
+  if (maxBendDisplacement > height * .35) throw new Error('A small test bend stretched the character too far. Use a neutral A-pose or T-pose and apply mesh transforms before rigging.');
+  fitted.diagnostics.maxBindError = maxBindError;
+  fitted.diagnostics.maxBendDisplacement = maxBendDisplacement;
+  root.userData.stillAutoRig = fitted.diagnostics;
   const warnings = asset.warnings.filter((warning) => !warning.startsWith('No rig found'));
-  warnings.push(kind === 'humanoid'
-    ? 'Starter rig: automatic distance-based weights for upright T-pose models. Joint placement and bends may need refinement; this is not a trained auto-rigging model.'
-    : 'Starter rig: automatic distance-based weights for standing quadrupeds facing +Z. Proportions and bends may need refinement; this is not a trained auto-rigging model.');
+  warnings.push(...fitted.diagnostics.warnings);
+  warnings.push('Automatic rig passed rest-pose and small-bend checks. This is geometry fitting; inspect deformation before using extreme poses.');
   return makeAsset(root, kind, asset.name, 'import', [], warnings);
+  } catch (error) {
+    // All geometry/materials belong to the clone; never dispose the original
+    // character when fitting or a validation check rejects the replacement.
+    disposeCharacter({ ...asset, root });
+    throw error;
+  }
 }
 
 export async function exportCharacterGLB(asset: CharacterAsset, clip?: THREE.AnimationClip): Promise<ArrayBuffer> {

@@ -20,7 +20,6 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 import mujoco
 import numpy as np
 from scipy.optimize import least_squares
-from scipy.ndimage import binary_closing, binary_opening
 from scipy.sparse import lil_matrix
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
@@ -257,12 +256,18 @@ def _contact_schedule(samples, times, proxy):
     bottoms = np.asarray([sample["bottoms"] for sample in samples])
     velocity = np.gradient(feet, times, axis=0) if len(times) > 1 else np.zeros_like(feet)
     speed = np.linalg.norm(velocity[:, :, [0, 2]], axis=2)
-    # A low swing foot is not a stance. Reject fast horizontal/vertical travel
-    # and remove single-frame detections before assigning stationary targets.
-    active = (bottoms < proxy.height * .015) & (speed < proxy.height * .18) & (np.abs(velocity[:, :, 1]) < proxy.height * .18)
+    # Schmitt thresholds keep a planted foot from flickering off during small
+    # noisy excursions, but liftoff/airborne frames cannot be bridged merely by
+    # a fixed number of samples. All thresholds scale with character height.
+    vertical = np.abs(velocity[:, :, 1])
+    enter = (bottoms < proxy.height * .015) & (speed < proxy.height * .18) & (vertical < proxy.height * .18)
+    remain = (bottoms < proxy.height * .028) & (speed < proxy.height * .30) & (vertical < proxy.height * .25)
+    active = np.zeros_like(enter)
     for foot in range(len(proxy.feet)):
-        padded = np.pad(active[:, foot], 3, mode="edge")
-        active[:, foot] = binary_opening(binary_closing(padded, structure=np.ones(3)), structure=np.ones(3))[3:-3]
+        planted = False
+        for index in range(len(times)):
+            planted = bool(enter[index, foot] or (planted and remain[index, foot]))
+            active[index, foot] = planted
     targets = feet.copy()
     for foot in range(len(proxy.feet)):
         start = 0
@@ -270,11 +275,14 @@ def _contact_schedule(samples, times, proxy):
             if not active[start, foot]: start += 1; continue
             end = start + 1
             while end < len(times) and active[end, foot]: end += 1
-            if end - start < 2:
+            if end - start < 2 or times[end - 1] - times[start] < .04:
                 active[start:end, foot] = False
             else:
                 # A stance segment has one stationary support target.
-                anchor = np.median(feet[start:end, foot], axis=0)
+                # Prefer the quietest measured part of the stance, so heel
+                # strike/toe-off drift does not drag the whole contact target.
+                steady = np.argsort(speed[start:end, foot])[:max(2, (end - start) // 2)] + start
+                anchor = np.median(feet[steady, foot], axis=0)
                 anchor[1] = proxy.ground + proxy.foot_radii[foot]
                 targets[start:end, foot] = anchor
             start = end
@@ -327,7 +335,10 @@ def _refine_contacts(proxy, fitted, times, active, targets, report):
         mujoco.mj_kinematics(proxy.model, proxy.data)
         rotations = proxy.data.xmat[proxy.body_ids[proxy.feet]].reshape(-1, 3, 3).copy()
         desired = feet[i] + weights[i, :, None] * (goals[i] - feet[i])
-        desired[:, 1] = feet[i, :, 1] + np.maximum(0., -bottoms[i] - .004)
+        # Keep the oriented sole on the floor throughout stance. Swing feet
+        # only receive penetration correction; they are never pulled down.
+        vertical_delta = np.where(weights[i] > 0, -bottoms[i] * weights[i], np.maximum(0., -bottoms[i] - .004))
+        desired[:, 1] = feet[i, :, 1] + vertical_delta
         if not weights[i].any() and np.max(np.abs(desired - feet[i])) < 1e-8: continue
         for _ in range(20):
             proxy.data.qpos[:] = output[i]
@@ -352,6 +363,7 @@ def _refine_contacts(proxy, fitted, times, active, targets, report):
         maximum_error = max(maximum_error, float(np.max(np.linalg.norm(sample["feet"] - desired, axis=1))))
         if i % 100 == 0: report("Holding planted feet while preserving foot rolls", .90 + .04 * i / count)
     return output, {"stanceFrames": int(np.count_nonzero(active.any(axis=1))),
+                    "airborneFrames": int(np.count_nonzero(~active.any(axis=1))),
                     "maximumTargetErrorM": maximum_error, "transitionSeconds": ramp_seconds,
                     "rootAdjustmentRmsM": float(np.sqrt(np.mean(np.sum((output[:, :3] - fitted[:, :3]) ** 2, axis=1))))}
 
@@ -389,7 +401,8 @@ def _metrics(proxy, q, times, active, reference=None):
               "rootTorqueResidualRmsNm": float(np.sqrt(np.mean(np.sum(torques * torques, axis=1)))),
               "requiredJointTorqueMaxNm": float(max(np.max(np.abs(s["torques"])) for s in samples)),
               "jointLimitViolationMaxRad": float(max(joint_excess, default=0.)),
-              "contactFrames": int(np.count_nonzero(active.any(axis=1)))}
+              "contactFrames": int(np.count_nonzero(active.any(axis=1))),
+              "airborneFrames": int(np.count_nonzero(~active.any(axis=1)))}
     if reference is not None:
         metric["rootCorrectionRmsM"] = float(np.sqrt(np.mean(np.sum((q[:, :3] - reference[:, :3]) ** 2, axis=1))))
     return metric, samples
@@ -584,6 +597,11 @@ def correct_motion(request: dict, progress: Callable[[str, float], None] | None 
     if anchor_drift and max(a["rootTranslationM"] for a in anchor_drift) > .015:
         warnings.append("Some authored anchor poses moved to satisfy contact/dynamics. Review the reported anchor drift.")
     review_reasons = []
+    # A foot-only proxy cannot certify handstands, tumbling contacts or body
+    # collisions. Expose that limitation per clip instead of hiding it behind
+    # an apparently good mean-force number.
+    if np.count_nonzero(~dense_active.any(axis=1)) > len(frames) * .15:
+        review_reasons.append("Airborne or non-foot-supported motion needs acrobatic/contact review")
     if after["rootForceResidualRmsN"] > proxy.weight * .15: review_reasons.append("Significant unphysical root force remains")
     if after["rootTorqueResidualRmsNm"] > proxy.weight * proxy.height * .04: review_reasons.append("Significant unphysical root torque remains")
     if after["requiredJointTorqueMaxNm"] > 350.: review_reasons.append("High joint torque requires rig calibration")
