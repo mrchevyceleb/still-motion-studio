@@ -176,7 +176,9 @@
         "Preserve dependency notices when packaging code/libraries.",
         "Do not silently mix restricted training data or pretrained weights into this model lineage.",
         "Keep the source and training provenance with the exact checkpoint."
-      ]
+      ],
+      "approvedCorpusSha256": "2294109407f070eeaef8a6bad11fae0f52609dff3f862f5f7c5881e3303f261d",
+      "approvedCorpusFilesSha256": "115ee6d9f8eaa9bc02680b4812447bcb18b0ffcbdf1108082d5d7b2f0e2a3d86"
     },
     "quadruped": {
       "name": "Still Quadruped",
@@ -231,7 +233,9 @@
         "Preserve dependency notices when packaging code/libraries.",
         "Do not silently mix restricted training data or pretrained weights into this model lineage.",
         "Keep the source and training provenance with the exact checkpoint."
-      ]
+      ],
+      "approvedCorpusSha256": "3fd692e1fd5037c4363facbf123eb92bd8a76bd4d9e5e4eff477483844fdd492",
+      "approvedCorpusFilesSha256": "fffa496e32f5e21addba8e12e02e39cd8c8a8c0310b883bee925e67a142d84e0"
     }
   },
   "aliases": {

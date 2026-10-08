@@ -19,7 +19,7 @@ from backend.inbetween import _sample, _fk, _align
 
 PROVIDER = {
     'id': 'quadruped', 'name': 'Still Quadruped', 'learned': True,
-    'description': 'Fresh local neural transition model trained on Quaternius CC0 animal animation.',
+    'description': 'Fresh local transition model trained on Quaternius CC0 animal animation; check the installed quality report.',
 }
 NAMES = ['Hips', 'Spine', 'Neck', 'Head', 'Tail', 'TailTip'] + [f'{pair}{side}{joint}' for side in ['Left', 'Right'] for pair in ['Front', 'Hind'] for joint in ['UpperLeg', 'LowerLeg', 'Foot']]
 PARENTS = [-1, 0, 1, 2, 0, 4, 1, 6, 7, 0, 9, 10, 1, 12, 13, 0, 15, 16]
@@ -90,22 +90,24 @@ def _retarget(positions, quaternions, parents, mapping, learned):
 def _load(runtime, progress):
     import torch
     from safetensors.torch import load_file
-    from backend.learned_motion import PoseDenoiser
+    from backend.learned_motion import create_model
 
     config = runtime.get('config', runtime)
     directory = Path(config['checkpointPath'])
     metadata = json.loads((directory / 'model.json').read_text(encoding='utf-8'))
+    validation = directory / 'validation.json'
+    metadata['validation'] = json.loads(validation.read_text(encoding='utf-8')) if validation.is_file() else {}
     digest = hashlib.sha256((directory / 'model.safetensors').read_bytes()).hexdigest()
     if digest != config['modelSha256'] or digest != metadata['modelSha256']:
         raise RuntimeError('Quadruped checkpoint verification failed. Reinstall the trained local model.')
     if metadata.get('pretrainedWeightsUsed') is not False or metadata.get('initializedFrom') != 'random':
         raise RuntimeError('The local quadruped checkpoint has unverified training provenance.')
-    if not torch.cuda.is_available():
-        raise RuntimeError('The local learned quadruped engine requires an NVIDIA CUDA GPU.')
     torch.set_num_threads(4)
-    torch.cuda.reset_peak_memory_stats()
-    progress('Loading the CC0-trained quadruped network…', .12)
-    model = PoseDenoiser(**metadata['architecture']).cuda()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats()
+    progress('Loading the CC0-trained quadruped prior…', .12)
+    model = create_model(metadata).to(device)
     model.load_state_dict(load_file(str(directory / 'model.safetensors')), strict=True)
     model.eval()
     return model, metadata
@@ -177,10 +179,11 @@ def generate_motion(request, progress):
         if not observed:
             observed = [0]
         linear = np.stack([np.interp(np.arange(end - start), observed, incoming[observed, feature]) for feature in range(54)], axis=-1)
-        baseline = torch.tensor((linear - mean) / std, dtype=torch.float32, device='cuda')[None]
-        mask = torch.zeros((1, end - start, 1), device='cuda')
+        device = next(model.parameters()).device
+        baseline = torch.tensor((linear - mean) / std, dtype=torch.float32, device=device)[None]
+        mask = torch.zeros((1, end - start, 1), device=device)
         mask[:, observed] = 1
-        body = torch.tensor((normalized_rest - mean) / std, dtype=torch.float32, device='cuda')[None]
+        body = torch.tensor((normalized_rest - mean) / std, dtype=torch.float32, device=device)[None]
         def report(fraction):
             progress(f'Generating learned animal transitions · section {window + 1} of {len(starts)}…', .2 + .62 * (window + fraction) / len(starts))
         result = sample_motion(model, baseline, mask, body, int(request.get('seed', 42)) + window, 40, report)
@@ -213,15 +216,21 @@ def generate_motion(request, progress):
         pose = anchor['pose'] if anchor else [{'position': position.tolist(), 'quaternion': quaternion.tolist(), 'scale': [1., 1., 1.]}
                                              for position, quaternion in zip(positions[index], quaternions[index])]
         frames.append({'time': timestamp, 'pose': pose})
-    warnings = ['This small learned animal prior was trained on stylized CC0 quadruped animation. It is experimental and does not guarantee realistic horse biomechanics or physical contact. Original skin weights and authored poses are preserved.']
+    warnings = ['This small learned animal prior was trained on stylized CC0 quadruped animation. Review unfamiliar animal proportions, rapid turns and physical contact. Original skin weights and authored poses are preserved.']
+    if not metadata['validation'].get('beatsInterpolation'):
+        warnings.append('The installed quadruped model has no demonstrated full held-out improvement over interpolation.')
     if len(starts) > 1:
-        warnings.append('Long clips use overlapping neural windows; review transitions for drift.')
+        warnings.append('Long clips use overlapping motion windows; review transitions for drift.')
     return {'frames': frames, 'provider': PROVIDER, 'warnings': warnings,
             'metrics': {'model': 'Still Quadruped', 'modelSha256': metadata['modelSha256'],
                         'learnedParameters': metadata['parameters'], 'pretrainedWeightsUsed': False,
                         'trainingClips': len(metadata['trainingClipIds']), 'heldOutClips': len(metadata['heldOutClipIds']),
-                        'nativeFps': 20, 'seed': int(request.get('seed', 42)), 'diffusionSteps': 40,
+                        'nativeFps': 20, 'seed': int(request.get('seed', 42)), 'diffusionSteps': 40 if metadata.get('objective', 'diffusion') == 'diffusion' else 0,
+                        'modelFamily': metadata['architecture'].get('family', 'denoiser'),
+                        'heldOutValidation': metadata['validation'],
+                        'quality': {'requiresReview': True, 'reasons': ['Limited stylized-animal corpus; review contacts and unfamiliar anatomy.']},
                         'windows': len(starts), 'conditionedFrames': len(anchors), 'generatedFrames': len(frames),
                         'learnedVsInterpolationRmsMeters': learned_rms, 'inferenceSeconds': sample_seconds,
                         'totalSeconds': time.perf_counter() - started,
-                        'peakGpuMemoryMiB': torch.cuda.max_memory_allocated() / 1024 ** 2}}
+                        'device': str(next(model.parameters()).device),
+                        'peakGpuMemoryMiB': torch.cuda.max_memory_allocated() / 1024 ** 2 if next(model.parameters()).device.type == 'cuda' else 0}}

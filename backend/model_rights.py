@@ -8,9 +8,11 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+DATA_ROOT = Path(os.environ.get('STILL_DATA_ROOT', ROOT)).resolve()
 MANIFEST = Path(__file__).with_name('model-rights.json')
 PERMITTED = {'permitted', 'project_trained', 'not_applicable'}
 
@@ -26,13 +28,33 @@ def get_model_rights(provider_id: str) -> dict:
                 'checkedAt': document['checkedAt'], 'scope': document['scope']}
     result = copy.deepcopy(entry)
     blockers = list(result.get('blockers', []))
+    runtime_base = {'owned_humanoid': 'owned-humanoid', 'quadruped': 'quadruped'}.get(provider_id)
+    runtime_file = DATA_ROOT / '.local' / runtime_base / 'runtime.json' if runtime_base else None
+    if runtime_file and runtime_file.is_file():
+        try:
+            runtime = json.loads(runtime_file.read_text(encoding='utf-8-sig'))
+            installation = runtime.get('installation')
+            if installation:
+                from backend.model_bundle import sha, verify_bundle
+                directory = Path(runtime['config']['checkpointPath']).resolve()
+                if not directory.is_relative_to(DATA_ROOT):
+                    raise ValueError('Installed model must remain within the application data directory.')
+                metadata, validation, bundle = verify_bundle(directory, entry.get('approvedCorpusSha256'), approved_files_hash=entry.get('approvedCorpusFilesSha256'))
+                if installation.get('provider') != provider_id or installation.get('modelSha256') != metadata['modelSha256'] or runtime['config'].get('modelSha256') != metadata['modelSha256'] or installation.get('bundleManifestSha256') != sha(directory / 'complete.json') or installation.get('approvedCorpusSha256') != metadata['dataIndexSha256']:
+                    raise ValueError('Installed runtime and provenance bundle identities disagree.')
+                result['model'] = {'checkpointPath': str(directory / 'model.safetensors'), 'sha256': metadata['modelSha256'],
+                                   'initializedFrom': 'random', 'pretrainedWeightsUsed': False, 'parameters': metadata['parameters']}
+                result['evidenceArtifacts'] = [{'path': str(directory / relative), 'sha256': digest} for relative, digest in bundle['files'].items() if relative != 'model.safetensors']
+                result['qualityValidation'] = validation
+        except (ValueError, KeyError, OSError, TypeError) as error:
+            blockers.append('Installed model bundle verification failed: ' + str(error))
     for category in ['code', 'weights', 'trainingData', 'outputs']:
         if result.get('rights', {}).get(category, {}).get('status') not in PERMITTED:
             blockers.append(f'{category}: commercial scope is not established.')
     model = result.get('model')
     if model and model.get('checkpointPath'):
-        path = (ROOT / model['checkpointPath']).resolve()
-        if not path.is_relative_to(ROOT):
+        path = (DATA_ROOT / model['checkpointPath']).resolve()
+        if not path.is_relative_to(DATA_ROOT):
             blockers.append('Checkpoint path is outside this project.')
         elif not path.is_file():
             blockers.append('The reviewed checkpoint is missing.')
@@ -55,8 +77,8 @@ def assert_commercial_release(provider_id: str) -> dict:
     if not rights['commercialReleaseAllowed']:
         raise ValueError(f'Commercial model release is not cleared for {provider_id}: ' + ' '.join(rights['blockers']))
     for artifact in rights.get('evidenceArtifacts', []):
-        path = (ROOT / artifact['path']).resolve()
-        if not path.is_relative_to(ROOT) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != artifact['sha256']:
+        path = (DATA_ROOT / artifact['path']).resolve()
+        if not path.is_relative_to(DATA_ROOT) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != artifact['sha256']:
             raise ValueError(f'Commercial model release evidence changed or is missing: {artifact["path"]}')
     return rights
 

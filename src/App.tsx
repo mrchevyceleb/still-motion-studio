@@ -55,7 +55,7 @@ export default function App() {
   const [rigKind, setRigKind] = useState<RigKind>('humanoid');
   const [busy, setBusy] = useState<string | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
-  const [engineChoice, setEngineChoice] = useState<EngineProvider['id']>('inbetween');
+  const [engineChoice, setEngineChoice] = useState<EngineProvider['id']>('owned_humanoid');
   const [physicsChoice, setPhysicsChoice] = useState<EngineProvider['id']>('physics');
   const [progress, setProgress] = useState<number | null>(null);
   const engineOperation = useRef<AbortController | null>(null);

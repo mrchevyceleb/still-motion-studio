@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-PROVIDER = {'id': 'owned_humanoid', 'name': 'Still humanoid (experimental)', 'learned': True,
-            'description': 'Fresh CC0-trained humanoid network. Limited training coverage; no demonstrated quality gain over interpolation.'}
+PROVIDER = {'id': 'owned_humanoid', 'name': 'Still humanoid', 'learned': True,
+            'description': 'Fresh CC0-trained humanoid motion prior with exact authored-pose constraints. Check the installed model quality report.'}
 FPS = 20
 JOINTS = [
     ('hips', 'pelvis', 'root'), ('spine', 'spine01'), ('chest', 'spine03', 'spine2', 'spine1'),
@@ -58,7 +58,7 @@ def arrays(frames):
     scale = np.asarray([[bone.get('scale', [1, 1, 1]) for bone in frame['pose']] for frame in frames])
     if not np.isfinite(p).all() or not np.isfinite(q).all() or np.any(np.linalg.norm(q, axis=-1) < 1e-8):
         raise ValueError('Invalid humanoid transforms.')
-    if np.max(np.abs(scale - 1)) > 1e-4: raise ValueError('Normalize joint scales before neural generation.')
+    if np.max(np.abs(scale - 1)) > 1e-4: raise ValueError('Normalize joint scales before learned generation.')
     return times, p, q / np.linalg.norm(q, axis=-1, keepdims=True)
 
 
@@ -162,7 +162,7 @@ def retarget(p, q, parents, indices, learned):
 def generate_motion(request, progress=lambda message, fraction: None):
     import torch
     from safetensors.torch import load_file
-    from backend.learned_motion import PoseDenoiser, sample_motion
+    from backend.learned_motion import create_model, sample_motion
     started = time.perf_counter()
     if request['rig'].get('kind') != 'humanoid': raise ValueError('This model was trained only on humanoids.')
     parents = request['rig']['parents']
@@ -183,7 +183,7 @@ def generate_motion(request, progress=lambda message, fraction: None):
         raise ValueError('Owned humanoid checkpoint hash mismatch.')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.set_num_threads(4)
-    model = PoseDenoiser(**metadata['architecture']).to(device)
+    model = create_model(metadata).to(device)
     model.load_state_dict(load_file(str(checkpoint))); model.eval()
     times = np.linspace(0, duration, round(duration * FPS) + 1)
     observed_indices = np.asarray([round(frame['time'] / duration * (len(times) - 1)) for frame in anchors])
@@ -203,7 +203,7 @@ def generate_motion(request, progress=lambda message, fraction: None):
         result = sample_motion(model, conditioned, mask_tensor, rest_tensor, seed=int(request.get('seed', 42)), steps=40)
     learned = result[0].cpu().numpy() * std + mean
     learned[observed_indices] = baseline[observed_indices]
-    if not np.isfinite(learned).all(): raise ValueError('The neural model returned invalid motion.')
+    if not np.isfinite(learned).all(): raise ValueError('The learned model returned invalid motion.')
     indices, height, rotation, origin = geometry
     world = rotation.inv().apply((learned * height).reshape(-1, 3)).reshape(len(times), len(JOINTS), 3) + origin
     output_times = np.unique(np.r_[[frame['time'] for frame in request['frames']], [frame['time'] for frame in anchors], [0, duration]])
@@ -215,7 +215,15 @@ def generate_motion(request, progress=lambda message, fraction: None):
         authored = next((frame for frame in anchors if abs(frame['time'] - t) < 1e-7), None)
         pose = copy.deepcopy(authored['pose']) if authored else [{'position': a.tolist(), 'quaternion': b.tolist(), 'scale': [1, 1, 1]} for a, b in zip(pp, qq)]
         output.append({'time': float(t), 'pose': pose})
+    validation_file = directory / 'validation.json'
+    validation = json.loads(validation_file.read_text(encoding='utf-8')) if validation_file.is_file() else {}
+    demonstrated = bool(validation.get('beatsInterpolation'))
+    warnings = ['This trained prior has limited CC0 motion coverage. It preserves authored poses, but does not certify foot contact, acrobatics or physics.']
+    if not demonstrated:
+        warnings.append('The installed humanoid model has no demonstrated full held-out improvement over interpolation.')
     return {'frames': output, 'provider': PROVIDER, 'metrics': {'modelSha256': digest, 'trainingData': 'Quaternius CC0 authored motion',
+            'modelFamily': metadata['architecture'].get('family', 'denoiser'), 'learnedParameters': metadata['parameters'], 'device': str(device),
+            'heldOutValidation': validation,
             'authoredPosesPreserved': True, 'learnedVsInterpolationRmsMeters': float(np.sqrt(np.mean((learned - baseline) ** 2)) * height),
             'seconds': time.perf_counter() - started, 'quality': {'requiresReview': True, 'reasons': ['Small training corpus; review generated poses and contact.']}},
-            'warnings': ['This experimental humanoid prior did not outperform interpolation on the held-out motion test. Review the result; it is not a physics solver.']}
+            'warnings': warnings}
