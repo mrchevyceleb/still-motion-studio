@@ -38,6 +38,30 @@ describe('motion edits preserve authored skeleton data', () => {
     expect(capturePose(asset)).toEqual(rest);
   });
 
+  it('preserves Mixamo bone motion with a fixed Armature track but rejects parent motion', () => {
+    const asset = createDemoCharacter('humanoid'), hips = asset.bones[0];
+    const armature = new THREE.Group();
+    armature.name = 'Armature';
+    armature.quaternion.set(-3.7749e-8, 0, 0, 1).normalize();
+    armature.position.set(100.123456789, 0, 0);
+    asset.root.add(armature); armature.add(hips);
+    const rest = armature.quaternion.clone(), start = hips.position.toArray();
+    const bone = new THREE.VectorKeyframeTrack(`${hips.uuid}.position`, [0, 1], [...start, start[0] + .5, start[1], start[2]]);
+    const fixed = new THREE.QuaternionKeyframeTrack('Armature.quaternion', [0, 1], [0, 0, 0, 1, 0, 0, 0, -1]);
+    const position = new THREE.VectorKeyframeTrack('Armature.position', [0], armature.position.toArray());
+    const clip = new THREE.AnimationClip('Mixamo', 1, [fixed, bone, position]);
+    const keys = sampleClip(asset, clip);
+    expect(keys.at(-1)!.pose[0].position[0]).toBeCloseTo(start[0] + .5);
+    expect(capturePose(asset)).toEqual(asset.restPose);
+    expect(armature.quaternion.toArray()).toEqual(rest.toArray());
+    expect(sampleClip(asset, buildAnimationClip(asset, keys, 1, { ...DEFAULT_SETTINGS, interpolation: 'linear' })).at(-1)!.pose[0].position[0]).toBeCloseTo(start[0] + .5);
+    const rotated = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), .5).toArray();
+    clip.tracks[0] = new THREE.QuaternionKeyframeTrack('Armature.quaternion', [0, 1], [0, 0, 0, 1, ...rotated]);
+    expect(() => sampleClip(asset, clip)).toThrow(/Armature.quaternion/);
+    clip.tracks[0] = new THREE.QuaternionKeyframeTrack('Armature.quaternion', [0], rotated);
+    expect(() => sampleClip(asset, clip)).toThrow(/Armature.quaternion/);
+  });
+
   it('moves an end effector toward its target without changing bone lengths or the hips', () => {
     const asset = createDemoCharacter('humanoid'), handIndex = asset.bones.findIndex(b => b.name === 'RightHand');
     const before = capturePose(asset), hand = asset.bones[handIndex];

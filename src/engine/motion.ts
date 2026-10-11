@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
 import { applyPose, capturePose } from './character';
+import { MAX_ANIMATION_DURATION } from './keyframeEditing';
 
 const copyPose = (pose: Pose): Pose => pose.map(b => ({ position: [...b.position], quaternion: [...b.quaternion], scale: [...b.scale] }));
 const makeKey = (time: number, pose: Pose, label?: string): PoseKey => ({ id: crypto.randomUUID(), time, pose, label });
@@ -121,16 +122,40 @@ function trackBone(asset: CharacterAsset, name: string): THREE.Bone | null {
   return node instanceof THREE.Bone && asset.bones.includes(node) ? node : null;
 }
 
+// Mixamo FBX clips include a fixed Armature rotation alongside the bone tracks.
+// Only omit transform channels that already match the scene at every key;
+// animated parents and other channels still need explicit support to avoid loss.
+function isRestTransform(asset: CharacterAsset, track: THREE.KeyframeTrack): boolean {
+  const parsed = THREE.PropertyBinding.parseTrackName(track.name);
+  if (parsed.objectName || parsed.propertyIndex !== undefined || !['position', 'quaternion', 'scale'].includes(parsed.propertyName)) return false;
+  const node = THREE.PropertyBinding.findNode(asset.root, parsed.nodeName);
+  if (!(node instanceof THREE.Object3D)) return false;
+  const rest = node[parsed.propertyName as 'position' | 'quaternion' | 'scale'].toArray();
+  const size = rest.length;
+  if (!track.times.length || track.getValueSize() !== size) return false;
+  for (let offset = 0; offset < track.values.length; offset += size) {
+    // q and -q describe the same rotation.
+    const sign = size === 4 && rest.reduce((dot, value, axis) => dot + value * track.values[offset + axis], 0) < 0 ? -1 : 1;
+    if (rest.some((value, axis) => !Number.isFinite(track.values[offset + axis]) || Math.abs(track.values[offset + axis] - Math.fround(sign * value)) > 1e-6)) return false;
+  }
+  return true;
+}
+
 /** Imported animation is sampled, never retargeted or put through IK. */
 export function sampleClip(asset: CharacterAsset, clip: THREE.AnimationClip): PoseKey[] {
-  const unsupported = clip.tracks.filter(track => {
-    try { return !trackBone(asset, track.name); } catch { return true; }
-  });
-  if (unsupported.length) throw new Error(`This clip animates non-bone or unsupported channels (${unsupported.slice(0, 3).map(t => t.name).join(', ')}). Those channels cannot be preserved in this pose editor. Export a skeleton-only animation from your source application first.`);
   if (!Number.isFinite(clip.duration) || clip.duration < 0) throw new Error('This animation has an invalid duration.');
+  if (clip.duration > MAX_ANIMATION_DURATION) throw new Error('This animation exceeds the 10-minute limit. Trim the source clip before importing.');
+  const boneTracks: THREE.KeyframeTrack[] = [], unsupported: THREE.KeyframeTrack[] = [];
+  for (const track of clip.tracks) {
+    try {
+      if (trackBone(asset, track.name)) boneTracks.push(track);
+      else if (!isRestTransform(asset, track)) unsupported.push(track);
+    } catch { unsupported.push(track); }
+  }
+  if (unsupported.length) throw new Error(`This clip animates non-bone or unsupported channels (${unsupported.slice(0, 3).map(t => t.name).join(', ')}). Those channels cannot be preserved in this pose editor. Export a skeleton-only animation from your source application first.`);
   const mixer = new THREE.AnimationMixer(asset.root);
   applyPose(asset, asset.restPose);
-  const action = mixer.clipAction(clip);
+  const action = mixer.clipAction(new THREE.AnimationClip(clip.name, clip.duration, boneTracks, clip.blendMode));
   action.setLoop(THREE.LoopOnce, 1);
   action.clampWhenFinished = true;
   action.play();
