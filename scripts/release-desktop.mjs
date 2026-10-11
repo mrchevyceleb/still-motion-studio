@@ -54,9 +54,14 @@ function verifyRemoteTag() {
   if (remoteTag && (remoteTag.type !== 'commit' || remoteTag.sha !== commit)) throw new Error('The remote version tag points to another commit.');
 }
 verifyRemoteTag();
-let release;
-try { release = api([`repos/${repo}/releases/tags/${tag}`]); }
-catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
+// GitHub's tag endpoint can return 404 for a draft whose tag has not been
+// created yet. The authenticated release list includes those drafts.
+function findRelease() {
+  const matches = api(['--paginate', '--slurp', `repos/${repo}/releases?per_page=100`]).flat().filter(value => value.tag_name === tag);
+  if (matches.length > 1) throw new Error('Multiple releases use this tag. Resolve the duplicate drafts before publishing.');
+  return matches[0];
+}
+let release = findRelease();
 if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('This tag already belongs to another or published release.');
 if (!release) {
   try {
@@ -64,10 +69,12 @@ if (!release) {
     if (taggedCommit && taggedCommit !== commit) throw new Error('The version tag points to another commit.');
   } catch (error) { if (!String(error.stderr || '').includes('unknown revision')) throw error; }
   gh(['release', 'create', tag, '--repo', repo, '--draft', '--target', commit, '--title', `Still Motion Studio ${version}`, '--notes-file', notes]);
+  release = findRelease();
 }
+if (!release?.draft || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
 // Publish last: private clients must never observe a partially uploaded feed.
 gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
-const uploaded = api([`repos/${repo}/releases/tags/${tag}`]);
+const uploaded = api([`repos/${repo}/releases/${release.id}`]);
 for (const file of assets) {
   const asset = uploaded.assets.find(value => value.name === file);
   if (!asset || asset.size !== (await stat(path.join(directory, file))).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
@@ -78,6 +85,7 @@ for (const file of assets) {
 }
 verifyRemoteTag();
 gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
-const published = api([`repos/${repo}/releases/tags/${tag}`]);
+const published = api([`repos/${repo}/releases/${release.id}`]);
 if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');
+verifyRemoteTag();
 console.log(`Published https://github.com/${repo}/releases/tag/${tag}`);
