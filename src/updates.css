@@ -1,0 +1,9 @@
+.update-status { padding: 18px; border: 1px solid var(--line); border-radius: 12px; margin: 24px 0 18px; }
+.update-status p { margin: 8px 0 0; }
+.update-status progress { width: calc(100% - 48px); margin: 16px 12px 0 0; accent-color: var(--accent); }
+.update-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.update-note { font-size: 12px !important; margin-top: 22px !important; }
+.update-device-code { display: grid; gap: 10px; margin-top: 18px; }
+.update-device-code code { font-size: 28px; letter-spacing: 3px; font-weight: 700; }
+.update-device-code > span { font-size: 12px; }
+.updates-button.ready { color: var(--accent); }

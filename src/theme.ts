@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import './desktop';
 
 export type Theme = 'light' | 'dark';
 const key = 'still.theme';
@@ -12,10 +13,6 @@ const readPreference = (): Theme | null => {
 };
 let preference = readPreference();
 let theme: Theme = preference ?? (system.matches ? 'dark' : 'light');
-
-declare global {
-  interface Window { stillDesktop?: { setTheme: (theme: Theme) => void } }
-}
 
 function applyTheme() {
   theme = preference ?? (system.matches ? 'dark' : 'light');

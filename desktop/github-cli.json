@@ -1,0 +1,7 @@
+{
+  "version": "2.100.0",
+  "platform": "windows_amd64",
+  "url": "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_windows_amd64.zip",
+  "archiveSha256": "227e35230b25db3fa1b997bab7cf4d67df0470a3b75b99e4ee66bce1a7cd4e72",
+  "executableSha256": "2ae2b350c227a618f2d8965b1900aeee13446ff42e17ef0bd5a0b6405c593cfb"
+}

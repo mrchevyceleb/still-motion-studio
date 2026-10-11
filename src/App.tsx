@@ -14,6 +14,7 @@ import type { AgentConnection } from './engine/agentBridge';
 import { executeAgentCommand, READ_COMMANDS } from './engine/agentCommands';
 import type { AgentEditor } from './engine/agentCommands';
 import PoseThumbnail from './components/PoseThumbnail';
+import UpdatesDialog, { useUpdates } from './components/UpdatesDialog';
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter } from './engine/character';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './engine/motion';
 import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames, recoverNativeEngine } from './engine/assistance';
@@ -28,7 +29,7 @@ import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSetting
 
 interface Studio { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
 interface KeyDrag { id: string; pointerId: number; startX: number; startTime: number; time: number; beforeTime: number; moved: boolean; studio: Studio; asset: CharacterAsset; fps: number }
-type Dialog = 'import' | 'export' | 'help' | 'rig' | 'new' | 'agent' | null;
+type Dialog = 'import' | 'export' | 'help' | 'rig' | 'new' | 'agent' | 'updates' | null;
 const clone = <T,>(value: T): T => structuredClone(value);
 const niceName = (name: string) => name.replace(/^mixamorig[:_]?/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_:]/g, ' ');
 const uid = () => crypto.randomUUID();
@@ -47,6 +48,7 @@ function Switch({ checked, onChange, label, disabled = false }: { checked: boole
 
 export default function App() {
   const { theme, toggleTheme } = useTheme();
+  const updateState = useUpdates();
   const [asset, setAsset] = useState<CharacterAsset>(() => createDemoCharacter('humanoid'));
   const [studio, setStudio] = useState<Studio>(() => ({ title: 'A little hello', keys: createDemoKeys(asset), duration: 4, settings: { ...DEFAULT_SETTINGS } }));
   const [time, setTime] = useState(0.8);
@@ -192,6 +194,20 @@ export default function App() {
   }, [studio, asset.kind]);
 
   const documentFor = useCallback((): ProjectDocument => ({ version: 1, name: studio.title, duration: studio.duration, fps, keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded]);
+  useEffect(() => window.stillDesktop?.updates.onOpen(() => setDialog('updates')), []);
+  async function installDownloadedUpdate() {
+    if (!hydrated || busy || engine?.busy || engine?.recovery || agentController.current || exportOperation.current || keyDrag.current || updateState?.status !== 'ready') return;
+    // Lock before awaiting the save so an agent cannot mutate the snapshot.
+    flushSync(() => { setBusy('Saving your scene for the update…'); setPlaying(false); });
+    ++saveGeneration.current;
+    try {
+      await saveLocal(documentFor());
+      dirty.current = false;
+      setSaveStatus('Saved on this device');
+      const result = await window.stillDesktop!.updates.install();
+      if (result.status !== 'installing') { setBusy(null); setError(result.message); }
+    } catch { setBusy(null); setError('Your scene could not be saved or the update service is unavailable. The app has stayed open.'); }
+  }
   const restoreDocument = useCallback(async (input: unknown, signal?: AbortSignal) => {
     const document = validateProject(input);
     const nextAsset = document.character.type === 'demo'
@@ -579,6 +595,7 @@ export default function App() {
     const id = performance.now(); setSparks(s => [...s.slice(-5), { id, x: e.clientX, y: e.clientY }]); setTimeout(() => setSparks(s => s.filter(v => v.id !== id)), 700);
   }}>
     <header className="topbar">
+      {window.stillDesktop && <button className={`button updates-button ${updateState?.status === 'ready' ? 'ready' : ''}`} onClick={() => setDialog('updates')}><Download size={14}/>{updateState?.status === 'ready' ? 'Update ready' : 'Updates'}</button>}
       <a className="wordmark" href="#" aria-label="Still home" onClick={e => { e.preventDefault(); setDialog('new'); }}><span className="brand-symbol"><img src="/still-icon.png" alt=""/></span>still<span className="wordmark-dot">.</span></a>
       <div className="header-divider" />
       <div className="project-heading"><input aria-label="Project name" value={studio.title} maxLength={80} onChange={e => { dirty.current = true; setStudio({ ...studio, title: e.target.value }); }}/><ChevronDown size={13}/><span className="local-badge">LOCAL PROJECT</span></div>
@@ -658,7 +675,8 @@ export default function App() {
     {error && <div className="error-toast" role="alert"><CircleHelp size={19}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError(null)}><X size={16}/></button></div>}
     {sparks.map(s => <span className="click-spark" key={s.id} style={{ left: s.x, top: s.y }}>✳</span>)}
 
-    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''}`} onCancel={e => { if (exportRunning) e.preventDefault(); else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !exportRunning) setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={exportRunning} onClick={() => setDialog(null)}><X size={19}/></button>
+    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''}`} onCancel={e => { if (exportRunning || updateState?.status === 'installing') e.preventDefault(); else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !exportRunning && updateState?.status !== 'installing') setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={exportRunning || updateState?.status === 'installing'} onClick={() => setDialog(null)}><X size={19}/></button>
+      {dialog === 'updates' && <UpdatesDialog state={updateState} canInstall={hydrated && !busy && !engine?.busy && !engine?.recovery && !agentController.current && !exportOperation.current && !keyDrag.current} onInstall={() => void installDownloadedUpdate()}/>}
       {dialog === 'agent' && <><span className="modal-icon"><Keyboard size={25}/></span><div className="eyebrow">YOUR AGENT. YOUR ANIMATION.</div><h2>Make moves<br/>with a little code.</h2><p>Give an AI agent control of this scene through local scripts or MCP. It can inspect joints, edit poses, run AI and physics, save projects, and export to Unreal.</p><div className="modal-tip"><span className="status-dot"/><span><strong>{agentConnection.connected ? 'Ready for scripts' : 'Waiting for the local service'}</strong><br/>{agentConnection.connected ? 'This tab can stay in the background while your agent works.' : agentConnection.error || 'Start Still with its launcher to connect.'}</span></div>{agentConnection.sessionId && <p className="agent-session">Session: {agentConnection.sessionId}</p>}<p>Start in the project folder:</p><pre className="agent-command">node scripts/still-agent.mjs sessions{`\n`}node scripts/still-agent.mjs schema</pre><p>Give your agent <strong>docs/agent-scripting.md</strong>. For MCP, launch <strong>node scripts/still-mcp.mjs</strong> from your agent’s MCP configuration.</p><div className="agent-actions"><button className="button secondary" onClick={() => { void navigator.clipboard.writeText(`Use Still's local agent API to work on my animation. Read docs/agent-scripting.md in the Still project. Target session ${agentConnection.sessionId || '(list sessions first)'}. Inspect the scene and schema before changing it, use expectedRevision for edits, and save a .still backup before replacing my work.`).then(() => notify('Instructions copied for your agent.')).catch(() => notify('Select the session ID and use docs/agent-scripting.md.')); }}><Copy size={15}/>Copy agent instructions</button></div><div className="agent-last">{agentActivity ? <><strong>{agentActivity.status === 'done' ? 'Completed' : agentActivity.status === 'error' ? 'Needs attention' : agentActivity.status === 'cancelled' ? 'Stopped' : 'Working'} · {agentActivity.method}</strong>{agentActivity.message && <p>{agentActivity.message}</p>}</> : 'Pose edits use Undo. Replacing a scene keeps a Recent scenes backup. Access stays on this computer.'}</div></>}
       {dialog === 'import' && <><span className="modal-icon"><Upload size={25}/></span><div className="eyebrow">BRING YOUR CHARACTER</div><h2>Already has a rig?<br/>Keep it.</h2><p>Drop in your Mixamo FBX or a GLB. Your skeleton and skin weights stay intact, so you can get straight to moving.</p><button className="modal-dropzone" onClick={() => importInput.current?.click()}><Upload size={27}/><strong>Choose a file, or drop it here</strong><span>FBX · GLB · .still project · up to 150 MB</span></button><div className="modal-tip"><ShieldCheck size={19}/><span>For Mixamo, download <strong>FBX Binary → With Skin</strong>. Embedded textures work best.</span></div><p className="micro-copy">No skeleton? You can fit a basic human or quadruped rig after importing. Upright, neutral poses work best.</p></>}
       {dialog === 'export' && <><span className="modal-icon"><ArrowUpRight size={25}/></span><div className="eyebrow">TAKE YOUR MOTION WITH YOU</div><h2>Made a move?<br/>Make it useful.</h2><p>Take your character and the motion you’re previewing into your next project.</p>

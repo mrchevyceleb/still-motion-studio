@@ -270,7 +270,15 @@ async function stop() {
   process.exit(nativeCleanupPending ? 2 : 0);
 }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
-process.on('message', message => { if (message?.type === 'shutdown') void stop(); });
-process.parentPort?.on('message', event => { if (event.data?.type === 'shutdown') void stop(); });
+function parentMessage(message) {
+  if (message?.type === 'shutdown-for-update') {
+    if (activeJob || nativeCleanupPending || stopping || agentService.isBusy()) {
+      process.send?.({ type: 'update-blocked' });
+      process.parentPort?.postMessage({ type: 'update-blocked' });
+    } else void stop(); // Reserve shutdown synchronously before another job starts.
+  } else if (message?.type === 'shutdown') void stop();
+}
+process.on('message', parentMessage);
+process.parentPort?.on('message', event => parentMessage(event.data));
 // The IPC parent disappearing also requests cleanup, including on Windows.
 if (process.connected) process.on('disconnect', stop);

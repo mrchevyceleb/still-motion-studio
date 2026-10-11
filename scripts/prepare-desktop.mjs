@@ -1,6 +1,6 @@
 /** Assemble and publish a fresh offline Windows runtime. */
 import { cp, mkdir, readFile, writeFile, access, lstat, rename, rm } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -90,8 +90,26 @@ try {
   }
   const blender = process.env.STILL_BLENDER_DIRECTORY || 'C:/Program Files/Blender Foundation/Blender 5.2';
   await cp(blender, path.join(bundle, 'blender'), { recursive: true, filter: filename => !filename.endsWith('.pdb') && !filename.endsWith('__pycache__') });
+  const cliPin = JSON.parse(await readFile(path.join(root, 'desktop/github-cli.json'), 'utf8'));
+  const cliCache = path.join(localRoot, 'desktop-cache', `github-${cliPin.version}`);
+  const gh = path.join(cliCache, 'bin/gh.exe');
+  const digest = async filename => createHash('sha256').update(await readFile(filename)).digest('hex');
+  if (!await exists(gh) || await digest(gh) !== cliPin.executableSha256) {
+    await mkdir(cliCache, { recursive: true });
+    const response = await fetch(cliPin.url, { signal: AbortSignal.timeout(120000) });
+    if (!response.ok) throw new Error('The pinned official GitHub CLI could not be downloaded.');
+    const archive = Buffer.from(await response.arrayBuffer());
+    if (createHash('sha256').update(archive).digest('hex') !== cliPin.archiveSha256) throw new Error('Official GitHub CLI archive hash mismatch.');
+    const zip = path.join(cliCache, 'gh.zip');
+    await writeFile(zip, archive);
+    execFileSync(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/tar.exe'), ['-xf', zip, '-C', cliCache], { windowsHide: true });
+  }
+  if (await digest(gh) !== cliPin.executableSha256) throw new Error('Official Windows x64 GitHub CLI executable hash mismatch.');
+  await mkdir(path.join(bundle, 'github'));
+  await cp(gh, path.join(bundle, 'github/gh.exe'));
+  await cp(path.join(cliCache, 'LICENSE'), path.join(bundle, 'github/LICENSE.txt'));
   await writeFile(path.join(bundle, 'THIRD-PARTY-NOTICE.txt'), 'Still includes Python, PyTorch CPU, NumPy, SciPy, safetensors, MuJoCo, and unmodified Blender. Their license files are included in the runtime folders. Blender source: https://projects.blender.org/blender/blender (5.2). Motion training sources: Quaternius CC0 Universal Animation Library and Ultimate Animated Animals. No CondMDI weights or Epic/Cascadeur assets are included.\n');
-  for (const required of ['python/python.exe', 'blender/blender.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
+  for (const required of ['python/python.exe', 'blender/blender.exe', 'github/gh.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
   // This completion marker is written only after every dependency and model
   // validates. Publishing replaces the whole release, including removed files.
   await writeFile(path.join(bundle, 'catalog.json'), JSON.stringify({ version: 1, complete: true, runtimes, omitted }, null, 2));

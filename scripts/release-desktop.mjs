@@ -1,0 +1,83 @@
+/** Publish a complete, tested Windows build; a draft never becomes the feed. */
+import { readFile, writeFile, stat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
+// Resolve the parsers from electron-updater's declared dependencies.
+const updaterRequire = createRequire(require.resolve('electron-updater/package.json'));
+const yaml = updaterRequire('js-yaml');
+const semver = updaterRequire('semver');
+const repo = 'mrchevyceleb/still-motion-studio';
+const run = (command, args) => execFileSync(command, args, { cwd: root, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const gh = args => run('gh', args);
+const api = args => JSON.parse(gh(['api', ...args]));
+const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
+if (!semver.valid(version) || semver.prerelease(version)) throw new Error('Publish a stable semantic version.');
+if (run('git', ['status', '--porcelain'])) throw new Error('Commit the release source before publishing.');
+const commit = run('git', ['rev-parse', 'HEAD']);
+const notes = path.resolve(root, process.argv[2] || `docs/releases/v${version}.md`);
+if (!(await readFile(notes, 'utf8')).trim()) throw new Error('Release notes are empty.');
+const directory = path.join(root, '.local', 'installers');
+const installer = `Still-Motion-Studio-Setup-${version}.exe`;
+const metadata = yaml.load(await readFile(path.join(directory, 'latest.yml'), 'utf8'));
+const packedVersion = JSON.parse(await readFile(path.join(directory, 'win-unpacked/resources/runtime/app/package.json'), 'utf8')).version;
+const info = metadata?.files?.find(file => file.url === installer);
+if (metadata?.version !== version || packedVersion !== version || metadata.path !== installer || !info) throw new Error('Build the current version before publishing.');
+const bytes = await readFile(path.join(directory, installer));
+const sha512 = createHash('sha512').update(bytes).digest('base64');
+if (info.sha512 !== sha512 || metadata.sha512 !== sha512 || info.size !== bytes.length) throw new Error('Installer hash or size differs from latest.yml.');
+await stat(path.join(directory, installer + '.blockmap'));
+const assets = [installer, installer + '.blockmap', 'latest.yml'];
+const sums = [];
+for (const file of assets) sums.push(`${createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex')}  ${file}`);
+await writeFile(path.join(directory, 'SHA256SUMS.txt'), sums.join('\n') + '\n');
+assets.push('SHA256SUMS.txt');
+await writeFile(path.join(directory, 'release-source.json'), JSON.stringify({ repository: repo, version, commit, installer, sha512 }, null, 2) + '\n');
+assets.push('release-source.json');
+let previous;
+try { previous = api([`repos/${repo}/releases/latest`]); }
+catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
+if (previous && !semver.gt(version, previous.tag_name.replace(/^v/, ''))) throw new Error('The release version must be newer than the current stable release.');
+const tag = `v${version}`;
+// GitHub ignores target_commitish when a tag already exists, even if that tag
+// has never been fetched locally. Resolve and peel the remote ref first.
+function verifyRemoteTag() {
+  let remoteTag;
+  try { remoteTag = api([`repos/${repo}/git/ref/tags/${tag}`]).object; }
+  catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
+  while (remoteTag?.type === 'tag') remoteTag = api([`repos/${repo}/git/tags/${remoteTag.sha}`]).object;
+  if (remoteTag && (remoteTag.type !== 'commit' || remoteTag.sha !== commit)) throw new Error('The remote version tag points to another commit.');
+}
+verifyRemoteTag();
+let release;
+try { release = api([`repos/${repo}/releases/tags/${tag}`]); }
+catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
+if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('This tag already belongs to another or published release.');
+if (!release) {
+  try {
+    const taggedCommit = run('git', ['rev-list', '-n', '1', tag]);
+    if (taggedCommit && taggedCommit !== commit) throw new Error('The version tag points to another commit.');
+  } catch (error) { if (!String(error.stderr || '').includes('unknown revision')) throw error; }
+  gh(['release', 'create', tag, '--repo', repo, '--draft', '--target', commit, '--title', `Still Motion Studio ${version}`, '--notes-file', notes]);
+}
+// Publish last: private clients must never observe a partially uploaded feed.
+gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
+const uploaded = api([`repos/${repo}/releases/tags/${tag}`]);
+for (const file of assets) {
+  const asset = uploaded.assets.find(value => value.name === file);
+  if (!asset || asset.size !== (await stat(path.join(directory, file))).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
+  const digest = createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex');
+  // A missing digest is not proof of a successful upload. Leave the release
+  // in draft; retry after GitHub has completed processing the assets.
+  if (asset.digest !== `sha256:${digest}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
+}
+verifyRemoteTag();
+gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
+const published = api([`repos/${repo}/releases/tags/${tag}`]);
+if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');
+console.log(`Published https://github.com/${repo}/releases/tag/${tag}`);

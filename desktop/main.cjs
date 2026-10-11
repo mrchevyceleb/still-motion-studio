@@ -1,16 +1,20 @@
-const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
 const { readFileSync } = require('node:fs');
 const { mkdir, writeFile, cp, access } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
+const { createUpdates } = require('./updates.cjs');
+const { NsisUpdater } = require('electron-updater');
+// An inherited CI/repository token must not override the user's stored login.
+for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
 
 app.setName('Still Motion Studio');
 if (process.platform === 'win32') app.setAppUserModelId('studio.still.motion');
 if (process.env.STILL_TEST_USER_DATA) app.setPath('userData', path.resolve(process.env.STILL_TEST_USER_DATA));
 const acquired = app.requestSingleInstanceLock();
 if (!acquired) app.quit();
-let window, tray, engine, quitting = false, stopped = false;
+let window, tray, engine, updates, quitting = false, stopped = false, installingUpdate = false;
 
 async function unusedPort() {
   const probe = net.createServer();
@@ -46,6 +50,7 @@ async function prepare(bundle, dataRoot) {
 async function shutdown() {
   if (quitting) return;
   quitting = true;
+  await updates?.stop();
   if (engine && !stopped) {
     await new Promise(resolve => {
       const timer = setTimeout(() => { engine.kill(); resolve(); }, 110000);
@@ -57,6 +62,25 @@ async function shutdown() {
   app.exit(0);
 }
 
+async function installUpdate(updater) {
+  if (quitting || stopped || installingUpdate) throw new Error('Reopen Still before installing this update.');
+  installingUpdate = true;
+  try {
+    await new Promise((resolve, reject) => {
+      const finish = error => { clearTimeout(timer); engine.removeListener('message', message); engine.removeListener('exit', exit); error ? reject(error) : resolve(); };
+      const message = value => { if (value.type === 'update-blocked') finish(new Error('Finish active work and resolve native cleanup before restarting.')); };
+      const exit = code => finish(code === 0 ? null : new Error('Native cleanup did not finish. Reopen Still and retry cleanup before updating.'));
+      const timer = setTimeout(() => finish(new Error('Engine shutdown is taking longer than expected. Wait for it to finish, then reopen Still.')), 110000);
+      engine.on('message', message); engine.once('exit', exit);
+      engine.postMessage({ type: 'shutdown-for-update' });
+    });
+    quitting = true;
+    await updates.stop();
+    tray?.destroy();
+    updater.quitAndInstall(true, true);
+  } finally { installingUpdate = false; }
+}
+
 function show() { if (window) { window.show(); window.focus(); } }
 app.on('second-instance', show);
 app.on('activate', show);
@@ -66,6 +90,11 @@ ipcMain.on('still:theme', (event, theme) => {
   if (event.sender !== window?.webContents || (theme !== 'light' && theme !== 'dark')) return;
   nativeTheme.themeSource = theme;
   window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
+});
+for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
+  if (!updates) throw new Error('Updates are not ready.');
+  return method === 'state' ? updates.getState() : method === 'install' ? updates.apply() : updates[method]();
 });
 
 if (acquired) app.whenReady().then(async () => {
@@ -80,7 +109,7 @@ if (acquired) app.whenReady().then(async () => {
   engine.stderr.on('data', chunk => { log = (log + chunk).slice(-12000); });
   engine.on('exit', code => {
     stopped = true;
-    if (!quitting) {
+    if (!quitting && !installingUpdate) {
       dialog.showErrorBox('Still engine stopped', `The local engine stopped (${code}). Reopen Still to recover.\n${log}`);
       void shutdown();
     }
@@ -97,12 +126,14 @@ if (acquired) app.whenReady().then(async () => {
   window.webContents.on('will-navigate', (event, target) => { if (new URL(target).origin !== url) event.preventDefault(); });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const menu = Menu.buildFromTemplate([
-    { label: 'Still', submenu: [{ label: 'Show editor', click: show }, { label: 'Agent tools', click: () => shell.openPath(path.join(dataRoot, 'agent-tools')) }, { label: 'Open local data', click: () => shell.openPath(dataRoot) }, { type: 'separator' }, { label: 'Quit Still', click: () => void shutdown() }] },
+    { label: 'Still', submenu: [{ label: 'Show editor', click: show }, { label: 'Updates…', click: () => { show(); window.webContents.send('still:updates:open'); } }, { label: 'Agent tools', click: () => shell.openPath(path.join(dataRoot, 'agent-tools')) }, { label: 'Open local data', click: () => shell.openPath(dataRoot) }, { type: 'separator' }, { label: 'Quit Still', click: () => void shutdown() }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
   ]);
   Menu.setApplicationMenu(menu);
   tray = new Tray(icon().resize({ width: 24, height: 24 })); tray.setToolTip('Still — agent scripting remains available');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Still', click: show }, { label: 'Quit Still', click: () => void shutdown() }])); tray.on('double-click', show);
+  updates = createUpdates({ app, safeStorage, bundle, Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
   await window.loadURL(url);
+  updates.start();
   if (process.env.STILL_BACKGROUND !== '1') show();
 }).catch(error => { dialog.showErrorBox('Still could not start', error.message); void shutdown(); });

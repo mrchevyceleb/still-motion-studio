@@ -448,5 +448,5 @@ export function createAgentService({ root, dataRoot = root, port }) {
       for (const job of jobs.values()) if (!TERMINAL.has(job.status)) await terminal(job, 'error', { code: 'SERVICE_STOPPED', message: 'The service stopped before completion acknowledgement. Inspect the scene; this command will not be retried.', details: { uncertain: !!job.dispatched } });
     });
   }
-  return { handle, stop };
+  return { handle, stop, isBusy: () => activeUploads > 0 || [...jobs.values()].some(job => !TERMINAL.has(job.status)) };
 }
