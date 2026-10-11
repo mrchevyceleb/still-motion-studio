@@ -600,7 +600,7 @@ def correct_motion(request: dict, progress: Callable[[str, float], None] | None 
     # A foot-only proxy cannot certify handstands, tumbling contacts or body
     # collisions. Expose that limitation per clip instead of hiding it behind
     # an apparently good mean-force number.
-    if np.count_nonzero(~dense_active.any(axis=1)) > len(frames) * .15:
+    if np.count_nonzero(~dense_active.any(axis=1)) > len(dense_active) * .15:
         review_reasons.append("Airborne or non-foot-supported motion needs acrobatic/contact review")
     if after["rootForceResidualRmsN"] > proxy.weight * .15: review_reasons.append("Significant unphysical root force remains")
     if after["rootTorqueResidualRmsNm"] > proxy.weight * proxy.height * .04: review_reasons.append("Significant unphysical root torque remains")

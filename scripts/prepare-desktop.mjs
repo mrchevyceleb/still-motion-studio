@@ -62,7 +62,7 @@ try {
     }
     const runtime = JSON.parse(await readFile(path.join(root, '.local', file), 'utf8'));
     if (provider !== 'physics') {
-      execFileSync(python, ['-m', 'backend.model_rights', provider, '--assert-release'], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true });
+      execFileSync(python, ['-m', 'backend.model_rights', provider, '--assert-release', '--runtime', path.join(root, '.local', file)], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true });
       const model = runtime.config.checkpointPath;
       const rel = relative(model);
       const destination = path.join(local, rel.slice(7));

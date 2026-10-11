@@ -1,8 +1,9 @@
 const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
 const { readFileSync } = require('node:fs');
-const { mkdir, readFile, writeFile, cp, access } = require('node:fs/promises');
+const { mkdir, writeFile, cp, access } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const { prepareRuntimes } = require('./runtime.cjs');
 
 app.setName('Still Motion Studio');
 if (process.platform === 'win32') app.setAppUserModelId('studio.still.motion');
@@ -26,18 +27,7 @@ function icon() {
 }
 
 async function prepare(bundle, dataRoot) {
-  await mkdir(dataRoot, { recursive: true });
-  // Models are small, immutable, hash-verified snapshots. Copy only missing
-  // files so an installation never overwrites a user's trained version.
-  await cp(path.join(bundle, 'local'), path.join(dataRoot, '.local'), { recursive: true, force: false, errorOnExist: false });
-  const catalog = JSON.parse(await readFile(path.join(bundle, 'catalog.json'), 'utf8'));
-  for (const entry of catalog.runtimes) {
-    const file = path.join(dataRoot, '.local', entry.file);
-    try { await access(file); continue; } catch { /* first install */ }
-    const expanded = JSON.stringify(entry.runtime).replaceAll('$DATA', dataRoot.replaceAll('\\', '/')).replaceAll('$APP', bundle.replaceAll('\\', '/'));
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, expanded);
-  }
+  await prepareRuntimes(bundle, dataRoot);
   const native = process.env.CASCADEUR_HOME || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cascadeur');
   try {
     await access(path.join(native, 'cascadeur.exe'));
@@ -83,7 +73,7 @@ if (acquired) app.whenReady().then(async () => {
   const dataRoot = app.getPath('userData');
   await prepare(bundle, dataRoot);
   const port = await unusedPort();
-  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(bundle, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
+  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(bundle, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(bundle, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   engine = utilityProcess.fork(path.join(bundle, 'app', 'server', 'engine.mjs'), [], { env, cwd: path.join(bundle, 'app'), stdio: 'pipe', serviceName: 'Still motion engine' });
   let log = '';

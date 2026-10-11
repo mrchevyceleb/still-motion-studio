@@ -17,7 +17,7 @@ MANIFEST = Path(__file__).with_name('model-rights.json')
 PERMITTED = {'permitted', 'project_trained', 'not_applicable'}
 
 
-def get_model_rights(provider_id: str) -> dict:
+def get_model_rights(provider_id: str, runtime_override: dict | None = None) -> dict:
     """Read known evidence and compute readiness; does not change local access."""
     document = json.loads(MANIFEST.read_text(encoding='utf-8'))
     provider_id = document.get('aliases', {}).get(provider_id, provider_id)
@@ -30,15 +30,19 @@ def get_model_rights(provider_id: str) -> dict:
     blockers = list(result.get('blockers', []))
     runtime_base = {'owned_humanoid': 'owned-humanoid', 'quadruped': 'quadruped'}.get(provider_id)
     runtime_file = DATA_ROOT / '.local' / runtime_base / 'runtime.json' if runtime_base else None
-    if runtime_file and runtime_file.is_file():
+    if runtime_override is not None or (runtime_file and runtime_file.is_file()):
         try:
-            runtime = json.loads(runtime_file.read_text(encoding='utf-8-sig'))
+            runtime = runtime_override if runtime_override is not None else json.loads(runtime_file.read_text(encoding='utf-8-sig'))
             installation = runtime.get('installation')
+            if runtime_override is not None and not installation:
+                raise ValueError('Desktop models require a complete verified installation manifest.')
             if installation:
                 from backend.model_bundle import sha, verify_bundle
                 directory = Path(runtime['config']['checkpointPath']).resolve()
                 if not directory.is_relative_to(DATA_ROOT):
                     raise ValueError('Installed model must remain within the application data directory.')
+                if directory.is_file() or (directory / 'complete.json').is_dir():
+                    raise ValueError('Installed model paths have an invalid file/directory shape.')
                 metadata, validation, bundle = verify_bundle(directory, entry.get('approvedCorpusSha256'), approved_files_hash=entry.get('approvedCorpusFilesSha256'))
                 if installation.get('provider') != provider_id or installation.get('modelSha256') != metadata['modelSha256'] or runtime['config'].get('modelSha256') != metadata['modelSha256'] or installation.get('bundleManifestSha256') != sha(directory / 'complete.json') or installation.get('approvedCorpusSha256') != metadata['dataIndexSha256']:
                     raise ValueError('Installed runtime and provenance bundle identities disagree.')
@@ -46,7 +50,11 @@ def get_model_rights(provider_id: str) -> dict:
                                    'initializedFrom': 'random', 'pretrainedWeightsUsed': False, 'parameters': metadata['parameters']}
                 result['evidenceArtifacts'] = [{'path': str(directory / relative), 'sha256': digest} for relative, digest in bundle['files'].items() if relative != 'model.safetensors']
                 result['qualityValidation'] = validation
-        except (ValueError, KeyError, OSError, TypeError) as error:
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            blockers.append('Installed model bundle verification failed: ' + str(error))
+        except OSError as error:
+            if runtime_override is not None and not isinstance(error, (FileNotFoundError, IsADirectoryError, NotADirectoryError)):
+                raise  # A temporary I/O failure must not reject an installed model.
             blockers.append('Installed model bundle verification failed: ' + str(error))
     for category in ['code', 'weights', 'trainingData', 'outputs']:
         if result.get('rights', {}).get(category, {}).get('status') not in PERMITTED:
@@ -71,9 +79,9 @@ def get_model_rights(provider_id: str) -> dict:
     return result
 
 
-def assert_commercial_release(provider_id: str) -> dict:
+def assert_commercial_release(provider_id: str, runtime_override: dict | None = None) -> dict:
     """Raise unless this exact model's documented asset permission chain passes."""
-    rights = get_model_rights(provider_id)
+    rights = get_model_rights(provider_id, runtime_override)
     if not rights['commercialReleaseAllowed']:
         raise ValueError(f'Commercial model release is not cleared for {provider_id}: ' + ' '.join(rights['blockers']))
     for artifact in rights.get('evidenceArtifacts', []):
@@ -87,11 +95,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('provider')
     parser.add_argument('--assert-release', action='store_true')
+    parser.add_argument('--runtime', type=Path, help='Verify this candidate desktop runtime before activation.')
     args = parser.parse_args()
     try:
-        rights = assert_commercial_release(args.provider) if args.assert_release else get_model_rights(args.provider)
+        runtime = json.loads(args.runtime.read_text(encoding='utf-8-sig')) if args.runtime else None
+        if args.runtime and not isinstance(runtime, dict):
+            raise ValueError('The candidate runtime must be a JSON object.')
+        rights = assert_commercial_release(args.provider, runtime) if args.assert_release else get_model_rights(args.provider, runtime)
     except ValueError as error:
         parser.exit(2, str(error) + '\n')
+    except OSError as error:
+        parser.exit(3, 'Model verification could not read its files: ' + str(error) + '\n')
     print(json.dumps(rights, indent=2))
 
 
