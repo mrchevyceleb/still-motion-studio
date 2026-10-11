@@ -23,7 +23,7 @@ import type { UnrealExportCapability } from './engine/unrealExport';
 import { archiveLocal, downloadFile, embedCharacter, listArchives, loadLocal, readArchive, saveLocal, validateProject } from './engine/project';
 import type { ArchiveEntry } from './engine/project';
 import { DEFAULT_SETTINGS } from './types';
-import { duplicateMoment, nearestFreeKeyTime } from './engine/keyframeEditing';
+import { duplicateMoment, MAX_ANIMATION_DURATION, nearestFreeKeyTime } from './engine/keyframeEditing';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind } from './types';
 
 interface Studio { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
@@ -129,9 +129,9 @@ export default function App() {
     return [e.x, e.y, e.z].map(v => Math.round(MathUtils.radToDeg(v) * 10) / 10);
   }, [selectedBone, currentPose]);
 
-  function cancelKeyDrag() {
+  function cancelKeyDrag(pointerId?: number) {
     const drag = keyDrag.current;
-    if (!drag) return;
+    if (!drag || (pointerId !== undefined && drag.pointerId !== pointerId)) return;
     keyDrag.current = null;
     setDragPreview(null);
     if (drag.studio === agentVersion.current.studio && drag.asset === agentVersion.current.asset && drag.fps === agentVersion.current.fps) setTime(Math.min(drag.beforeTime, drag.studio.duration));
@@ -267,7 +267,7 @@ export default function App() {
   const duplicateKey = useCallback(() => {
     if (!selectedKey || keyDrag.current) return;
     const duplicate = duplicateMoment(studio.keys, selectedKey, studio.duration, fps);
-    if (!duplicate) { notify('The timeline has no empty frames. Increase its duration or remove a pose.'); return; }
+    if (!duplicate) { notify(selectedKey.time === studio.duration && studio.duration === MAX_ANIMATION_DURATION ? 'This moment is at the 10-minute limit. Move it earlier to make room for a copy.' : 'The timeline has no empty frames. Increase its duration or remove a pose.'); return; }
     commit({ ...studio, keys: duplicate.keys, duration: duplicate.duration, sourceClip: null }, 'Moment duplicated. Drag its diamond to change the timing.');
     setPlaying(false); setTime(duplicate.key.time);
   }, [selectedKey, studio, fps, commit, notify]);
@@ -468,6 +468,8 @@ export default function App() {
   const previewKeyDrag = (clientX: number, pointerId: number) => {
     const drag = keyDrag.current;
     if (!drag || drag.pointerId !== pointerId) return;
+    const current = agentVersion.current;
+    if (drag.studio !== current.studio || drag.asset !== current.asset || drag.fps !== current.fps) { cancelKeyDrag(pointerId); return; }
     if (!drag.moved && Math.abs(clientX - drag.startX) <= 4) return;
     const rect = timeline.current?.getBoundingClientRect(); if (!rect) return;
     if (rect.width <= 0) return;
@@ -480,9 +482,11 @@ export default function App() {
   const finishKeyDrag = (clientX: number, pointerId: number) => {
     const drag = keyDrag.current;
     if (!drag || drag.pointerId !== pointerId) return;
+    const current = agentVersion.current;
+    if (drag.studio !== current.studio || drag.asset !== current.asset || drag.fps !== current.fps) { cancelKeyDrag(pointerId); return; }
     previewKeyDrag(clientX, pointerId);
     keyDrag.current = null; setDragPreview(null);
-    if (drag.studio === studio && drag.asset === asset && drag.moved && drag.time !== drag.startTime) {
+    if (drag.moved && drag.time !== drag.startTime) {
       commit({ ...studio, sourceClip: null, keys: studio.keys.map(key => key.id === drag.id ? { ...key, time: drag.time } : key).sort((a, b) => a.time - b.time) });
       setTime(drag.time);
     }
@@ -495,7 +499,7 @@ export default function App() {
     setPlaying(false); setTime(nextTime);
   };
   const changeDuration = (value: number) => {
-    if (!Number.isFinite(value) || value < .1 || value > 120) return;
+    if (!Number.isFinite(value) || value < .1 || value > MAX_ANIMATION_DURATION) return;
     commit({ ...studio, sourceClip: null, duration: value, keys: studio.keys.map(k => ({ ...k, time: k.time * value / studio.duration })) });
     setTime(t => Math.min(value, t * value / studio.duration));
   };
@@ -629,19 +633,19 @@ export default function App() {
         <section className="timeline-section" aria-label="Animation timeline"><div className="timeline-heading"><div className="timeline-title"><h2>Your moments</h2><span>{studio.keys.length} poses<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generated ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions">{studio.keys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="button duplicate-pose-button" title="Duplicate selected moment · Ctrl D" aria-label="Duplicate selected moment" disabled={!selectedKey || !asset.rigged || !!dragPreview} onClick={duplicateKey}><Copy size={14}/><span>Duplicate</span></button><button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={!selectedKey || studio.keys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button><button className="button add-pose-button" disabled={!asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
           <div className="pose-cards">{shownKeys.map((key) => <button className={`pose-card ${selectedKey?.id === key.id ? 'selected' : ''}`} key={key.id} onClick={() => { setPlaying(false); setTime(key.time); }} aria-label={`Go to pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}><div className="pose-card-top"><span>{String(poseKeys.findIndex(k => k.id === key.id) + 1).padStart(2, '0')}</span><span className="key-diamond"/></div><PoseThumbnail asset={asset} pose={key.pose}/><div className="pose-card-caption"><span>{key.label || `Pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}</span><span>{key.time.toFixed(2)}s</span></div></button>)}<button className="new-pose-card" title="Add a pose at the playhead" disabled={!asset.rigged} onClick={addKey}><Plus size={19}/><span>A new moment</span></button></div>
           <div className="scrubber" ref={timeline} data-dragging={!!dragPreview}
-            onPointerDown={e => { if (e.button !== 0 || (e.target as HTMLElement).closest('.timeline-key')) return; e.currentTarget.setPointerCapture(e.pointerId); scrub(e.clientX); }}
+            onPointerDown={e => { if (e.button !== 0 || keyDrag.current || (e.target as HTMLElement).closest('.timeline-key')) return; e.currentTarget.setPointerCapture(e.pointerId); scrub(e.clientX); }}
             onPointerMove={e => { if (!e.currentTarget.hasPointerCapture(e.pointerId)) return; if (keyDrag.current) previewKeyDrag(e.clientX, e.pointerId); else scrub(e.clientX); }}
             onPointerUp={e => { if (keyDrag.current) finishKeyDrag(e.clientX, e.pointerId); if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
-            onPointerCancel={() => cancelKeyDrag()} onLostPointerCapture={() => cancelKeyDrag()}>
+            onPointerCancel={e => cancelKeyDrag(e.pointerId)} onLostPointerCapture={e => cancelKeyDrag(e.pointerId)}>
             <div className="ruler-labels">{Array.from({ length: 9 }, (_, i) => <span key={i}>{(studio.duration * i / 8).toFixed(1)}<small>s</small></span>)}</div>
             <div className="timeline-track"><div className="timeline-progress" style={{ width: `${time / studio.duration * 100}%` }}/>{poseKeys.map((key, i) => <button key={key.id} className={`timeline-key ${selectedKey?.id === key.id ? 'selected' : ''} ${dragPreview?.id === key.id ? 'dragging' : ''}`} style={{ left: `${key.time / studio.duration * 100}%` }}
               aria-label={`Pose ${i + 1} at ${key.time.toFixed(2)} seconds. Drag or use Alt and arrow keys to retime.`} title={`Pose ${i + 1} · ${key.time.toFixed(2)}s · drag or Alt ← → to retime`} disabled={!!busy}
               onKeyDown={e => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); e.stopPropagation(); nudgeKey(key, e.key === 'ArrowLeft' ? -1 : 1); } }}
               onClick={e => { if (e.detail === 0) { setPlaying(false); setTime(key.time); } }}
-              onPointerDown={e => { if (e.button !== 0 || !timeline.current) return; e.stopPropagation(); cancelKeyDrag(); keyDrag.current = { id: key.id, pointerId: e.pointerId, startX: e.clientX, startTime: key.time, time: key.time, beforeTime: time, moved: false, studio, asset, fps }; timeline.current.setPointerCapture(e.pointerId); setPlaying(false); setTime(key.time); }}/>)}</div>
+              onPointerDown={e => { e.stopPropagation(); if (e.button !== 0 || !timeline.current || keyDrag.current) return; keyDrag.current = { id: key.id, pointerId: e.pointerId, startX: e.clientX, startTime: key.time, time: key.time, beforeTime: time, moved: false, studio, asset, fps }; timeline.current.setPointerCapture(e.pointerId); setPlaying(false); setTime(key.time); }}/>)}</div>
             <div className="playhead" style={{ left: `${time / studio.duration * 100}%` }}><span/></div><input className="accessible-scrubber" aria-label="Timeline playhead" type="range" min="0" max={studio.duration} step={1 / fps} value={time} onChange={e => { setPlaying(false); setTime(Number(e.target.value)); }}/>
           </div>
-          <div className="transport"><div className="playback-buttons"><button className="icon-button" aria-label="Go to beginning" onClick={() => { setPlaying(false); setTime(0); }}><SkipBack size={15}/></button><button className="icon-button" aria-label="Previous frame" onClick={() => { setPlaying(false); setTime(t => Math.max(0, t - 1 / fps)); }}><ChevronLeft size={19}/></button><button className="play-button" aria-label={playing ? 'Pause animation' : 'Play animation'} onClick={() => setPlaying(v => !v)}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="icon-button" aria-label="Next frame" onClick={() => { setPlaying(false); setTime(t => Math.min(studio.duration, t + 1 / fps)); }}><ChevronRight size={19}/></button><button className="icon-button" aria-label="Go to end" onClick={() => { setPlaying(false); setTime(studio.duration); }}><SkipForward size={15}/></button><span className="timecode">{time.toFixed(2)}<span>/ {studio.duration.toFixed(2)} s</span></span></div><span className="transport-tip"><kbd>space</kbd> to play. Curiosity to create.</span><div className="duration-controls"><label><input aria-label="Animation duration seconds" type="number" min=".1" max="120" step=".5" value={Number(studio.duration.toFixed(3))} onChange={e => changeDuration(Number(e.target.value))}/>sec</label><select aria-label="Frames per second" value={fps} onChange={e => setFps(Number(e.target.value))}><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div></div>
+          <div className="transport"><div className="playback-buttons"><button className="icon-button" aria-label="Go to beginning" onClick={() => { setPlaying(false); setTime(0); }}><SkipBack size={15}/></button><button className="icon-button" aria-label="Previous frame" onClick={() => { setPlaying(false); setTime(t => Math.max(0, t - 1 / fps)); }}><ChevronLeft size={19}/></button><button className="play-button" aria-label={playing ? 'Pause animation' : 'Play animation'} onClick={() => setPlaying(v => !v)}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="icon-button" aria-label="Next frame" onClick={() => { setPlaying(false); setTime(t => Math.min(studio.duration, t + 1 / fps)); }}><ChevronRight size={19}/></button><button className="icon-button" aria-label="Go to end" onClick={() => { setPlaying(false); setTime(studio.duration); }}><SkipForward size={15}/></button><span className="timecode">{time.toFixed(2)}<span>/ {studio.duration.toFixed(2)} s</span></span></div><span className="transport-tip"><kbd>space</kbd> to play. Curiosity to create.</span><div className="duration-controls"><label><input aria-label="Animation duration seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step=".5" value={Number(studio.duration.toFixed(3))} onChange={e => changeDuration(Number(e.target.value))}/>sec</label><select aria-label="Frames per second" value={fps} onChange={e => setFps(Number(e.target.value))}><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div></div>
         </section>
         <footer className="editor-footer"><span><span className="status-dot"/>Everything stays on your device.</span><div className="ticker"><span>SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY. &nbsp;✳&nbsp; SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY.</span></div><button onClick={() => setDialog('help')}><Keyboard size={13}/><span>Shortcuts</span></button></footer>
       </main>
