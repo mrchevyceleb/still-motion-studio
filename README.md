@@ -2,11 +2,11 @@
 
 A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-Release 0.2.5 adds private GitHub releases and automatic background updates, preserving scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
+Release 0.2.6 fixes Mixamo bone names in Unreal exports and adds direct animation import onto a matching existing Unreal skeleton. Private automatic updates preserve scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
 
 ## Install or develop
 
-Download **Still-Motion-Studio-Setup-0.2.5.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
+Download **Still-Motion-Studio-Setup-0.2.6.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 
