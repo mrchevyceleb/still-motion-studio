@@ -20,6 +20,8 @@ For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open 
 
 Open **Scenes** to manage the permanent library on this device. Each scene autosaves independently; recent backups remain available for recovery. Use timeline **Select** to drag across multiple keyframes and delete them together. Physics passes offer a saved **Before/After** preview and a measurements report. Export a `.still` file for a portable backup before clearing local app data.
 
+Open timeline **Position & property tools** to correct several poses together. Move one pose in the viewport or enter its model position (meters; Enter or leave the field to apply), select keyframes, choose X/Y/Z, and apply **Same correction** to preserve their movement. **Copy current values → Exact value** pastes only the chosen position or joint rotation axes. The source pose is never shifted twice. Each bulk edit is one Undo; editing authored poses clears an old generated take. **Move entire animation** offsets all authored and generated frames together, preserving the take and clearing outdated physics measurements. These edits save and export with the scene.
+
 ## Agent scripting
 
 The desktop app keeps scripting alive when closed to its tray; no browser tab is required. **Quit Still** stops the service. The browser development version still needs its tab open. Use **Still → Agent tools** for the local SDK and MCP server. Development commands: `node scripts/still-agent.mjs sessions` and `node scripts/still-agent.mjs schema`.
