@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -19,6 +19,7 @@ export interface ViewportProps {
   theme: Theme;
   asset: CharacterAsset;
   pose: Pose;
+  comparisonPose?: Pose;
   selectedBone: number | null;
   onSelectBone: (index: number | null) => void;
   onPoseChange: (pose: Pose) => void;
@@ -36,6 +37,7 @@ type Runtime = ViewportAPI & {
   setTheme: (theme: Theme) => void;
   frame: (view: ViewportProps['cameraView']) => void;
   ghosts: (poses: Pose[], visible: boolean) => void;
+  refresh: () => void;
 };
 
 function jointTexture(selected: boolean): THREE.CanvasTexture {
@@ -265,13 +267,20 @@ export default function Viewport(props: ViewportProps) {
     function setPointer(event: PointerEvent) {
       const rect = canvas.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return false;
-      pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+      const paneWidth = latest.current.comparisonPose ? rect.width / 2 : rect.width;
+      const offset = latest.current.comparisonPose ? paneWidth : 0;
+      pointer.set(((event.clientX - rect.left - offset) / paneWidth) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
       raycaster.setFromCamera(pointer, camera);
       return true;
     }
 
+    function isBeforePane(event: PointerEvent) {
+      const rect = canvas.getBoundingClientRect();
+      return !!latest.current.comparisonPose && event.clientX < rect.left + rect.width / 2;
+    }
+
     function pointerDown(event: PointerEvent) {
-      if (event.button !== 0 || latest.current.editable === false || !latest.current.showRig || !setPointer(event)) return;
+      if (event.button !== 0 || isBeforePane(event) || latest.current.editable === false || !latest.current.showRig || !setPointer(event)) return;
       const hit = raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
       if (!hit) return;
       event.stopImmediatePropagation();
@@ -292,7 +301,7 @@ export default function Viewport(props: ViewportProps) {
     function pointerMove(event: PointerEvent) {
       if (!setPointer(event)) return;
       if (!drag) {
-        canvas.style.cursor = latest.current.editable !== false && latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
+        canvas.style.cursor = !isBeforePane(event) && latest.current.editable !== false && latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
         return;
       }
       event.stopImmediatePropagation();
@@ -339,17 +348,21 @@ export default function Viewport(props: ViewportProps) {
     let width = 0;
     let height = 0;
     let initialFrame = false;
+    let coordinatesDirty = true;
+    orbit.addEventListener('change', () => { coordinatesDirty = true; });
     function resize() {
       width = host!.clientWidth;
       height = host!.clientHeight;
       if (width <= 0 || height <= 0) return;
       renderer.setSize(width, height, false);
-      camera.aspect = width / height;
+      camera.aspect = (latest.current.comparisonPose ? width / 2 : width) / height;
       camera.updateProjectionMatrix();
       if (!initialFrame) {
         frame(latest.current.cameraView);
         initialFrame = true;
       }
+      coordinatesDirty = true;
+      runtime.current?.refresh();
     }
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -357,17 +370,19 @@ export default function Viewport(props: ViewportProps) {
     updateGhosts(latest.current.ghostPoses, latest.current.showGhosts);
     let raf = 0;
     let lastCoordinates = 0;
+    let lastPose: Pose | undefined;
+    let lastComparisonPose: Pose | undefined;
     let disposed = false;
-    function renderScene(now: number) {
-      orbit.update();
-      if (!drag) applyPose(asset, latest.current.pose);
+    function renderPose(pose: Pose, before: boolean, paneWidth: number, offset: number, updateCoordinates: boolean) {
+      applyPose(asset, pose);
       asset.root.updateMatrixWorld(true);
       const current = latest.current;
+      ghosts.visible = current.showGhosts && !before;
       rigLines.visible = current.showRig;
       for (let i = 0; i < asset.bones.length; i++) {
         asset.bones[i].getWorldPosition(positions[i]);
         handles[i].position.copy(positions[i]);
-        const selected = current.selectedBone === i;
+        const selected = !before && current.selectedBone === i;
         handles[i].material = selected ? selectedMaterial : regularMaterial;
         // Keep joint targets comfortable to click at every zoom level.
         const distance = camera.position.distanceTo(positions[i]);
@@ -382,13 +397,42 @@ export default function Viewport(props: ViewportProps) {
       });
       lineGeometry.attributes.position.needsUpdate = true;
       renderer.render(scene, camera);
-      if (now - lastCoordinates > 180) {
+      if (updateCoordinates) {
         const coordinates = positions.map((position, index) => {
           temporary.copy(position).project(camera);
-          return { index, name: asset.bones[index].name, x: Math.round((temporary.x + 1) * width / 2), y: Math.round((1 - temporary.y) * height / 2), visible: handles[index].visible && Math.abs(temporary.x) <= 1 && Math.abs(temporary.y) <= 1 && temporary.z > -1 && temporary.z < 1 };
+          return { index, name: asset.bones[index].name, x: Math.round(offset + (temporary.x + 1) * paneWidth / 2), y: Math.round((1 - temporary.y) * height / 2), visible: handles[index].visible && Math.abs(temporary.x) <= 1 && Math.abs(temporary.y) <= 1 && temporary.z > -1 && temporary.z < 1 };
         });
-        canvas.dataset.joints = JSON.stringify(coordinates);
-        lastCoordinates = now;
+        if (before) canvas.dataset.beforeJoints = JSON.stringify(coordinates);
+        else canvas.dataset.joints = JSON.stringify(coordinates);
+      }
+    }
+    function renderScene(now: number, forceCoordinates = false) {
+      orbit.update();
+      const current = latest.current;
+      // Draw both versions with one camera and playhead, then leave the live
+      // skeleton in its editable After pose for picking, scripts and exports.
+      const afterPose = drag ? capturePose(asset) : current.pose;
+      const split = !!current.comparisonPose;
+      const paneWidth = split ? width / 2 : width;
+      if (camera.aspect !== paneWidth / height) {
+        camera.aspect = paneWidth / height;
+        camera.updateProjectionMatrix();
+      }
+      const updateCoordinates = forceCoordinates || coordinatesDirty || afterPose !== lastPose || current.comparisonPose !== lastComparisonPose || now - lastCoordinates > 180;
+      renderer.setScissorTest(split);
+      if (current.comparisonPose) {
+        renderer.setViewport(0, 0, paneWidth, height);
+        renderer.setScissor(0, 0, paneWidth, height);
+        renderPose(current.comparisonPose, true, paneWidth, 0, updateCoordinates);
+      } else {
+        delete canvas.dataset.beforeJoints;
+      }
+      renderer.setViewport(split ? paneWidth : 0, 0, paneWidth, height);
+      renderer.setScissor(split ? paneWidth : 0, 0, paneWidth, height);
+      renderPose(afterPose, false, paneWidth, split ? paneWidth : 0, updateCoordinates);
+      renderer.setScissorTest(false);
+      if (updateCoordinates) {
+        lastCoordinates = now; lastPose = afterPose; lastComparisonPose = current.comparisonPose; coordinatesDirty = false;
       }
     }
     const getCamera = (): CameraSnapshot => {
@@ -397,6 +441,7 @@ export default function Viewport(props: ViewportProps) {
     };
     const api: Runtime = {
       frame, ghosts: updateGhosts, getCamera, setTheme,
+      refresh: () => { if (width > 0 && height > 0) renderScene(performance.now(), true); },
       capture: async () => {
         if (disposed) throw new Error('This viewport is no longer active.');
         resize();
@@ -424,6 +469,7 @@ export default function Viewport(props: ViewportProps) {
         camera.position.copy(position); orbit.target.copy(target);
         if (view.fov !== undefined) { camera.fov = view.fov; camera.updateProjectionMatrix(); }
         camera.lookAt(target); orbit.update(); orbit.enableDamping = damping;
+        if (width > 0 && height > 0) renderScene(performance.now(), true);
         return getCamera();
       },
     };
@@ -472,16 +518,25 @@ export default function Viewport(props: ViewportProps) {
     return () => { if (ref?.current === api) ref.current = null; };
   }, [props.apiRef, props.asset]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyPose(props.asset, props.pose);
     props.asset.root.updateMatrixWorld(true);
-  }, [props.asset, props.pose]);
+    runtime.current?.refresh();
+  }, [props.asset, props.pose, props.comparisonPose]);
 
   useEffect(() => { runtime.current?.frame(props.cameraView); }, [props.cameraView]);
   useEffect(() => { runtime.current?.setTheme(props.theme); }, [props.theme, props.asset]);
   useEffect(() => { runtime.current?.ghosts(props.ghostPoses, props.showGhosts); }, [props.asset, props.ghostPoses, props.showGhosts]);
+  useEffect(() => {
+    const canvas = container.current?.querySelector('canvas');
+    canvas?.setAttribute('aria-label', props.comparisonPose
+      ? 'Side-by-side physics comparison. Before on the left, After on the right. Drag either background to orbit both views. Edit joints on the right.'
+      : props.editable === false ? 'Before physics preview. Drag the background to orbit.'
+      : 'Interactive character pose editor. Drag a joint to pose it, or drag the background to orbit.');
+  }, [!!props.comparisonPose, props.editable, props.asset]);
 
   return <div ref={container} className="motion-viewport" data-testid="viewport">
+    {props.comparisonPose && <div className="viewport-split-labels" aria-label="Side-by-side physics comparison"><span><span className="viewport-split-label"><strong>Before</strong>Original motion</span></span><span><span className="viewport-split-label"><strong>After</strong>Physics correction</span></span></div>}
     {error && <div className="motion-viewport-error"><strong>Unable to open the 3D view</strong><p>{error}</p></div>}
   </div>;
 }

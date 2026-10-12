@@ -27,7 +27,7 @@ export default function PhysicsComparison({ generation, onSaveReport }: Props) {
   const review = quality.requiresReview === true;
   return <section className="physics-comparison" aria-label="Physics comparison">
     <div className="physics-comparison-heading"><div><h2>Did physics help?</h2><p>{generation.name} · {review ? 'Applied · review needed' : 'Applied'}</p></div></div>
-    <p className="physics-compare-hint">{comparison ? 'Use Before / After above the character while playing or scrubbing. Both use the same time and camera. Before is a preview; edits and exports use After.' : 'This older pass has no saved before preview. Run physics again to save both versions.'}</p>
+    <p className="physics-compare-hint">{comparison ? 'Use Side by side above the character to watch Before and After together, or view either on its own. Playing, scrubbing and camera moves stay in sync. Before is a preview; edits and exports use After.' : 'This older pass has no saved before preview. Run physics again to save both versions.'}</p>
     {rows.length > 0 ? <div className="physics-metrics-scroll"><table><caption>Motion measurements · lower is better</caption><thead><tr><th scope="col">Measurement</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead><tbody>
       {rows.map(row => {
         const difference = row.before !== undefined && row.after !== undefined ? row.after - row.before : undefined;
