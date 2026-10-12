@@ -216,13 +216,13 @@ export default function App() {
     if (!previous) return;
     history.current.future.push(clone({ ...studio, rigKind: asset.kind }));
     setStudio(previous); setTime(t => Math.min(t, previous.duration)); setPlaying(false); setHistoryVersion(v => v + 1); dirty.current = true;
-    if (previous.rigKind) setAsset(current => ({ ...current, kind: previous.rigKind! }));
+    if (previous.rigKind) setAsset(current => current.kind === previous.rigKind ? current : { ...current, kind: previous.rigKind! });
   }, [studio, asset.kind]);
   const redo = useCallback(() => {
     const next = history.current.future.pop();
     if (!next) return;
     history.current.past.push(clone({ ...studio, rigKind: asset.kind })); setStudio(next); setTime(t => Math.min(t, next.duration)); setPlaying(false); setHistoryVersion(v => v + 1); dirty.current = true;
-    if (next.rigKind) setAsset(current => ({ ...current, kind: next.rigKind! }));
+    if (next.rigKind) setAsset(current => current.kind === next.rigKind ? current : { ...current, kind: next.rigKind! });
   }, [studio, asset.kind]);
 
   const documentFor = useCallback((): ProjectDocument => ({ version: 1, name: studio.title, duration: studio.duration, fps, keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded]);
