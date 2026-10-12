@@ -1,6 +1,6 @@
 # Windows desktop
 
-Download **Still-Motion-Studio-Setup-0.2.6.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+Download **Still-Motion-Studio-Setup-0.2.7.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
 
 Closing the editor hides it to the tray. Agent commands, rendering, and generation continue in that workspace. Double-click the tray icon to reopen; **Quit Still** stops the engine and performs native cleanup. The app must remain running for scripting to work.
 
@@ -28,6 +28,6 @@ No CondMDI checkpoint, user FBX, training mesh, Epic target character, or Cascad
 
 The current installer omits the standalone humanoid model because it failed the corrected quality gate. Use curve interpolation or the licensed Cascadeur adapter for human motion. Old development weights remain backed up locally for research.
 
-On launch, 0.2.5 resolves the current bundled Python and physics paths, verifies model hashes, provenance and held-out quality, and retains valid user-trained versions. Invalid runtime manifests are backed up as `runtime.rejected-<id>.json`; checkpoint data is preserved. A rejected model omitted from the catalog stays unavailable. Pending native cleanup records are durably rebased to the current Python before replay; a failed rebase retains the cleanup obligation.
+On launch, the app resolves the current bundled Python and physics paths, verifies model hashes, provenance and held-out quality, and retains valid user-trained versions. Invalid runtime manifests are backed up as `runtime.rejected-<id>.json`; checkpoint data is preserved. A rejected model omitted from the catalog stays unavailable. Pending native cleanup records are durably rebased to the current Python before replay; a failed rebase retains the cleanup obligation.
 
-Timeline duration editing supports 0.1–600 seconds. Duplicating a final moment at the 10-minute limit reports that room is needed, without moving the copy backwards. See the historical [0.2 validation and review findings](../reports/Release-0.2-validation.md).
+Timeline duration editing supports 0.1–600 seconds. Enable **Ripple**, or hold **Shift** while dragging a diamond, to move that moment and every later pose together. The clip length adjusts while later spacing stays intact; **Ctrl Z** undoes the entire edit. **Alt Shift ← / →** ripples by one frame with a diamond focused. Timeline gestures do not activate the file-drop overlay. Duplicating a final moment at the 10-minute limit reports that room is needed, without moving the copy backwards. See the historical [0.2 validation and review findings](../reports/Release-0.2-validation.md).
