@@ -6,7 +6,7 @@ export type Quat = [number, number, number, number];
 export interface BonePose { position: Vec3; quaternion: Quat; scale: Vec3 }
 export type Pose = BonePose[];
 export interface PoseKey { id: string; time: number; pose: Pose; label?: string }
-export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[] }
+export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[]; comparison?: { before: PoseKey[]; interpolation: InterpolationMode } }
 export type InterpolationMode = 'smooth' | 'linear' | 'stepped';
 export interface MotionSettings { interpolation: InterpolationMode; floorContact: boolean; gravity: number; strength: number }
 export interface CharacterAsset {

@@ -4,7 +4,7 @@ import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
-import { listArchives, readArchive, saveLocal } from './project';
+import { listArchives, readArchive } from './project';
 import { DEFAULT_SETTINGS } from '../types';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind } from '../types';
 
@@ -21,6 +21,7 @@ export interface AgentEditor {
   snapshot(): Record<string, unknown>;
   document(): ProjectDocument;
   archive(): Promise<void>;
+  save(): Promise<void>;
   restore(document: unknown, signal: AbortSignal): Promise<void>;
   replace(asset: CharacterAsset, studio: AgentStudio, time?: number): void;
   commit(studio: AgentStudio): void;
@@ -34,6 +35,11 @@ export interface AgentEditor {
 
 export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'keys.list', 'clips.list']);
 const copy = <T,>(value: T): T => structuredClone(value);
+const generationReport = (generation: MotionGeneration | undefined) => {
+  if (!generation) return null;
+  const { comparison: _comparison, ...report } = generation;
+  return report;
+};
 const uid = () => crypto.randomUUID();
 const number = (value: unknown, label: string, min: number, max: number): number => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${label} must be between ${min} and ${max}.`);
@@ -73,12 +79,12 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
   const artifact = async (blob: Blob, name: string) => ({ ...await uploadAgentFile(blob, name, signal) });
 
   switch (method) {
-    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, generation: studio.generation ?? null };
+    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, generation: generationReport(studio.generation) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
       const document = editor.document();
-      await saveLocal(document); signal.throwIfAborted();
+      await editor.save(); signal.throwIfAborted();
       return artifact(new Blob([JSON.stringify(document)], { type: 'application/json' }), `${studio.title || 'Untitled'}.still`);
     }
     case 'scene.rename': commit({ ...studio, title: nameOf(params.name, studio.title) }); return editor.snapshot();
@@ -237,10 +243,10 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       try {
         const result = await generateMotion(request, editor.progress, signal); signal.throwIfAborted();
         const generated = restoreEngineFrames(asset, sequence, anchors, result, mode, studio.duration, provider.learned);
-        const keys = provider.learned ? anchors : anchors.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
-        const generation = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [] };
+        const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
+        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: copy(sequence), interpolation: mode } } : {}) };
         commit({ ...studio, keys, generated, generation, sourceClip: null });
-        return { ...editor.snapshot(), generation, generatedFrames: generated.length };
+        return { ...editor.snapshot(), generation: generationReport(generation), generatedFrames: generated.length };
       } finally { applyPose(asset, editor.pose); }
     }
     case 'export': {

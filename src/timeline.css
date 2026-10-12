@@ -11,6 +11,10 @@
 .timeline-key.ripple-moving { box-shadow: 0 0 0 3px #8ea86650; }
 .timeline-key.dragging { z-index: 4; cursor: grabbing; box-shadow: 0 0 0 4px #8ea86640; }
 .scrubber[data-dragging='true'] { cursor: grabbing; }
+.scrubber[data-selecting='true'], .scrubber[data-selecting='true'] .timeline-key { cursor: crosshair; }
+.timeline-selection-range { position: absolute; top: -11px; bottom: -11px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.timeline-key.multi-selected { background: var(--accent); border-color: var(--paper); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); z-index: 3; }
+.selection-delete { font-size: 10px; padding: 6px 9px; }
 @media (max-width: 720px) {
   .duplicate-pose-button { padding: 7px; }
   .duplicate-pose-button span { display: none; }

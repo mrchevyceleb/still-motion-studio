@@ -28,6 +28,7 @@ export interface ViewportProps {
   cameraView: 'perspective' | 'front' | 'side';
   tool: 'move' | 'rotate';
   playing: boolean;
+  editable?: boolean;
   apiRef?: MutableRefObject<ViewportAPI | null>;
 }
 
@@ -270,7 +271,7 @@ export default function Viewport(props: ViewportProps) {
     }
 
     function pointerDown(event: PointerEvent) {
-      if (event.button !== 0 || !latest.current.showRig || !setPointer(event)) return;
+      if (event.button !== 0 || latest.current.editable === false || !latest.current.showRig || !setPointer(event)) return;
       const hit = raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
       if (!hit) return;
       event.stopImmediatePropagation();
@@ -291,7 +292,7 @@ export default function Viewport(props: ViewportProps) {
     function pointerMove(event: PointerEvent) {
       if (!setPointer(event)) return;
       if (!drag) {
-        canvas.style.cursor = latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
+        canvas.style.cursor = latest.current.editable !== false && latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
         return;
       }
       event.stopImmediatePropagation();
@@ -359,6 +360,7 @@ export default function Viewport(props: ViewportProps) {
     let disposed = false;
     function renderScene(now: number) {
       orbit.update();
+      if (!drag) applyPose(asset, latest.current.pose);
       asset.root.updateMatrixWorld(true);
       const current = latest.current;
       rigLines.visible = current.showRig;
