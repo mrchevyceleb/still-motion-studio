@@ -13,6 +13,12 @@ The script creates a new destination when that name already exists. It imports t
 
 The packaged `IMPORT.txt` also lists manual settings. Those settings refer to the legacy FBX dialog: scale 1, Convert Scene and Convert Scene Unit on, Force Front XAxis off, and neither T0-as-reference-pose nor reference-pose updates. Import `character.fbx` with a new Skeleton and no animation; import `animation.fbx` against that Skeleton with its manifest sample rate and full exported time range. Avoid assigning an unrelated existing Skeleton.
 
+### Use a character already in Unreal
+
+Choose **My original skeleton** and paste its asset path into **Existing Unreal skeleton**, for example `/Game/Characters/Fluffy_Skeleton.Fluffy_Skeleton`. A matching SkeletalMesh path also works. The packaged helper imports only `animation.fbx` and assigns it to that existing Skeleton; it skips `character.fbx`. Leaving the field blank keeps the new-character import described above. For manual import, select that same existing Skeleton when importing `animation.fbx` as an animation.
+
+Mixamo joint names are normalized for Unreal: both `mixamorig:Hips` and the `mixamorigHips` spelling produced by the FBX loader export as `Hips`. The same mapping is applied to the bones, skin weights, and animation tracks, and recorded in `boneAliases`. Other rig names are preserved where Unreal allows them. The helper checks target bone names and the root before importing; a SkeletalMesh target also permits a parent-hierarchy check. Unreal's importer validates the animation hierarchy. A different rig still needs retargeting. **Gameplay root motion** and **In place** add a root bone, so the existing target must have that same hierarchy; use **Original movement** for a normal Mixamo skeleton.
+
 Epic documents [Python editor setup and execution](https://dev.epicgames.com/documentation/unreal-engine/scripting-the-unreal-editor-using-python) and the [skeletal FBX import pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-skeletal-mesh-pipeline-in-unreal-engine?lang=en-US).
 
 ## What was measured in Unreal
@@ -56,7 +62,7 @@ The helper recognizes standard Mixamo, Still, Manny and MetaHuman bone names, bu
 
 Executed tests retargeted both the traveling fixture and the supplied 38-bone Reaction animation onto the installed Manny skeleton. The results had the correct target Skeleton, finite transforms, preserved duration (4 seconds and 1.816666722 seconds), and a moving, turning root. All imported and retargeted assets were then reopened in a fresh Unreal process and evaluated successfully. The local proof files are `.local/readiness-unreal/measure.json` and `reopen-proof.json`. A MetaHuman body was not available for a comparable execution test; that path shares the same retargeting machinery and requires the user's existing body asset. Facial animation, cloth and MetaHuman facial rigs are outside this body-motion transfer.
 
-Agent export options are `rootMotion: "preserve" | "extract" | "in-place"`, `retarget: "none" | "manny" | "metahuman"`, and optional `targetMesh` containing the Unreal asset path. Defaults remain `preserve` and `none`.
+Agent export options are `rootMotion: "preserve" | "extract" | "in-place"`, `retarget: "none" | "manny" | "metahuman"`, and optional `targetMesh` containing the Unreal asset path. With `retarget: "none"`, `targetMesh` selects an existing Skeleton or SkeletalMesh for direct animation import. With Manny or MetaHuman it selects the retarget destination SkeletalMesh. Defaults remain `preserve` and `none`.
 
 Materials and texture files use basic FBX material transfer. Check PBR connections, transparency, normal maps, and appearance in the target project; arbitrary shader graphs do not round-trip through [FBX's material pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-material-pipeline-in-unreal-engine). Physics Assets, collision behavior, LODs, cloth, and facial morph targets are outside these skeletal animation checks.
 

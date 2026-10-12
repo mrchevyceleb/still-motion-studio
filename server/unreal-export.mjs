@@ -118,7 +118,7 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
       const fps = Number(url.searchParams.get('fps') || 30), rootMotion = url.searchParams.get('rootMotion') || 'preserve';
       const retarget = url.searchParams.get('retarget') || 'none', targetMesh = url.searchParams.get('targetMesh') || '';
       if (![24, 30, 60].includes(fps) || !['preserve', 'extract', 'in-place'].includes(rootMotion) || !['none', 'manny', 'metahuman'].includes(retarget)) { json(res, 400, { error: 'Choose 24, 30, or 60 fps and a supported root-motion and retarget mode.' }); return true; }
-      if (targetMesh && (targetMesh.length > 512 || !/^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/.test(targetMesh))) { json(res, 400, { error: 'Choose a valid Unreal target mesh asset path.' }); return true; }
+      if (targetMesh && (targetMesh.length > 512 || !/^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/.test(targetMesh))) { json(res, 400, { error: 'Choose a valid Unreal Skeleton or SkeletalMesh asset path.' }); return true; }
       const executable = await converter();
       if (!executable) { json(res, 503, { error: 'The local Unreal exporter needs Blender installed.' }); return true; }
       const id = url.searchParams.get('id') || crypto.randomUUID();

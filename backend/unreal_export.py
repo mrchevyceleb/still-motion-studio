@@ -60,9 +60,21 @@ def read_glb(path):
 
 def prepare_glb(doc, trailing, path):
     used, aliases = {"armature"}, []
+    joints = {index for skin in doc.get("skins", []) for index in skin["joints"]}
+    joints.update(i for i, node in enumerate(doc.get("nodes", [])) if node.get("extras", {}).get("stillJoint"))
+    names = {}
+    # Reserve bone names before mesh names. Three's FBX loader may already have
+    # removed the colon, so handle both mixamorig:Hips and mixamorigHips.
+    for i in sorted(joints):
+        original = doc["nodes"][i].get("name", f"Node_{i}")
+        normalized = re.sub(r"^mixamorig\d*[:_]*", "", original, flags=re.IGNORECASE)
+        canonical = safe_name(normalized, set())
+        if canonical.lower() in used:
+            raise ValueError(f"Joint {original} becomes duplicate Unreal bone {canonical}. Rename the conflicting joint before exporting.")
+        names[i] = safe_name(normalized, used)
     for i, node in enumerate(doc.get("nodes", [])):
         original = node.get("name", f"Node_{i}")
-        node["name"] = safe_name(original, used)
+        node["name"] = names[i] if i in names else safe_name(original, used)
         node.setdefault("extras", {})["stillExportNodeIndex"] = i
         aliases.append({"node": i, "source": original, "exported": node["name"]})
     raw = json.dumps(doc, separators=(",", ":")).encode("utf-8")
@@ -187,7 +199,7 @@ def convert(input_path, output_path, options):
         raise ValueError("Choose no retargeting, Manny, or MetaHuman.")
     target_mesh = options.get("targetMesh", "")
     if not isinstance(target_mesh, str) or (target_mesh and not re.fullmatch(r"/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?", target_mesh)):
-        raise ValueError("The target mesh must be an Unreal asset path such as /Game/Characters/MyBody.MyBody.")
+        raise ValueError("The target must be an Unreal Skeleton or SkeletalMesh asset path such as /Game/Characters/MyBody.MyBody.")
     name = safe_name(options.get("name", input_path.stem), set())
     doc, trailing, source_sha = read_glb(input_path)
     if len(doc.get("animations", [])) != 1:
@@ -222,12 +234,16 @@ def convert(input_path, output_path, options):
         warnings.append("Horizontal travel and heading are removed for in-place playback. Body height, pitch and roll remain on the source skeleton.")
     if retarget != "none":
         warnings.append(f"The Unreal import helper will retarget to {retarget}. The target SkeletalMesh must already exist in that Unreal project; no Epic character assets are included.")
+    elif target_mesh:
+        warnings.append(f"The Unreal import helper will import animation only onto {target_mesh}. Its bone names and hierarchy must match; no replacement character is imported.")
     progress("Reading the character, skin weights, and animation", .05)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="still-unreal-") as temporary:
         work = Path(temporary)
         prepared = work / "source.glb"
         aliases = prepare_glb(doc, trailing, prepared)
+        if any(a["node"] in {j for skin in doc.get("skins", []) for j in skin["joints"]} and a["source"] != a["exported"] for a in aliases):
+            warnings.append("Bone names were made Unreal-compatible. Mixamo prefixes are removed (mixamorig:Hips or mixamorigHips becomes Hips); see boneAliases in manifest.json.")
         bpy.ops.object.select_all(action="SELECT")
         bpy.ops.object.delete(use_global=False)
         scene = bpy.context.scene
@@ -499,25 +515,35 @@ def convert(input_path, output_path, options):
         if not retargeter.is_file():
             raise ValueError("The Unreal retarget helper is missing from this installation.")
         (work / "unreal_retarget.py").write_bytes(retargeter.read_bytes())
+        direct_import = retarget == "none" and bool(target_mesh)
+        conversion_settings = "Import scale 1; Convert Scene and Convert Scene Unit ON; Force Front XAxis OFF."
+        manual_steps = ["Extract this whole ZIP first. Keep textures beside the FBX files."]
+        if not direct_import:
+            manual_steps.append(
+                "Import character.fbx as a Skeletal Mesh. Create a new Skeleton; do not assign the Unreal mannequin Skeleton.\n"
+                f"   {conversion_settings}\n"
+                "   Import Animation OFF; Use T0 As Ref Pose OFF; Update Skeleton Reference Pose OFF.")
+        manual_steps.append(
+            (f"Import animation.fbx as Animation and select the existing Skeleton for {target_mesh}.\n"
+             "   Skip character.fbx. Bone names and hierarchy must match the target.\n" if direct_import else
+             "Import animation.fbx as Animation and select the Skeleton from step 2.\n")
+            + f"   {conversion_settings}\n"
+            + f"   Set custom sample rate {fps}, Import Bone Tracks ON, and preserve the exported range.")
+        manual_steps.append(
+            f"Root-motion mode: {root_motion}. Enable Root Motion is {'ON with first-frame lock' if root_motion == 'extract' else 'OFF'}.\n"
+            f"   Retargeting: {retarget}. The helper creates IK Rigs and a retargeter when requested.\n"
+            "   Manny/MetaHuman target meshes must already exist in the destination Unreal project.")
+        manual_steps.append("Material conversion is basic FBX material support. Check base color, normal, opacity, and other PBR maps in Unreal.")
         (work / "IMPORT.txt").write_text(
             "STILL — UNREAL CHARACTER AND ANIMATION\n\n"
             "AUTOMATIC IMPORT (Unreal 5.8 verified)\n"
             "Extract this ZIP. Enable Python Editor Script Plugin and Editor Scripting Utilities in Unreal.\n"
             "Choose Tools > Execute Python Script and select import_unreal.py in the extracted folder.\n"
-            "The helper creates new assets under /Game/Still, assigns the matching skeleton, preserves motion,\n"
+            "The helper creates new assets under /Game/Still, uses your existing skeleton when specified,\n"
             "and restores the previous FBX importer setting. Existing assets are never overwritten.\n\n"
             "MANUAL IMPORT\n"
             "These settings refer to Unreal's legacy FBX dialog. For the verified route, use the automatic helper above.\n"
-            "1. Extract this whole ZIP first. Keep textures beside the FBX files.\n"
-            "2. Import character.fbx as a Skeletal Mesh. Create a new Skeleton; do not assign the Unreal mannequin Skeleton.\n"
-            "   Import scale 1; Convert Scene and Convert Scene Unit ON; Force Front XAxis OFF.\n"
-            "   Import Animation OFF; Use T0 As Ref Pose OFF; Update Skeleton Reference Pose OFF.\n"
-            "3. Import animation.fbx as Animation and select the Skeleton from step 2.\n"
-            f"   Set custom sample rate {fps}, Import Bone Tracks ON, and preserve the exported range.\n"
-            f"4. Root-motion mode: {root_motion}. Enable Root Motion is {'ON with first-frame lock' if root_motion == 'extract' else 'OFF'}.\n"
-            f"   Retargeting: {retarget}. The helper creates IK Rigs and a retargeter when requested.\n"
-            "   Manny/MetaHuman target meshes must already exist in the destination Unreal project.\n"
-            "5. Material conversion is basic FBX material support. Check base color, normal, opacity, and other PBR maps in Unreal.\n\n"
+            + "\n".join(f"{i}. {step}" for i, step in enumerate(manual_steps, 1)) + "\n\n"
             + "\n".join("NOTE: " + w for w in warnings) + "\n", encoding="utf-8")
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(work.rglob("*")):

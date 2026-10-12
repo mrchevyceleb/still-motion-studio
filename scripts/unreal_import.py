@@ -68,6 +68,26 @@ def import_fbx(filename, destination, skeleton=None, fps=30):
 
 
 
+def existing_skeleton(asset_path, bones):
+    target = unreal.load_asset(asset_path)
+    skeleton = target.get_editor_property("skeleton") if isinstance(target, unreal.SkeletalMesh) else target
+    if not isinstance(skeleton, unreal.Skeleton):
+        raise ValueError("Choose an existing Unreal Skeleton or SkeletalMesh: " + asset_path)
+    names = [str(name) for name in skeleton.get_reference_pose().get_bone_names()]
+    lookup = {name.lower() for name in names}
+    missing = [bone["name"] for bone in bones if bone["name"].lower() not in lookup]
+    roots = [bone["name"] for bone in bones if bone.get("parent") is None]
+    if not bones or missing or len(roots) != 1 or not names or roots[0].lower() != names[0].lower():
+        detail = ", ".join(missing[:8]) if missing else "the root bone differs"
+        raise ValueError("The exported rig does not match the target skeleton (" + detail + "). Use the same source rig and Original movement, or retarget to a different character.")
+    if isinstance(target, unreal.SkeletalMesh):
+        for bone in bones:
+            parent = str(target.get_bone_parent(bone["name"]))
+            if parent.lower() != (bone.get("parent") or "None").lower():
+                raise ValueError("The target bone hierarchy differs at " + bone["name"] + ". Use the same source rig or retarget the animation.")
+    return skeleton
+
+
 def import_package(directory=None):
     directory = Path(directory or Path(__file__).resolve().parent)
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8-sig"))
@@ -77,6 +97,9 @@ def import_package(directory=None):
     for filename in ("character.fbx", "animation.fbx"):
         if not (directory / filename).is_file():
             raise FileNotFoundError("Extract the entire Still ZIP before importing: " + filename)
+    retarget = manifest.get("retarget", {})
+    target_path = retarget.get("targetMesh", "") if retarget.get("mode", "none") == "none" else ""
+    skeleton = existing_skeleton(target_path, manifest.get("bones", [])) if target_path else None
     name = re.sub(r"[^a-zA-Z0-9_]", "_", manifest.get("name", "Character")).strip("_") or "Character"
     base = "/Game/Still/" + name
     destination, index = base, 1
@@ -89,15 +112,17 @@ def import_package(directory=None):
         # FbxImportUI is the documented legacy options object. Select that
         # importer for this operation instead of letting Interchange ignore it.
         unreal.SystemLibrary.execute_console_command(None, cvar + " 0")
-        assets, paths = import_fbx(directory / "character.fbx", destination, fps=fps)
-        meshes = [asset for asset in assets if isinstance(asset, unreal.SkeletalMesh)]
-        if len(meshes) != 1:
-            raise RuntimeError("Expected one imported skeletal mesh. See Unreal's Output Log.")
-        skeleton = meshes[0].get_editor_property("skeleton")
+        paths, meshes = [], []
+        if skeleton is None:
+            assets, paths = import_fbx(directory / "character.fbx", destination, fps=fps)
+            meshes = [asset for asset in assets if isinstance(asset, unreal.SkeletalMesh)]
+            if len(meshes) != 1:
+                raise RuntimeError("Expected one imported skeletal mesh. See Unreal's Output Log.")
+            skeleton = meshes[0].get_editor_property("skeleton")
         assets, animation_paths = import_fbx(directory / "animation.fbx", destination, skeleton, fps)
         sequences = [asset for asset in assets if isinstance(asset, unreal.AnimSequence)]
         if len(sequences) != 1 or sequences[0].get_editor_property("skeleton") != skeleton:
-            raise RuntimeError("The animation could not be assigned to the imported skeleton.")
+            raise RuntimeError("The animation could not be assigned to the selected skeleton.")
         root_motion = manifest.get("rootMotion", "preserve") == "extract"
         unreal.AnimationLibrary.set_root_motion_enabled(sequences[0], root_motion)
         if root_motion:
@@ -106,7 +131,6 @@ def import_package(directory=None):
         result = {"destination": destination, "assets": paths + animation_paths,
                   "skeleton": skeleton.get_path_name(), "fps": fps,
                   "duration": sequences[0].get_play_length(), "rootMotionEnabled": root_motion}
-        retarget = manifest.get("retarget", {})
         if retarget.get("mode", "none") != "none":
             helper = str(directory.resolve())
             sys.path.insert(0, helper)
