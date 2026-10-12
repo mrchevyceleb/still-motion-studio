@@ -2,11 +2,11 @@
 
 A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-Release 0.2.10 fixes a blank viewport when restoring a character and adds guided physics comparison: play both versions, jump to the largest root shifts, then keep the correction or use the original motion. Undo restores the correction. Side-by-side comparison, the permanent scene library, bulk keyframe deletion, and stable-camera Undo/Redo remain available. Private automatic updates preserve scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
+Release 0.2.11 adds bulk keyframe corrections, exact property paste with X/Y/Z choices, and a whole-animation position offset that preserves generated motion. Each operation has one Undo and saves with the scene. Guided physics comparison, the scene library, and stable-camera Undo/Redo remain available. Private automatic updates preserve scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
 
 ## Install or develop
 
-Download **Still-Motion-Studio-Setup-0.2.10.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
+Download **Still-Motion-Studio-Setup-0.2.11.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 
