@@ -1,5 +1,14 @@
 .duplicate-pose-button { padding: 7px 10px; font-size: 10px; gap: 6px; }
 .scrubber { touch-action: none; }
+.timeline-section { user-select: none; -webkit-user-select: none; }
+.timeline-edit-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -3px 0 12px; }
+.timeline-edit-tools > span, .timeline-edit-tools output { font-size: 10px; color: var(--muted, #7c8e67); }
+.timeline-edit-tools output { margin-left: auto; font-variant-numeric: tabular-nums; }
+.ripple-button { padding: 6px 9px; font-size: 10px; gap: 5px; }
+.ripple-button > span { font-size: 9px; opacity: .8; }
+.ripple-button[aria-pressed='true'] { background: var(--green); color: var(--paper); border-color: var(--green); }
+.ripple-button[aria-pressed='true']:hover { color: var(--paper); }
+.timeline-key.ripple-moving { box-shadow: 0 0 0 3px #8ea86650; }
 .timeline-key.dragging { z-index: 4; cursor: grabbing; box-shadow: 0 0 0 4px #8ea86640; }
 .scrubber[data-dragging='true'] { cursor: grabbing; }
 @media (max-width: 720px) {

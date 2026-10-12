@@ -2,6 +2,24 @@ import type { PoseKey } from '../types';
 
 export const MAX_ANIMATION_DURATION = 600;
 
+/** Move this moment and the entire tail by one shared, frame-snapped offset. */
+export function rippleMoment(keys: PoseKey[], id: string, wanted: number, duration: number, fps: number): { keys: PoseKey[]; duration: number; time: number } | null {
+  const index = keys.findIndex(key => key.id === id);
+  if (index < 0 || !Number.isFinite(wanted)) return null;
+  const source = keys[index];
+  const previous = keys[index - 1];
+  // Preserve sub-frame spacing in imported clips, and never cross the preceding pose.
+  const earliest = previous ? previous.time + Math.min(1 / fps, source.time - previous.time) : 0;
+  const lower = Math.ceil(Math.max(earliest - source.time, Math.min(.1, duration) - duration) * fps - 1e-7);
+  const upper = Math.floor((MAX_ANIMATION_DURATION - duration) * fps + 1e-7);
+  const delta = Math.max(lower, Math.min(upper, Math.round((wanted - source.time) * fps))) / fps;
+  return {
+    keys: keys.map((key, i) => i < index ? key : { ...key, time: key.time + delta }),
+    duration: duration + delta,
+    time: source.time + delta,
+  };
+}
+
 /** Pick the nearest unoccupied frame, including a fractional end frame. */
 export function nearestFreeKeyTime(keys: PoseKey[], ignoreId: string | null, wanted: number, duration: number, fps: number, direction = 0): number | null {
   const last = Math.ceil(duration * fps);
