@@ -2,11 +2,11 @@
 
 A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-Release 0.2.7 adds ripple timing: move a moment and every later pose together to shorten or extend a gap. Timeline drags no longer activate file import. Private automatic updates preserve scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
+Release 0.2.8 adds a permanent scene library, bulk keyframe deletion, and saved Before/After physics comparisons. Physics keeps dense authored keyframes, and pose Undo/Redo keeps the camera in place. Private automatic updates preserve scenes and verified custom models. Standalone humanoid AI remains experimental and excluded from the installer; see [validation and review findings](reports/Release-0.2-validation.md).
 
 ## Install or develop
 
-Download **Still-Motion-Studio-Setup-0.2.7.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
+Download **Still-Motion-Studio-Setup-0.2.8.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 
@@ -18,7 +18,7 @@ For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open 
 4. Generate animal motion with the owned learned prior, or human motion with installed licensed Cascadeur, then apply MuJoCo contact correction or installed licensed Cascadeur engines. Authored poses stay exact during learned generation; physics can adjust them. Editing a pose clears an outdated generated take.
 5. Export an editable `.still`, animated GLB, or **Unreal FBX package**. Unreal options include planar gameplay root motion, in-place movement, and automatic Manny/MetaHuman body retargeting. [Import and validation](docs/unreal-export.md).
 
-Autosave and the last five replaced scenes stay in local IndexedDB. Save a `.still` file for a portable backup before clearing local app data.
+Open **Scenes** to manage the permanent library on this device. Each scene autosaves independently; recent backups remain available for recovery. Use timeline **Select** to drag across multiple keyframes and delete them together. Physics passes offer a saved **Before/After** preview and a measurements report. Export a `.still` file for a portable backup before clearing local app data.
 
 ## Agent scripting
 

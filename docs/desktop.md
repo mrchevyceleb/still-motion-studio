@@ -1,10 +1,12 @@
 # Windows desktop
 
-Download **Still-Motion-Studio-Setup-0.2.7.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+Download **Still-Motion-Studio-Setup-0.2.8.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
 
 Closing the editor hides it to the tray. Agent commands, rendering, and generation continue in that workspace. Double-click the tray icon to reopen; **Quit Still** stops the engine and performs native cleanup. The app must remain running for scripting to work.
 
 Desktop uses port **17175** on loopback. Keeping the origin fixed preserves projects across restarts. If another program owns that port, Still reports the conflict rather than opening an empty workspace elsewhere. Development stays on 5173/5175.
+
+Open **Scenes** beside the project name for the permanent scene library. Each entry saves independently without a five-scene limit. Switching saves the outgoing scene first; concurrent-window conflicts are preserved as separate copies. Recent backups remain accessible for recovery. Saved physics comparisons travel with the scene and `.still` export. **Ctrl S** saves to the library; **Ctrl Shift S** downloads a portable project file.
 
 Data is under `%APPDATA%/Still Motion Studio`. The **Still** menu opens its data and agent-tools directories. The private token lives in `.local/agent/connection.json`; never share it. Configure an external Node-capable agent with `agent-tools/still-mcp.mjs`, or use `still-agent.mjs` beside it. The installed app itself does not require Node.
 
