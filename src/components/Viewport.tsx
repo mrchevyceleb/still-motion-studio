@@ -407,6 +407,9 @@ export default function Viewport(props: ViewportProps) {
       }
     }
     function renderScene(now: number, forceCoordinates = false) {
+      // React can commit the next character before the previous renderer's
+      // passive cleanup runs. Never apply that character's pose to this rig.
+      if (latest.current.asset !== asset) return;
       orbit.update();
       const current = latest.current;
       // Draw both versions with one camera and playhead, then leave the live
