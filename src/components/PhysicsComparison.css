@@ -33,4 +33,21 @@
 .physics-review-details { margin-top: 14px; padding: 12px 14px; background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 7px; font-size: 11px; }
 .physics-review-details summary { cursor: pointer; font-weight: 600; }
 .physics-review-details ul { padding-left: 18px; margin: 9px 0 0; color: var(--muted); line-height: 1.8; }
+.physics-review-checks { display: grid; gap: 12px; margin-top: 18px; }
+.physics-review-check { padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
+.physics-review-check h3 { font-size: 13px; font-weight: 650; }
+.physics-review-check p, .physics-review-limit p, .physics-review-decision p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 7px 0 12px; }
+.physics-review-check .button { font-size: 11px; }
+.physics-pose-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.physics-pose-links .button { flex-direction: column; align-items: flex-start; gap: 3px; }
+.physics-pose-links .button span { font-size: 10px; color: var(--muted); }
+.physics-review-limit { padding: 14px 16px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.physics-review-limit strong { font-size: 12px; }
+.physics-review-limit p { margin-bottom: 0; }
+.physics-review-decision { display: flex; gap: 9px; flex-wrap: wrap; padding: 18px 0; }
+.physics-review-decision .button { font-size: 12px; }
+.physics-review-decision p { flex-basis: 100%; margin: 0; }
+.physics-technical-details { border-top: 1px solid var(--line); padding-top: 13px; }
+.physics-technical-details summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.physics-engine-notes { padding-left: 18px; margin-top: 14px; color: var(--muted); font-size: 10px; line-height: 1.7; }
 @media (max-width: 720px) { .physics-comparison { padding: 14px 12px; } .physics-comparison th, .physics-comparison td { padding: 8px 6px; font-size: 10px; } .physics-compare-footer { flex-wrap: wrap; gap: 8px; } }

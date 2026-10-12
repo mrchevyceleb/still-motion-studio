@@ -8,9 +8,12 @@ const format = (value: number | undefined, unit: string) => value === undefined 
 interface Props {
   generation: MotionGeneration;
   onSaveReport: () => void;
+  onCompare: (time?: number) => void;
+  onKeep: () => void;
+  onRestoreOriginal: () => void;
 }
 
-export default function PhysicsComparison({ generation, onSaveReport }: Props) {
+export default function PhysicsComparison({ generation, onSaveReport, onCompare, onKeep, onRestoreOriginal }: Props) {
   const { metrics, comparison } = generation;
   const before = record(metrics.before), after = record(metrics.after), quality = record(metrics.quality);
   const nativeBefore = number(metrics.footJointPenetrationBeforeMeters), nativeAfter = number(metrics.footJointPenetrationAfterMeters);
@@ -25,9 +28,22 @@ export default function PhysicsComparison({ generation, onSaveReport }: Props) {
   const reasons = Array.isArray(quality.reasons) ? quality.reasons.filter((reason): reason is string => typeof reason === 'string') : [];
   const notes = [...new Set([...reasons, ...generation.warnings])];
   const review = quality.requiresReview === true;
+  const endTime = comparison?.before.at(-1)?.time ?? 0;
+  const changedPoses = (comparison && Array.isArray(metrics.anchorDrift) ? metrics.anchorDrift : []).flatMap(item => {
+    const drift = record(item), time = number(drift.time), shift = number(drift.rootTranslationM);
+    return time !== undefined && time <= endTime && shift !== undefined && shift > .02 ? [{ time, shift }] : [];
+  }).sort((a, b) => b.shift - a.shift).slice(0, 3);
+  const dynamicsUncertain = notes.some(note => /force|torque|calibrat/i.test(note));
   return <section className="physics-comparison" aria-label="Physics comparison">
-    <div className="physics-comparison-heading"><div><h2>Did physics help?</h2><p>{generation.name} · {review ? 'Applied · review needed' : 'Applied'}</p></div></div>
-    <p className="physics-compare-hint">{comparison ? 'Use Side by side above the character to watch Before and After together, or view either on its own. Playing, scrubbing and camera moves stay in sync. Before is a preview; edits and exports use After.' : 'This older pass has no saved before preview. Run physics again to save both versions.'}</p>
+    <div className="physics-comparison-heading"><div><h2>Choose the motion that looks better.</h2><p>Correction is already applied{review ? ' · physical realism not verified' : ''}.</p></div></div>
+    <p className="physics-compare-hint">{comparison ? 'Compare these checks, then keep the correction or return to the original. If you cannot see an improvement, use the original.' : 'This older pass has no saved original. Run physics again to enable comparison and restoration.'}</p>
+    <div className="physics-review-checks">
+      <div className="physics-review-check"><h3>Check the feet</h3><p>Watch both versions together. Look for less sliding or floor clipping, without new floating or sudden jumps.</p><button className="button secondary" disabled={!comparison} onClick={() => onCompare()}>Play comparison</button></div>
+      {changedPoses.length > 0 && <div className="physics-review-check"><h3>Check the poses physics moved most</h3><p>Make sure the correction kept the pose you intended. These are body-position shifts at your saved poses.</p><div className="physics-pose-links">{changedPoses.map((pose, index) => <button className="button secondary" key={index} onClick={() => onCompare(pose.time)} aria-label={`Compare changed pose at ${pose.time.toFixed(2)} seconds`}><strong>{pose.time.toFixed(2)}s</strong><span>Moved {format(pose.shift * 100, 'cm')}</span></button>)}</div></div>}
+      {review && <div className="physics-review-limit"><strong>{dynamicsUncertain ? 'This is a cleanup proposal, not a guarantee of realistic physics.' : 'Give the corrected motion a visual check.'}</strong><p>{dynamicsUncertain ? 'The body model still cannot explain all of this movement. You do not need to tune force or torque values to keep editing. Keep the correction only if the comparison looks better.' : 'The engine flagged changes that may affect your intended motion. Check the feet and changed poses before choosing a version.'}</p></div>}
+    </div>
+    <div className="physics-review-decision"><button className="button primary" onClick={onKeep}>Keep correction</button><button className="button secondary" disabled={!comparison} onClick={onRestoreOriginal}>Use original motion</button><p>{comparison ? 'Restoring the original keeps your timing. Undo brings this correction back.' : 'The current correction stays applied when you close this review.'}</p></div>
+    <details className="physics-technical-details"><summary>Technical measurements and engine notes</summary>
     {rows.length > 0 ? <div className="physics-metrics-scroll"><table><caption>Motion measurements · lower is better</caption><thead><tr><th scope="col">Measurement</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Change</th></tr></thead><tbody>
       {rows.map(row => {
         const difference = row.before !== undefined && row.after !== undefined ? row.after - row.before : undefined;
@@ -39,6 +55,7 @@ export default function PhysicsComparison({ generation, onSaveReport }: Props) {
       })}
     </tbody></table></div> : <p className="physics-compare-hint">This engine did not report before/after measurements. Use the motion preview to compare.</p>}
     <div className="physics-compare-footer"><p>{maxShift === undefined ? '' : `Largest checked pose shift: ${format(maxShift * 100, 'cm')}. `}{native ? 'Measurements describe foot joints, not the visible mesh.' : 'Measurements use an approximate body and foot model, not the visible mesh.'}</p><button className="text-button" onClick={onSaveReport}>Save report</button></div>
-    {(review || notes.length > 0) && <details className="physics-review-details" open={review}><summary>{review ? 'Why this still needs review' : 'Model limitations'}</summary><ul>{notes.map((reason, index) => <li key={index}>{reason}</li>)}</ul></details>}
+    {notes.length > 0 && <ul className="physics-engine-notes">{notes.map((reason, index) => <li key={index}>{reason}</li>)}</ul>}
+    </details>
   </section>;
 }
