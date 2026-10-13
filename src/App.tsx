@@ -17,6 +17,7 @@ import PoseThumbnail from './components/PoseThumbnail';
 import PhysicsComparison from './components/PhysicsComparison';
 import SceneLibrary from './components/SceneLibrary';
 import KeyframeProperties from './components/KeyframeProperties';
+import FaceShapes from './components/FaceShapes';
 import ClipTools from './components/ClipTools';
 import HandRigSetup from './components/HandRigSetup';
 import { isFingerBone } from './engine/handRig';
@@ -36,6 +37,7 @@ import { sceneThumbnail } from './engine/sceneThumbnail';
 import { DEFAULT_SETTINGS } from './types';
 import { duplicateMoment, MAX_ANIMATION_DURATION, nearestFreeKeyTime, rippleMoment } from './engine/keyframeEditing';
 import { applyKeyframeProperty, offsetKeyframes, setModelPosition } from './engine/poseProperties';
+import { morphKeyData } from './engine/morphs';
 import type { PoseProperty, PoseReference, PropertyAxes } from './engine/poseProperties';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, Vec3 } from './types';
 
@@ -164,7 +166,7 @@ export default function App() {
   const keyIndex = selectedKey ? poseKeys.indexOf(selectedKey) : -1;
   const shownKeys = useMemo(() => {
     const shown = poseKeys.length <= 8 ? poseKeys : simplifyKeys(poseKeys, 6);
-    return selectedKey && !shown.includes(selectedKey) ? [...shown, selectedKey].sort((a, b) => a.time - b.time) : shown;
+    return selectedKey && !shown.some(key => key.id === selectedKey.id) ? [...shown, selectedKey].sort((a, b) => a.time - b.time) : shown;
   }, [poseKeys, selectedKey]);
   const ghostPoses = useMemo(() => showGhosts ? [samplePose(motionKeys, Math.max(0, time - .22), playbackMode), samplePose(motionKeys, Math.min(studio.duration, time + .22), playbackMode)] : [], [showGhosts, motionKeys, studio.duration, playbackMode, time]);
   const selectedRotation = useMemo(() => {
@@ -384,11 +386,11 @@ export default function App() {
     setPlaying(false);
     const snapped = Math.min(studio.duration, Math.round(timeRef.current * fps) / fps);
     const existing = studio.keys.find(key => Math.abs(key.time - snapped) < .5 / fps);
-    const nextKey: PoseKey = { id: existing?.id ?? uid(), time: existing?.time ?? snapped, pose: clone(pose), label: existing?.label ?? 'New pose' };
+    const nextKey: PoseKey = { id: existing?.id ?? uid(), time: existing?.time ?? snapped, pose: clone(pose), label: existing?.label ?? 'New pose', ...morphKeyData(motionKeys, timeRef.current, playbackMode, asset.restMorphs) };
     setPoseReference(previous => ({ keyId: nextKey.id, time: nextKey.time, before: previous?.keyId === nextKey.id && JSON.stringify(previous.after) === JSON.stringify(currentPose) ? previous.before : clone(currentPose), after: clone(pose), bone: selectedBone }));
     const keys = [...studio.keys.filter(key => key.id !== existing?.id), nextKey].sort((a, b) => a.time - b.time);
     commit({ ...studio, sourceClip: null, keys }); setTime(nextKey.time);
-  }, [studio, fps, commit, currentPose, selectedBone]);
+  }, [studio, fps, commit, currentPose, selectedBone, motionKeys, playbackMode, asset.restMorphs]);
 
   const applyProperty = (property: PoseProperty, axes: PropertyAxes, mode: 'offset' | 'match') => {
     if (!poseReference || busy || keyDrag.current || selectionDrag.current || !selectedIds.size) return;
@@ -924,6 +926,7 @@ export default function App() {
           </section>
 
           <aside className="assist-panel"><div className="assist-heading"><span className="assist-icon"><Sparkles size={19}/></span><span className="eyebrow">A LITTLE HELP</span><h2>You pose.<br/>We connect the dots.</h2><p>Good motion starts with a few good moments.</p></div>
+            <FaceShapes key={`face:${sceneId}:${asset.root.uuid}`} asset={asset} keys={motionKeys} moments={studio.keys} pose={currentPose} time={time} duration={studio.duration} fps={fps} interpolation={playbackMode} disabled={!!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore} onPause={() => setPlaying(false)} onCommit={key => { commit({ ...studio, sourceClip: null, keys: [...studio.keys.filter(moment => moment.id !== key.id), key].sort((a, b) => a.time - b.time) }); setPlaying(false); setTime(key.time); }}/>
             {engine?.recovery && <div className="assist-section generation-details needs-review" role="alert"><p>{engine.recovery.message}</p><button className="button assist-button" disabled={!!busy || !engine.recovery.canRetry} onClick={() => void retryNativeCleanup()}>Retry cleanup <RotateCcw size={14}/></button></div>}
             {getAutoRigDiagnostics(asset) && <details className="assist-section generation-details"><summary>Rig fit checks</summary><p>{getAutoRigDiagnostics(asset)?.evidence === 'clear' ? 'Body landmarks found.' : 'Some body landmarks were estimated.'} Try a small bend before animating.</p>{getAutoRigDiagnostics(asset)?.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}<div className="assist-section ai-section"><div className="section-heading"><h3>AI in-betweening</h3><span className={`engine-tag ${learnedProvider ? 'ready' : ''}`}>{learnedProvider ? 'ON DEVICE' : 'NOT READY'}</span></div><p className="micro-copy">A trained motion model fills the space between your poses.</p>{learnedProviders.length > 1 && <select className="engine-select" aria-label="AI motion engine" value={learnedProvider?.id} onChange={e => setEngineChoice(e.target.value as EngineProvider['id'])}>{learnedProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<button className="button primary generate-button" disabled={!learnedProvider || !asset.rigged || !!busy} onClick={() => learnedProvider && void runMotionEngine(learnedProvider)}><Sparkles size={15}/>{studio.generated ? 'Generate another take' : studio.keys.length > 24 ? 'Find 6 poses & generate' : 'Generate motion'}<ArrowRight size={14}/></button><p className="engine-caption">{learnedProvider ? `${learnedProvider.name} · your key poses stay exact` : engine ? (asset.kind === 'humanoid' ? 'No validated humanoid model is installed. Use curve interpolation, or open licensed Cascadeur with its bridge for AI.' : 'No validated animal model is installed. Curve interpolation is available.') : 'Start the local engine to enable AI.'}{learnedProvider?.id === 'owned_humanoid' && ' · Limited motion coverage'}{learnedProvider?.id === 'inbetween' && ' · Commercial rights pending'}</p>{studio.generation?.kind === 'inbetween' && <details className={`generation-details ${needsReview ? 'needs-review' : ''}`}><summary><Check size={12}/>{needsReview ? 'Motion · review needed' : studio.generation.kind === 'inbetween' ? 'AI take ready' : 'Dynamics pass ready'}<span>{studio.generated?.length} frames</span></summary><p>{studio.generation.name}. Editing a pose returns to your key moments; generate again to update the motion.</p>{studio.generation.warnings.map((warning, i) => <p key={i}>{warning}</p>)}<button className="text-button" onClick={() => downloadFile(JSON.stringify(studio.generation, null, 2), 'motion-generation-report.json', 'application/json')}>Save generation report <ArrowDownToLine size={12}/></button></details>}</div>
 

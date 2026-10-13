@@ -357,6 +357,65 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
             "to_ue": to_ue}
 
 
+def create_morph_samples(meshes):
+    """Keep sampling per mesh until duplicate Unreal curve names are checked."""
+    return {obj.name: {key.name: [] for key in obj.data.shape_keys.key_blocks if key != obj.data.shape_keys.reference_key}
+            for obj in meshes if obj.data.shape_keys}
+
+
+def sample_morphs(meshes, samples):
+    for obj in meshes:
+        for name, values in samples.get(obj.name, {}).items():
+            value = float(obj.data.shape_keys.key_blocks[name].value)
+            if not math.isfinite(value):
+                raise ValueError(f"Morph {obj.name}/{name} has a nonfinite weight.")
+            values.append(value)
+
+
+def bake_morphs(clone, samples, name):
+    keys = clone.data.shape_keys
+    if keys is None:
+        return
+    keys.animation_data_clear()
+    for key in keys.key_blocks:
+        if key == keys.reference_key:
+            continue
+        for frame, value in enumerate(samples[key.name]):
+            key.value = value
+            key.keyframe_insert("value", frame=frame, group=key.name)
+    if keys.animation_data and keys.animation_data.action:
+        keys.animation_data.action.name = name + "_Shapes"
+        for layer in keys.animation_data.action.layers:
+            for strip in layer.strips:
+                for bag in strip.channelbags:
+                    for curve in bag.fcurves:
+                        for key in curve.keyframe_points:
+                            key.interpolation = "LINEAR"
+
+
+def morph_manifest(samples, warnings):
+    curves, names = {}, {}
+    for mesh, shapes in samples.items():
+        for name, values in shapes.items():
+            # Unreal merges shapes by FName. Different weights cannot share a curve.
+            previous = names.setdefault(name.lower(), name)
+            if previous != name or (name in curves and any(abs(a - b) > 1e-6 for a, b in zip(curves[name], values))):
+                raise ValueError(f"Morph {mesh}/{name} conflicts with another mesh's Unreal morph curve. Use distinct shape names or matching weights.")
+            curves[name] = values
+    if not curves:
+        return {}
+    warnings.append(f"Exported {len(curves)} morph targets with sampled weight curves in animation.fbx. Enable Import Morph Targets on the character and import animation curves; Unreal morph validation is pending.")
+    return {"morphTargets": list(curves), "morphCurves": curves}
+
+
+def reset_morph_weights(meshes):
+    for obj in meshes:
+        if obj.data.shape_keys:
+            for key in obj.data.shape_keys.key_blocks:
+                if key != obj.data.shape_keys.reference_key:
+                    key.value = 0.
+
+
 def convert(input_path, output_path, options):
     fps = options.get("fps", 30)
     if isinstance(fps, bool) or fps not in (24, 30, 60):
@@ -383,8 +442,6 @@ def convert(input_path, output_path, options):
     doc, trailing, source_sha = read_glb(input_path)
     if len(doc.get("animations", [])) != 1:
         raise ValueError("Export exactly one animation with the character.")
-    if any(c["target"].get("path") == "weights" for c in doc["animations"][0]["channels"]):
-        raise ValueError("Animated morph targets are not supported by this export path yet.")
     accessors = doc.get("accessors", [])
     animation = doc["animations"][0]
     start = min(float(accessors[s["input"]]["min"][0]) for s in animation["samplers"])
@@ -438,8 +495,7 @@ def convert(input_path, output_path, options):
         meshes = [o for o in scene.objects if o.type == "MESH" and not any(c.hide_render for c in o.users_collection)]
         if not meshes:
             raise ValueError("The character has no visible mesh to export.")
-        if any(o.data.shape_keys for o in meshes):
-            raise ValueError("Morph-target meshes are not supported yet; export a character without morph targets.")
+        morph_samples = create_morph_samples(meshes)
         rotation = Matrix.Rotation(math.pi / 2, 4, "Z")
         conversion = Matrix.Scale(100, 4) @ rotation
         gltf_to_blender = Matrix.Rotation(math.pi / 2, 4, "X")
@@ -515,6 +571,7 @@ def convert(input_path, output_path, options):
                     raise ValueError(f"{e['name']}: animated scale is unsupported; apply scale before exporting.")
                 values[e["name"]] = mat
             sampled.append(values)
+            sample_morphs(meshes, morph_samples)
             if i in sample_indices:
                 expected_vertices[i] = [(vertices_world(o, True) @ np.array(conversion)[:3, :3].T) for o in meshes]
         ground_trajectory = add_ground_trajectory(entries, sampled, expected_vertices, root_motion)
@@ -559,7 +616,8 @@ def convert(input_path, output_path, options):
             clone.animation_data_clear()
             clone.parent = None
             clone.matrix_world = Matrix.Identity(4)
-            clone.data.transform(conversion @ mesh_rest_world[obj.name])
+            clone.data.transform(conversion @ mesh_rest_world[obj.name], shape_keys=True)
+            bake_morphs(clone, morph_samples.get(obj.name, {}), name)
             for modifier in list(clone.modifiers):
                 clone.modifiers.remove(modifier)
             clone.name = f"{name}_{obj.name}"
@@ -678,17 +736,20 @@ def convert(input_path, output_path, options):
                       bake_anim_force_startend_keying=True, bake_anim_step=1.0, bake_anim_simplify_factor=0.0,
                       path_mode="COPY", embed_textures=False)
         progress("Writing the character and animation FBX files", .75)
+        morph_info = morph_manifest(morph_samples, warnings)
         bpy.ops.object.select_all(action="DESELECT")
         arm.select_set(True)
         for obj in export_meshes:
             obj.select_set(True)
         data.pose_position = "REST"
+        reset_morph_weights(export_meshes)
         bpy.ops.export_scene.fbx(filepath=str(work / "character.fbx"), bake_anim=False, **common)
         data.pose_position = "POSE"
         for obj in export_meshes:
-            obj.select_set(False)
+            obj.select_set(bool(obj.data.shape_keys))
         bpy.ops.export_scene.fbx(filepath=str(work / "animation.fbx"), bake_anim=True, **common)
         data.pose_position = "REST"
+        reset_morph_weights(export_meshes)
         bpy.context.view_layer.update()
         bounds = np.concatenate([vertices_world(o, True) for o in export_meshes])
         to_ue = lambda v: [float(v[0]), float(-v[1]), float(v[2])]
@@ -717,6 +778,7 @@ def convert(input_path, output_path, options):
                                      "convertScene": True, "convertSceneUnit": True, "forceFrontXAxis": False,
                                      "useT0AsRefPose": False, "updateSkeletonReferencePose": False, "animationSampleRate": fps},
                     "compatibility": "Blender binary FBX 7400; Unreal documents FBX SDK 2020.2. Validate on the destination Unreal version."}
+        manifest.update(morph_info)
         direct_import = retarget == "none" and bool(target_mesh)
         conversion_settings = "Import scale 1; Convert Scene and Convert Scene Unit ON; Force Front XAxis OFF."
         manual_steps = ["Extract this whole ZIP first. Keep textures beside the FBX files."]

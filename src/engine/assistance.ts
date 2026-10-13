@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { applyPose, capturePose } from './character';
 import { samplePose } from './motion';
+import { createMorphKeySampler } from './morphs';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey } from '../types';
 
 export interface EngineProvider {
@@ -81,6 +82,7 @@ export function makeMotionRequest(asset: CharacterAsset, source: PoseKey[], anch
 export function restoreEngineFrames(asset: CharacterAsset, source: PoseKey[], anchors: PoseKey[], result: EngineResult, mode: InterpolationMode, duration: number, keepAnchors: boolean): PoseKey[] {
   if (!Array.isArray(result.frames) || result.frames.length < 2 || result.frames.length > 7201) throw new Error('The motion engine returned an incomplete animation.');
   const parents = hierarchy(asset), saved = capturePose(asset), keys: PoseKey[] = [];
+  const shapes = createMorphKeySampler(source, mode, asset.restMorphs);
   let last = -1;
   try {
     for (const frame of result.frames) {
@@ -106,7 +108,7 @@ export function restoreEngineFrames(asset: CharacterAsset, source: PoseKey[], an
         bone.updateWorldMatrix(false, true);
       }
       const authored = anchors.find(key => Math.abs(key.time - frame.time) < 1e-5);
-      keys.push({ id: authored?.id || crypto.randomUUID(), time: authored?.time ?? Math.min(frame.time, duration), pose: keepAnchors && authored ? structuredClone(authored.pose) : capturePose(asset), label: authored?.label });
+      keys.push({ id: authored?.id || crypto.randomUUID(), time: authored?.time ?? Math.min(frame.time, duration), pose: keepAnchors && authored ? structuredClone(authored.pose) : capturePose(asset), label: authored?.label, ...shapes(frame.time) });
     }
     if (keys[0].time > 1e-4 || Math.abs(keys[keys.length - 1].time - duration) > 1e-4) throw new Error('The generated motion did not cover the complete animation. Your poses were kept.');
     if (keepAnchors) {

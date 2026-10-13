@@ -2,12 +2,19 @@ import { Matrix4, Quaternion, Vector3 } from 'three';
 import { createPoseSampler } from './motion';
 import { offsetPose } from './poseProperties';
 import { MAX_ANIMATION_DURATION } from './keyframeEditing';
+import { createMorphKeySampler } from './morphs';
 import type { CharacterAsset, InterpolationMode, Pose, PoseKey } from '../types';
 
 export interface MotionSequence { keys: PoseKey[]; duration: number; interpolation: InterpolationMode }
 export type ClipEdit = { kind: 'trim'; start: number; end: number } | { kind: 'speed'; factor: number }
   | { kind: 'reverse' } | { kind: 'in-place' } | { kind: 'loop'; blend: number } | { kind: 'repeat'; count: number; blend: number };
-const key = (time: number, pose: Pose, label?: string): PoseKey => ({ id: crypto.randomUUID(), time, pose, label });
+const key = (time: number, pose: Pose, shapes: Pick<PoseKey, 'morphs'> = {}): PoseKey => ({ id: crypto.randomUUID(), time, pose, ...shapes });
+
+function blendShapes(a: Pick<PoseKey, 'morphs'>, b: Pick<PoseKey, 'morphs'>, weight: number): Pick<PoseKey, 'morphs'> {
+  if (!a.morphs && !b.morphs) return {};
+  const names = new Set([...Object.keys(a.morphs ?? {}), ...Object.keys(b.morphs ?? {})]);
+  return { morphs: Object.fromEntries([...names].map(name => [name, (a.morphs?.[name] ?? 0) * (1 - weight) + (b.morphs?.[name] ?? 0) * weight])) };
+}
 
 function validDuration(duration: number, fps: number) {
   if (!Number.isInteger(fps) || fps < 1 || fps > 120) throw new Error('Use a frame rate between 1 and 120.');
@@ -118,6 +125,7 @@ function transform(asset: CharacterAsset, pose: Pose, matrix: Matrix4): Pose {
 function loopSequence(asset: CharacterAsset, sequence: MotionSequence, blend: number, fps: number): MotionSequence {
   if (!Number.isFinite(blend) || blend < 1 / fps || blend > sequence.duration / 2) throw new Error('Loop blend must be at least one frame and no more than half the clip.');
   const sample = createPoseSampler(sequence.keys, sequence.interpolation);
+  const shapes = createMorphKeySampler(sequence.keys, sequence.interpolation, asset.restMorphs);
   const start = sample(0), end = sample(sequence.duration);
   const destination = transform(asset, start, alignment(asset, start, end));
   // Match height as well, while preserving total planar travel and heading.
@@ -125,7 +133,8 @@ function loopSequence(asset: CharacterAsset, sequence: MotionSequence, blend: nu
   const keys = times(sequence.duration, fps, [...boundaryTimes(sequence), sequence.duration - blend]).map(time => {
     const pose = sample(time);
     const u = Math.max(0, (time - (sequence.duration - blend)) / blend);
-    return key(time, u > 0 ? blendPose(pose, seam, u * u * (3 - 2 * u)) : pose);
+    const weight = u * u * (3 - 2 * u);
+    return key(time, u > 0 ? blendPose(pose, seam, weight) : pose, u > 0 ? blendShapes(shapes(time), shapes(0), weight) : shapes(time));
   });
   return { keys, duration: sequence.duration, interpolation: 'linear' };
 }
@@ -135,11 +144,12 @@ export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit
   validDuration(sequence.duration, fps);
   if (!sequence.keys.length) throw new Error('Add a pose before editing motion.');
   const sample = createPoseSampler(sequence.keys, sequence.interpolation);
+  const shapes = createMorphKeySampler(sequence.keys, sequence.interpolation, asset.restMorphs);
   if (edit.kind === 'trim') {
     if (!Number.isFinite(edit.start) || !Number.isFinite(edit.end) || edit.start < 0 || edit.end > sequence.duration || edit.end <= edit.start) throw new Error('Choose a trim range inside the clip.');
     const duration = edit.end - edit.start; validDuration(duration, fps);
     // Bake to preserve the original smooth tangents at both new boundaries.
-    return { duration, interpolation: sequence.interpolation === 'stepped' ? 'stepped' : 'linear', keys: times(duration, fps, sequence.keys.map(k => k.time - edit.start)).map(time => key(time, sample(time + edit.start))) };
+    return { duration, interpolation: sequence.interpolation === 'stepped' ? 'stepped' : 'linear', keys: times(duration, fps, sequence.keys.map(k => k.time - edit.start)).map(time => key(time, sample(time + edit.start), shapes(time + edit.start))) };
   }
   if (edit.kind === 'speed') {
     if (!Number.isFinite(edit.factor) || edit.factor < .1 || edit.factor > 10) throw new Error('Choose a speed from 0.1× to 10×.');
@@ -148,13 +158,13 @@ export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit
   }
   if (edit.kind === 'reverse') {
     // Bake holds as well: reversing only key times would reverse the wrong held pose.
-    return { ...sequence, interpolation: sequence.interpolation === 'stepped' ? 'stepped' : 'linear', keys: times(sequence.duration, fps, boundaryTimes(sequence, 0, true)).map(time => key(time, sample(sequence.duration - time))) };
+    return { ...sequence, interpolation: sequence.interpolation === 'stepped' ? 'stepped' : 'linear', keys: times(sequence.duration, fps, boundaryTimes(sequence, 0, true)).map(time => key(time, sample(sequence.duration - time), shapes(sequence.duration - time))) };
   }
   if (edit.kind === 'in-place') {
     const origin = positionOf(asset, sample(0));
     return { ...sequence, interpolation: sequence.interpolation === 'stepped' ? 'stepped' : 'linear', keys: times(sequence.duration, fps, sequence.keys.map(k => k.time)).map(time => {
       const pose = sample(time), position = positionOf(asset, pose);
-      return key(time, offsetPose(asset, pose, [origin.x - position.x, 0, origin.z - position.z]));
+      return key(time, offsetPose(asset, pose, [origin.x - position.x, 0, origin.z - position.z]), shapes(time));
     }) };
   }
   const loop = loopSequence(asset, sequence, edit.blend, fps);
@@ -162,6 +172,7 @@ export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit
   if (!Number.isInteger(edit.count) || edit.count < 2 || edit.count > 20) throw new Error('Choose between 2 and 20 repeats.');
   const duration = sequence.duration * edit.count; validDuration(duration, fps);
   const matrices = [new Matrix4()], sampleLoop = createPoseSampler(loop.keys, 'linear');
+  const loopShapes = createMorphKeySampler(loop.keys, 'linear', asset.restMorphs);
   for (let cycle = 1; cycle < edit.count; cycle++) {
     const previous = transform(asset, loop.keys.at(-1)!.pose, matrices[cycle - 1]), source = loop.keys[0].pose;
     const matrix = alignment(asset, source, previous);
@@ -171,7 +182,8 @@ export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit
   const extra = matrices.flatMap((_, cycle) => [cycle * sequence.duration, cycle * sequence.duration + sequence.duration - edit.blend, ...boundaryTimes(sequence, cycle * sequence.duration)]);
   const keys = times(duration, fps, extra).map(time => {
     const cycle = Math.min(edit.count - 1, Math.floor(time / sequence.duration));
-    return key(time, transform(asset, sampleLoop(time - cycle * sequence.duration), matrices[cycle]));
+    const localTime = time - cycle * sequence.duration;
+    return key(time, transform(asset, sampleLoop(localTime), matrices[cycle]), loopShapes(localTime));
   });
   return { keys, duration, interpolation: 'linear' };
 }
@@ -182,14 +194,17 @@ export function composeMotion(asset: CharacterAsset, base: MotionSequence, next:
   if (!Number.isFinite(blend) || blend < 0 || blend > Math.min(base.duration, next.duration) / 2) throw new Error('Clip blend must be between zero and half the shorter clip.');
   const start = base.duration - blend, duration = start + next.duration; validDuration(duration, fps);
   const sampleBase = createPoseSampler(base.keys, base.interpolation), sampleNext = createPoseSampler(next.keys, next.interpolation);
+  const baseShapes = createMorphKeySampler(base.keys, base.interpolation, asset.restMorphs);
+  const nextShapes = createMorphKeySampler(next.keys, next.interpolation, asset.restMorphs);
   const matrix = alignment(asset, sampleNext(0), sampleBase(start));
   const keys = times(duration, fps, [start, base.duration, ...boundaryTimes(base), ...boundaryTimes(next, start)]).map(time => {
-    if (time < start) return key(time, sampleBase(time));
+    if (time < start) return key(time, sampleBase(time), baseShapes(time));
     const incoming = transform(asset, sampleNext(time - start), matrix);
-    if (blend === 0 || time >= base.duration) return key(time, incoming);
+    if (blend === 0 || time >= base.duration) return key(time, incoming, nextShapes(time - start));
     const u = (time - start) / blend;
-    if (u === 0) return key(time, sampleBase(time));
-    return key(time, blendPose(sampleBase(time), incoming, u * u * (3 - 2 * u)));
+    if (u === 0) return key(time, sampleBase(time), baseShapes(time));
+    const weight = u * u * (3 - 2 * u);
+    return key(time, blendPose(sampleBase(time), incoming, weight), blendShapes(baseShapes(time), nextShapes(time - start), weight));
   });
   return { keys, duration, interpolation: 'linear' };
 }
