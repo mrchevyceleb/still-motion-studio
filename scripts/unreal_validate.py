@@ -15,7 +15,7 @@ import traceback
 import unreal
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from unreal_import import import_fbx
+from unreal_import import animation_curve_names, import_fbx
 
 
 def vector(value):
@@ -64,6 +64,54 @@ def skin_bounds(mesh, modifier, names, vertex_weights, poses):
                 low[axis], high[axis] = min(low[axis], position[axis]), max(high[axis], position[axis])
         result.append({"min": low, "max": high, "vertices": len(positions)})
     return result
+
+
+def validate_morphs(mesh, animation, expected, report, checks):
+    if "morphTargets" in expected:
+        if not hasattr(mesh, "get_all_morph_target_names"):
+            raise RuntimeError("UE 5.8 SkeletalMesh.get_all_morph_target_names is required for morph validation.")
+        targets = [str(name) for name in mesh.get_all_morph_target_names()]
+        report["morphTargets"] = targets
+        checks["morphTargetCountMatches"] = len(targets) == len(expected["morphTargets"])
+        checks["morphTargetNamesMatch"] = sorted(targets) == sorted(expected["morphTargets"])
+    if "morphCurves" not in expected:
+        return
+    library = unreal.AnimationLibrary
+    if not all(hasattr(library, method) for method in ("get_float_keys", "get_float_value_at_time")):
+        raise RuntimeError("UE 5.8 AnimationLibrary.get_float_keys and get_float_value_at_time are required for morph validation.")
+    names = animation_curve_names(animation)
+    checks["morphCurveNamesMatch"] = set(expected["morphCurves"]).issubset(names)
+    report["morphCurves"], errors = {}, []
+    for name, reference in expected["morphCurves"].items():
+        if name not in names:
+            report["morphCurves"][name] = {"error": "Missing animation curve"}
+            continue
+        times, values = library.get_float_keys(animation, name)
+        if not times or len(times) != len(values) or not all(math.isfinite(float(v)) for v in list(times) + list(values)):
+            raise RuntimeError("Morph curve has empty or invalid imported keys: " + name)
+        measured = []
+        for index, sample in enumerate(reference):
+            if isinstance(sample, dict):
+                at, value = float(sample["time"]), float(sample["value"])
+            elif len(reference) == expected.get("frameCount"):
+                at, value = index / float(expected["fps"]), float(sample)
+            elif len(reference) == len(expected.get("sampleTimes", [])):
+                at, value = float(expected["sampleTimes"][index]), float(sample)
+            else:
+                raise ValueError("Morph samples need {time, value} objects, sampleTimes, or full frameCount/fps arrays: " + name)
+            if not math.isfinite(at) or not math.isfinite(value) or at < 0 or at > animation.get_play_length() + 1e-5:
+                raise ValueError("Morph sample is outside the animation or nonfinite: " + name)
+            actual = float(library.get_float_value_at_time(animation, name, min(at, animation.get_play_length())))
+            if not math.isfinite(actual):
+                raise RuntimeError("Morph curve evaluated to a nonfinite value: " + name)
+            error = abs(actual - value)
+            measured.append({"time": at, "expected": value, "value": actual, "error": error})
+            errors.append(error)
+        if not measured:
+            raise ValueError("Expected morph curve has no samples: " + name)
+        report["morphCurves"][name] = {"keyCount": len(times), "samples": measured}
+    report["morphCurveMaxError"] = max(errors, default=0.)
+    checks["morphCurveValuesMatch"] = checks["morphCurveNamesMatch"] and all(error <= 1e-3 for error in errors)
 
 
 def validate_case(case, destination):
@@ -207,6 +255,7 @@ def validate_case(case, destination):
     if expected.get("heightCm") is not None:
         report["heightErrorCm"] = abs(size[2] - expected["heightCm"])
         checks["heightMatches"] = report["heightErrorCm"] < .1
+    validate_morphs(mesh, animation, expected, report, checks)
     report["passed"] = all(checks.values())
     return report
 
