@@ -268,6 +268,12 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
         if obj is not arm:
             bpy.data.objects.remove(obj, do_unlink=True)
     arm.animation_data_clear()
+    # A connected child ignores its own location, which would drop pelvis travel under a root bone.
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    for edit_bone in arm.data.edit_bones:
+        edit_bone.use_connect = False
+    bpy.ops.object.mode_set(mode="OBJECT")
     bones = sorted(arm.data.bones, key=lambda b: len(b.parent_recursive))
     rest = {b.name: b.matrix_local.copy() for b in bones}
     still = {bone_key(e["name"]): e for e in entries if e["kind"] in ("bone", "empty")}
@@ -285,7 +291,9 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
         raise ValueError(f"The character in Still is {rest_error:.2f} cm away from the FBX's rest pose. Load the same FBX into Still without editing its rest pose, then export again.")
     correction = {r: (turn @ rest_still[s].to_3x3().to_4x4()).inverted() @ rest[r].to_3x3().to_4x4() for r, s in matched.items()}
     roots = [b for b in bones if b.parent is None]
-    dedicated_root = len(roots) == 1 and roots[0].name not in matched
+    pelvis = ground_trajectory["sourceBone"] if ground_trajectory else next((e["name"] for e in entries if bone_key(e["name"]) in ("hips", "pelvis")), None)
+    # A root above the pelvis (Unreal's usual "root") carries ground motion, whether or not Still's copy has it.
+    dedicated_root = len(roots) == 1 and matched.get(roots[0].name) != pelvis and bone_key(roots[0].name) not in ("hips", "pelvis")
     if root_motion == "extract" and not dedicated_root:
         warnings.append(f"{roots[0].name} is the top bone of this skeleton, so there is no root bone for Unreal to extract ground motion into. Travel stays on {roots[0].name}, the same as Preserve. Give the character a root bone above the pelvis to use Extract.")
         root_motion = "preserve"
@@ -301,10 +309,12 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
                 world = values[matched[b.name]]
                 posed[b.name] = Matrix.Translation(place(world.translation)) @ turn @ world.to_3x3().to_4x4() @ correction[b.name]
             elif b.parent is None:
-                ground = values.get(trajectory) if trajectory and root_motion == "extract" else None
-                posed[b.name] = (to_reference @ ground @ to_reference.inverted() if ground else Matrix.Identity(4)) @ rest[b.name]
-            else:
-                posed[b.name] = posed[b.parent.name] @ rest[b.parent.name].inverted() @ rest[b.name]
+                posed[b.name] = rest[b.name]
+            if b.parent is None and dedicated_root and trajectory and root_motion == "extract":
+                posed[b.name] = to_reference @ values[trajectory] @ to_reference.inverted() @ posed[b.name]
+            if b.name in posed:
+                continue
+            posed[b.name] = posed[b.parent.name] @ rest[b.parent.name].inverted() @ rest[b.name]
         frames.append(posed)
     for i, posed in enumerate(frames):
         for b in bones:
