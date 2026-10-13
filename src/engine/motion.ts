@@ -47,7 +47,13 @@ function cubic(a: number, b: number, before: number, after: number, dt: number, 
 
 /** Samples copied local bone transforms; authored keys are returned exactly. */
 export function samplePose(keys: PoseKey[], time: number, mode: InterpolationMode): Pose {
+  return createPoseSampler(keys, mode)(time);
+}
+
+/** Sort once for baking a clip; every returned pose is still independent. */
+export function createPoseSampler(keys: PoseKey[], mode: InterpolationMode): (time: number) => Pose {
   const sorted = ordered(keys);
+  return (time: number): Pose => {
   if (!sorted.length) return [];
   if (time <= sorted[0].time) return copyPose(sorted[0].pose);
   const index = bracket(sorted, time), a = sorted[index], b = sorted[index + 1];
@@ -63,6 +69,7 @@ export function samplePose(keys: PoseKey[], time: number, mode: InterpolationMod
       : THREE.MathUtils.lerp(start, end[field][axis], u)) as Vec3;
     return { position: interpolate('position'), quaternion: quaternion(bone.quaternion).slerp(quaternion(end.quaternion), ease).toArray() as Quat, scale: interpolate('scale') };
   });
+  };
 }
 
 export function createDemoKeys(asset: CharacterAsset): PoseKey[] {
