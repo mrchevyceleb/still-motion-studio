@@ -180,7 +180,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     case 'keys.simplify': {
       const count = number(params.count ?? 6, 'Pose count', 2, 120);
       if (!Number.isInteger(count)) throw new Error('Pose count must be an integer.');
-      commit({ ...studio, keys: simplifyKeys(studio.keys, count), sourceClip: null, settings: { ...studio.settings, interpolation: 'smooth' } });
+      commit({ ...studio, keys: simplifyKeys(studio.keys, count, asset.restMorphs), sourceClip: null, settings: { ...studio.settings, interpolation: 'smooth' } });
       return editor.snapshot();
     }
     case 'clips.list': return { clips: asset.clips.map((clip, index) => ({ index, name: clip.name, duration: clip.duration })), selected: studio.sourceClip ?? null };
@@ -238,7 +238,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (provider.limits?.humanoidOnly && asset.kind !== 'humanoid' || provider.limits?.quadrupedOnly && asset.kind !== 'quadruped') throw new Error('This provider does not support the current rig category.');
       if (provider.limits?.maxDuration && studio.duration > provider.limits.maxDuration) throw new Error(`This provider supports up to ${provider.limits.maxDuration} seconds.`);
       const count = params.simplifyCount ?? (studio.keys.length > 24 ? 6 : undefined);
-      const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120));
+      const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120), asset.restMorphs);
       const settings = { ...studio.settings, interpolation: mode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
       const request = makeMotionRequest(asset, sequence, anchors, studio.duration, settings, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
       try {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
+import type { CharacterAsset, InterpolationMode, MorphValues, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
 import { applyPose, capturePose } from './character';
 import { MAX_ANIMATION_DURATION } from './keyframeEditing';
 import { isFingerBone } from './handRig';
@@ -221,7 +221,7 @@ function poseError(actual: Pose, predicted: Pose): number {
 }
 
 /** Greedy maximum-error key reduction keeps endpoints and important pose changes. */
-export function simplifyKeys(keys: PoseKey[], count: number): PoseKey[] {
+export function simplifyKeys(keys: PoseKey[], count: number, restMorphs: MorphValues = {}): PoseKey[] {
   const sorted = ordered(keys);
   if (sorted.length <= Math.max(2, count)) return sorted.map(k => ({ ...k, pose: copyPose(k.pose) }));
   const target = Math.max(2, Math.floor(count)), kept = new Set<number>([0, sorted.length - 1]);
@@ -232,10 +232,10 @@ export function simplifyKeys(keys: PoseKey[], count: number): PoseKey[] {
       const start = indices[segment], end = indices[segment + 1];
       const pair = [sorted[start], sorted[end]];
       for (let i = start + 1; i < end; i++) {
-        const predicted = createMorphSampler(pair, 'smooth')(sorted[i].time);
+        const predicted = createMorphSampler(pair, 'smooth', restMorphs)(sorted[i].time);
         // A shape missing from a key plays at rest, so a key returning a shape to rest still counts.
         const names = new Set([sorted[i], ...pair].flatMap(key => Object.keys(key.morphs ?? {})));
-        const morphError = Math.max(0, ...[...names].map(name => Math.abs((sorted[i].morphs?.[name] ?? 0) - (predicted[name] ?? 0))));
+        const morphError = Math.max(0, ...[...names].map(name => Math.abs((sorted[i].morphs?.[name] ?? restMorphs[name] ?? 0) - (predicted[name] ?? restMorphs[name] ?? 0))));
         const error = Math.max(morphError, poseError(sorted[i].pose, samplePose(pair, sorted[i].time, 'smooth')));
         if (error > maxError) { maxError = error; best = i; }
       }

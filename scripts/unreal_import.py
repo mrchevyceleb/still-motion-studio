@@ -120,11 +120,16 @@ def existing_conversion(asset_path):
                         meshes.append(mesh)
         except Exception as error:
             unreal.log_warning("Still could not read the character's import settings: " + str(error))
-    data = next((d for d in (m.get_editor_property("asset_import_data") for m in meshes) if isinstance(d, unreal.FbxAssetImportData)), None)
-    if data is None:
+    keys = ("convert_scene", "convert_scene_unit", "force_front_x_axis", "import_uniform_scale", "import_rotation", "import_translation")
+    found = [(m, d) for m, d in ((m, m.get_editor_property("asset_import_data")) for m in meshes) if isinstance(d, unreal.FbxAssetImportData)]
+    if not found:
+        unreal.log_warning("Still found no FBX import settings for " + asset_path + "; using default conversion. Pass the character's SkeletalMesh path if the animation lands rotated or scaled.")
         return None
-    return {key: data.get_editor_property(key) for key in
-            ("convert_scene", "convert_scene_unit", "force_front_x_axis", "import_uniform_scale", "import_rotation", "import_translation")}
+    settings = [{key: data.get_editor_property(key) for key in keys} for _, data in found]
+    if any(str(other) != str(settings[0]) for other in settings[1:]):
+        names = ", ".join(mesh.get_path_name() for mesh, _ in found[:4])
+        raise ValueError("Meshes on this Skeleton were imported with different FBX settings (" + names + "). Use the character's SkeletalMesh path instead of the Skeleton path.")
+    return settings[0]
 
 
 def import_package(directory=None):

@@ -71,6 +71,7 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
       if (reference) {
         const magic = Buffer.alloc(FBX_MAGIC.length);
         if (size - length < magic.length) throw new Error('Include the original character FBX after the GLB for an existing Unreal character.');
+        if (size - length > MAX_REFERENCE_BYTES - MAX_BYTES) throw new Error(`The character FBX exceeds ${(MAX_REFERENCE_BYTES - MAX_BYTES) / 1024 / 1024} MB.`);
         await file.read(magic, 0, magic.length, length);
         if (!magic.equals(FBX_MAGIC)) throw new Error('Choose a binary FBX as the character reference. ASCII FBX is not supported for this export.');
         const referenceFbx = path.join(path.dirname(filename), 'reference.fbx');
