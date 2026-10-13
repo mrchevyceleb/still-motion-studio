@@ -219,6 +219,10 @@ export function validateProject(input: unknown): ProjectDocument {
    const times = new Set<number>();
    const ids = new Set<string>();
    for (const key of sequence) {
+    if (key.morphs !== undefined && (!key.morphs || typeof key.morphs !== 'object' || Array.isArray(key.morphs) ||
+        Object.entries(key.morphs).some(([name, value]) => !name || typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('This project contains invalid morph values.');
+    }
     if (typeof key.id !== 'string' || ids.has(key.id) || !Number.isFinite(key.time) || key.time < 0 || key.time > data.duration + 0.001 ||
         times.has(key.time) || !Array.isArray(key.pose) || key.pose.length !== data.boneNames.length ||
         key.pose.some(bone => !bone || ![bone.position, bone.quaternion, bone.scale].every((a, i) =>

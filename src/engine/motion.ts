@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
+import type { CharacterAsset, InterpolationMode, MorphValues, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
 import { applyPose, capturePose } from './character';
 import { MAX_ANIMATION_DURATION } from './keyframeEditing';
 import { isFingerBone } from './handRig';
+import { applyMorphs, captureMorphs, createMorphKeySampler, createMorphSampler, isMorphTrack, morphAnimationTracks } from './morphs';
 
 const copyPose = (pose: Pose): Pose => pose.map(b => ({ position: [...b.position], quaternion: [...b.quaternion], scale: [...b.scale] }));
 const makeKey = (time: number, pose: Pose, label?: string): PoseKey => ({ id: crypto.randomUUID(), time, pose, label });
@@ -156,13 +157,15 @@ export function sampleClip(asset: CharacterAsset, clip: THREE.AnimationClip): Po
   const boneTracks: THREE.KeyframeTrack[] = [], unsupported: THREE.KeyframeTrack[] = [];
   for (const track of clip.tracks) {
     try {
-      if (trackBone(asset, track.name)) boneTracks.push(track);
+      if (trackBone(asset, track.name) || isMorphTrack(asset, track)) boneTracks.push(track);
       else if (!isRestTransform(asset, track)) unsupported.push(track);
     } catch { unsupported.push(track); }
   }
-  if (unsupported.length) throw new Error(`This clip animates non-bone or unsupported channels (${unsupported.slice(0, 3).map(t => t.name).join(', ')}). Those channels cannot be preserved in this pose editor. Export a skeleton-only animation from your source application first.`);
+  if (unsupported.length) throw new Error(`This clip animates non-bone or unsupported channels (${unsupported.slice(0, 3).map(t => t.name).join(', ')}). Only bone transforms and morph weights can be preserved in this pose editor.`);
   const mixer = new THREE.AnimationMixer(asset.root);
+  const savedMorphs = captureMorphs(asset);
   applyPose(asset, asset.restPose);
+  applyMorphs(asset, asset.restMorphs ?? {});
   const action = mixer.clipAction(new THREE.AnimationClip(clip.name, clip.duration, boneTracks, clip.blendMode));
   action.setLoop(THREE.LoopOnce, 1);
   action.clampWhenFinished = true;
@@ -174,13 +177,15 @@ export function sampleClip(asset: CharacterAsset, clip: THREE.AnimationClip): Po
       action.paused = false;
       mixer.setTime(time);
       asset.root.updateMatrixWorld(true);
-      samples.push(makeKey(time, capturePose(asset)));
+      const morphs = captureMorphs(asset);
+      samples.push({ ...makeKey(time, capturePose(asset)), ...(Object.keys(morphs).length ? { morphs } : {}) });
     }
     return samples;
   } finally {
     mixer.stopAllAction();
     mixer.uncacheRoot(asset.root);
     applyPose(asset, asset.restPose);
+    applyMorphs(asset, savedMorphs);
   }
 }
 
@@ -198,6 +203,7 @@ export function buildAnimationClip(asset: CharacterAsset, keys: PoseKey[], durat
     tracks.push(new THREE.QuaternionKeyframeTrack(`${bone.uuid}.quaternion`, sortedTimes, poses.flatMap(p => (p[index] ?? fallback).quaternion), interpolation));
     tracks.push(new THREE.VectorKeyframeTrack(`${bone.uuid}.scale`, sortedTimes, poses.flatMap(p => (p[index] ?? fallback).scale), interpolation));
   });
+  tracks.push(...morphAnimationTracks(asset, keys, sortedTimes, settings.interpolation));
   return new THREE.AnimationClip('Still Motion', end, tracks);
 }
 
@@ -215,7 +221,7 @@ function poseError(actual: Pose, predicted: Pose): number {
 }
 
 /** Greedy maximum-error key reduction keeps endpoints and important pose changes. */
-export function simplifyKeys(keys: PoseKey[], count: number): PoseKey[] {
+export function simplifyKeys(keys: PoseKey[], count: number, restMorphs: MorphValues = {}): PoseKey[] {
   const sorted = ordered(keys);
   if (sorted.length <= Math.max(2, count)) return sorted.map(k => ({ ...k, pose: copyPose(k.pose) }));
   const target = Math.max(2, Math.floor(count)), kept = new Set<number>([0, sorted.length - 1]);
@@ -226,7 +232,11 @@ export function simplifyKeys(keys: PoseKey[], count: number): PoseKey[] {
       const start = indices[segment], end = indices[segment + 1];
       const pair = [sorted[start], sorted[end]];
       for (let i = start + 1; i < end; i++) {
-        const error = poseError(sorted[i].pose, samplePose(pair, sorted[i].time, 'smooth'));
+        const predicted = createMorphSampler(pair, 'smooth', restMorphs)(sorted[i].time);
+        // A shape missing from a key plays at rest, so a key returning a shape to rest still counts.
+        const names = new Set([sorted[i], ...pair].flatMap(key => Object.keys(key.morphs ?? {})));
+        const morphError = Math.max(0, ...[...names].map(name => Math.abs((sorted[i].morphs?.[name] ?? restMorphs[name] ?? 0) - (predicted[name] ?? restMorphs[name] ?? 0))));
+        const error = Math.max(morphError, poseError(sorted[i].pose, samplePose(pair, sorted[i].time, 'smooth')));
         if (error > maxError) { maxError = error; best = i; }
       }
     }
@@ -314,6 +324,7 @@ export function applyPhysics(asset: CharacterAsset, keys: PoseKey[], settings: M
     const start = sorted[0].time, end = sorted[sorted.length - 1].time;
     const times = bakeTimes(start, end, sorted.map(key => key.time));
     const authoredByTime = new Map(sorted.map(key => [Math.fround(key.time), key]));
+    const shapes = createMorphKeySampler(sorted, settings.interpolation, asset.restMorphs);
     const contacts = new Map<number, THREE.Vector3>(), result: PoseKey[] = [];
     for (const time of times) {
       applyPose(asset, samplePose(sorted, time, settings.interpolation));
@@ -342,7 +353,7 @@ export function applyPhysics(asset: CharacterAsset, keys: PoseKey[], settings: M
         if (penetrationAfterIK < 0) lift(-penetrationAfterIK);
       }
       const authored = authoredByTime.get(Math.fround(time));
-      result.push({ ...makeKey(time, capturePose(asset), authored?.label), ...(authored ? { id: authored.id } : {}) });
+      result.push({ ...makeKey(time, capturePose(asset), authored?.label), ...shapes(time), ...(authored ? { id: authored.id } : {}) });
     }
     return result;
   } finally { applyPose(asset, saved); }

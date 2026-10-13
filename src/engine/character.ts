@@ -3,7 +3,8 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
-import type { CharacterAsset, Pose, RigKind, Vec3 } from '../types';
+import type { CharacterAsset, MorphValues, Pose, RigKind, Vec3 } from '../types';
+import { applyMorphs, captureMorphs, restoreMorphNames, saveMorphNames } from './morphs';
 import { fitAnatomicalRig, influenceFamily, type AnatomicalFit, type AutoRigDiagnostics } from './anatomicalRig';
 import { fitHandRig, validateRigFit } from './handRig';
 
@@ -12,7 +13,7 @@ const WHITE_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAA
 const UP = new THREE.Vector3(0, 1, 0);
 
 type JointSpec = { name: string; parent?: string; position: Vec3 };
-type AssetMetadata = { version: number; restPose: Pose; warnings: string[]; height: number };
+type AssetMetadata = { version: number; restPose: Pose; restMorphs?: MorphValues; warnings: string[]; height: number };
 
 export function capturePose(asset: CharacterAsset): Pose {
   return asset.bones.map((bone) => ({
@@ -58,14 +59,18 @@ function makeAsset(root: THREE.Group, kind: RigKind, name: string, source: Chara
   const height = box.isEmpty() ? DISPLAY_HEIGHT : box.max.y - box.min.y;
   const asset: CharacterAsset = { root, bones, clips, kind, name, source, warnings, height, restPose: [], rigged: bones.length > 0 };
   asset.restPose = capturePose(asset);
+  const morphs = captureMorphs(asset);
+  if (Object.keys(morphs).length) asset.restMorphs = morphs;
   saveMetadata(asset);
   return asset;
 }
 
 function saveMetadata(asset: CharacterAsset): void {
+  saveMorphNames(asset);
   asset.root.userData.stillAsset = {
     version: 1,
     restPose: structuredClone(asset.restPose),
+    ...(asset.restMorphs ? { restMorphs: { ...asset.restMorphs } } : {}),
     warnings: [...asset.warnings],
     height: asset.height,
   } satisfies AssetMetadata;
@@ -322,6 +327,8 @@ export async function importCharacter(file: File): Promise<CharacterAsset> {
   object.traverse(node => { if (node instanceof THREE.Bone) boneNames.push(node.name.toLowerCase().replace(/[^a-z]/g, '')); });
   const kind: RigKind = boneNames.some(name => /front.*(leg|foot)/.test(name)) && boneNames.some(name => /(hind|back).*(leg|foot)/.test(name)) ? 'quadruped' : 'humanoid';
   const asset = makeAsset(normalizeImported(object), kind, file.name.replace(/\.[^.]+$/, ''), 'import', clips, [...new Set(warnings)]);
+  // Keep the source FBX on the asset, outside serialized scene metadata.
+  if (extension === 'fbx') { asset.referenceFbx = bytes; asset.referenceFbxName = file.name; }
   return asset;
 }
 
@@ -615,9 +622,11 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: 
 
 export async function exportCharacterGLB(asset: CharacterAsset, clip?: THREE.AnimationClip): Promise<ArrayBuffer> {
   const currentPose = capturePose(asset);
+  const currentMorphs = captureMorphs(asset);
   // The asset's base transforms must represent its original rest pose, not
   // whichever animation frame happens to be under the playhead at export time.
   applyPose(asset, asset.restPose);
+  applyMorphs(asset, asset.restMorphs ?? {});
   try {
   asset.root.updateMatrixWorld(true);
   updateSkeletons(asset.root);
@@ -636,7 +645,7 @@ export async function exportCharacterGLB(asset: CharacterAsset, clip?: THREE.Ani
   });
   if (!(exported instanceof ArrayBuffer)) throw new Error('The character could not be exported as GLB.');
   return exported;
-  } finally { applyPose(asset, currentPose); }
+  } finally { applyPose(asset, currentPose); applyMorphs(asset, currentMorphs); }
 }
 
 function validRestPose(value: unknown, boneCount: number): value is Pose {
@@ -652,10 +661,12 @@ export async function restoreCharacter(object: unknown, kind: RigKind, name: str
   if (!object || typeof object !== 'object' || !('object' in object)) throw new Error('The saved character data is incomplete.');
   const restored = await new THREE.ObjectLoader().parseAsync(object);
   const root = restored instanceof THREE.Group ? restored : new THREE.Group().add(restored);
+  restoreMorphNames(root);
   const metadata = root.userData.stillAsset as Partial<AssetMetadata> | undefined;
   const warnings = Array.isArray(metadata?.warnings) ? metadata.warnings.filter((warning): warning is string => typeof warning === 'string') : [];
   const asset = makeAsset(root, kind, name, 'import', root.animations, warnings);
   if (validRestPose(metadata?.restPose, asset.bones.length)) asset.restPose = structuredClone(metadata.restPose);
+  if (metadata?.restMorphs && Object.values(metadata.restMorphs).every(value => typeof value === 'number' && Number.isFinite(value))) asset.restMorphs = { ...metadata.restMorphs };
   saveMetadata(asset);
   return asset;
 }

@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process';
-import { createReadStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, open, readFile, writeFile, stat, readdir, realpath, rm } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { saveExportPackage } from './export-zip.mjs';
 
 const MAX_BYTES = 180 * 1024 * 1024;
+const MAX_REFERENCE_BYTES = MAX_BYTES + 150 * 1024 * 1024;
+const ASSET_PATH = /^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/;
+const FBX_MAGIC = Buffer.from('Kaydara FBX Binary  \0');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const json = (res, status, value) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
 const exists = filename => stat(filename).then(info => info.isFile(), () => false);
@@ -40,27 +45,40 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
     if ((await realpath(directory)).toLowerCase() !== path.resolve(directory).toLowerCase()) return;
     const old = [];
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !UUID.test(entry.name) || ['uploading', 'running'].includes(jobs.get(entry.name)?.status)) continue;
+      if (!entry.isDirectory() || !UUID.test(entry.name) || jobs.get(entry.name)?.saving || ['uploading', 'running'].includes(jobs.get(entry.name)?.status)) continue;
       const target = path.resolve(directory, entry.name);
       if (path.dirname(target) === directory) old.push({ target, time: (await stat(target)).mtimeMs });
     }
     old.sort((a, b) => b.time - a.time);
     for (const item of old.slice(10)) await rm(item.target, { recursive: true, force: true });
-    for (const [id, job] of jobs) { if (jobs.size <= 10) break; if (!['uploading', 'running'].includes(job.status)) jobs.delete(id); }
+    for (const [id, job] of jobs) { if (jobs.size <= 10) break; if (!job.saving && !['uploading', 'running'].includes(job.status)) jobs.delete(id); }
   }
 
-  async function upload(req, filename) {
-    const file = await open(filename, 'wx');
+  async function upload(req, filename, reference) {
+    const file = await open(filename, 'wx+'), limit = reference ? MAX_REFERENCE_BYTES : MAX_BYTES;
     let size = 0, header = Buffer.alloc(0);
     try {
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > MAX_BYTES) throw new Error('This export exceeds 180 MB. Use smaller textures or a lighter character.');
+        if (size > limit) throw new Error(`This export exceeds ${limit / 1024 / 1024} MB. Use smaller textures or a lighter character.`);
         if (header.length < 12) header = Buffer.concat([header, chunk.subarray(0, 12 - header.length)]);
         let offset = 0;
         while (offset < chunk.length) { const result = await file.write(chunk, offset, chunk.length - offset); offset += result.bytesWritten; }
       }
-      if (size < 20 || header.toString('ascii', 0, 4) !== 'glTF' || header.readUInt32LE(4) !== 2 || header.readUInt32LE(8) !== size) throw new Error('Unreal export requires a complete binary GLB character.');
+      if (size < 20 || header.toString('ascii', 0, 4) !== 'glTF' || header.readUInt32LE(4) !== 2) throw new Error('Unreal export requires a complete binary GLB character.');
+      const length = header.readUInt32LE(8);
+      if (length < 20 || length > size || length > MAX_BYTES || (!reference && length !== size)) throw new Error('Unreal export requires a complete binary GLB character of at most 180 MB.');
+      if (reference) {
+        const magic = Buffer.alloc(FBX_MAGIC.length);
+        if (size - length < magic.length) throw new Error('Include the original character FBX after the GLB for an existing Unreal character.');
+        if (size - length > MAX_REFERENCE_BYTES - MAX_BYTES) throw new Error(`The character FBX exceeds ${(MAX_REFERENCE_BYTES - MAX_BYTES) / 1024 / 1024} MB.`);
+        await file.read(magic, 0, magic.length, length);
+        if (!magic.equals(FBX_MAGIC)) throw new Error('Choose a binary FBX as the character reference. ASCII FBX is not supported for this export.');
+        const referenceFbx = path.join(path.dirname(filename), 'reference.fbx');
+        await pipeline(createReadStream(filename, { start: length }), createWriteStream(referenceFbx, { flags: 'wx' }));
+        await file.truncate(length);
+        return referenceFbx;
+      }
     } finally { await file.close(); }
   }
 
@@ -102,6 +120,7 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
       if (job.status !== 'cancelled') { job.status = 'error'; job.error = String(error.message || error); job.message = job.error; }
     } finally {
       job.child = null; release(job.id);
+      await Promise.allSettled(['source.glb', 'reference.fbx'].map(filename => rm(path.join(job.folder, filename), { force: true })));
       await writeFile(path.join(job.folder, 'export.log'), log + '\n' + errors).catch(() => {});
       await prune().catch(error => console.error('Export cleanup:', error.message));
     }
@@ -114,11 +133,14 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
     }
     if (req.method === 'POST' && url.pathname === '/api/exports/unreal') {
       if (!['model/gltf-binary', 'application/octet-stream'].includes((req.headers['content-type'] || '').split(';')[0])) { json(res, 415, { error: 'Upload a binary GLB character.' }); return true; }
-      if (Number(req.headers['content-length']) > MAX_BYTES) { json(res, 413, { error: 'This export exceeds 180 MB. Use smaller textures or a lighter character.' }); return true; }
+      const reference = url.searchParams.get('reference') === '1', limit = reference ? MAX_REFERENCE_BYTES : MAX_BYTES;
+      if (Number(req.headers['content-length']) > limit) { json(res, 413, { error: `This export exceeds ${limit / 1024 / 1024} MB. Use smaller textures or a lighter character.` }); return true; }
       const fps = Number(url.searchParams.get('fps') || 30), rootMotion = url.searchParams.get('rootMotion') || 'preserve';
       const retarget = url.searchParams.get('retarget') || 'none', targetMesh = url.searchParams.get('targetMesh') || '';
-      if (![24, 30, 60].includes(fps) || !['preserve', 'extract', 'in-place'].includes(rootMotion) || !['none', 'manny', 'metahuman'].includes(retarget)) { json(res, 400, { error: 'Choose 24, 30, or 60 fps and a supported root-motion and retarget mode.' }); return true; }
-      if (targetMesh && (targetMesh.length > 512 || !/^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/.test(targetMesh))) { json(res, 400, { error: 'Choose a valid Unreal Skeleton or SkeletalMesh asset path.' }); return true; }
+      const targetSkeleton = url.searchParams.get('targetSkeleton') || '';
+      if (![24, 30, 60].includes(fps) || !['preserve', 'extract', 'in-place'].includes(rootMotion) || !['none', 'manny', 'metahuman', 'skeleton'].includes(retarget)) { json(res, 400, { error: 'Choose 24, 30, or 60 fps and a supported root-motion and retarget mode.' }); return true; }
+      if (retarget === 'skeleton' && (!targetSkeleton || !reference)) { json(res, 400, { error: 'An existing Unreal character needs its Skeleton asset path and the original character FBX (reference=1).' }); return true; }
+      if ([targetMesh, targetSkeleton].some(value => value && (value.length > 512 || !ASSET_PATH.test(value)))) { json(res, 400, { error: 'Choose a valid Unreal Skeleton or SkeletalMesh asset path.' }); return true; }
       const executable = await converter();
       if (!executable) { json(res, 503, { error: 'The local Unreal exporter needs Blender installed.' }); return true; }
       const id = url.searchParams.get('id') || crypto.randomUUID();
@@ -135,11 +157,11 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
           job.child?.kill(); job.request?.destroy();
         }
       });
-      job.upload = (async () => { await mkdir(job.folder, { recursive: true }); await upload(req, path.join(job.folder, 'source.glb')); })();
+      job.upload = (async () => { await mkdir(job.folder, { recursive: true }); return upload(req, path.join(job.folder, 'source.glb'), reference); })();
       try {
-        await job.upload; job.request = null;
+        const referenceFbx = await job.upload; job.request = null;
         if (stopping || job.status === 'cancelled') { release(id); json(res, 409, { error: 'Export was cancelled. Your project is unchanged.' }); return true; }
-        job.work = run(job, executable, { name, fps, rootMotion, retarget, targetMesh });
+        job.work = run(job, executable, { name, fps, rootMotion, retarget, ...(retarget === 'skeleton' ? { targetSkeleton, referenceFbx } : { targetMesh, ...(referenceFbx ? { referenceFbx } : {}) }) });
         json(res, 202, publicJob(job));
       } catch (error) {
         if (job.status !== 'cancelled') { job.status = 'error'; job.error = String(error.message || error); }
@@ -149,19 +171,43 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
       }
       return true;
     }
-    const match = url.pathname.match(/^\/api\/exports\/([0-9a-f-]{36})(\/download)?$/);
+    const match = url.pathname.match(/^\/api\/exports\/([0-9a-f-]{36})(\/(?:download|save))?$/);
     if (!match) return false;
     const job = jobs.get(match[1]);
     if (!job) { json(res, 404, { error: 'This local export has expired. Export the project again.' }); return true; }
-    if (req.method === 'GET' && match[2]) {
+    if (req.method === 'POST' && match[2] === '/save') {
+      if (stopping) { json(res, 409, { error: 'Still is shutting down. Reopen it before saving an export.' }); return true; }
+      if (job.status !== 'done') { json(res, 409, { error: 'The Unreal package is not ready.' }); return true; }
+      try {
+        const chunks = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 16384) throw new Error('The folder save request is too large.'); chunks.push(chunk); }
+        let body;
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new Error('Send the folder path as JSON with a folder field.'); }
+        if (stopping) { json(res, 409, { error: 'Still is shutting down. Reopen it before saving an export.' }); return true; }
+        if (job.saving) { json(res, 409, { error: 'This export is already being saved. Wait for it to finish.' }); return true; }
+        if (req.aborted || res.destroyed) return true;
+        const controller = new AbortController(); job.saveController = controller;
+        const disconnected = () => { if (!res.writableFinished) controller.abort(); };
+        res.once('close', disconnected);
+        job.saving = saveExportPackage(job.output, body?.folder, job.name, controller.signal);
+        try { const savedTo = await job.saving; if (!res.destroyed) json(res, 200, { savedTo }); }
+        finally { res.removeListener('close', disconnected); job.saving = null; job.saveController = null; }
+      } catch (error) { if (!res.destroyed) json(res, 400, { error: `Could not save into the folder. ${error.message || error}` }); }
+      return true;
+    }
+    if (req.method === 'GET' && match[2] === '/download') {
       if (job.status !== 'done') { json(res, 409, { error: 'The Unreal package is not ready.' }); return true; }
       const info = await stat(job.output);
       const filename = (job.name.replace(/[^a-z0-9_-]/gi, '_').slice(0, 80) || 'Animation') + '-Unreal.zip';
       res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': info.size, 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store' });
       const stream = createReadStream(job.output); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return true;
     }
-    if (req.method === 'GET') { json(res, 200, publicJob(job)); return true; }
-    if (req.method === 'DELETE') {
+    if (req.method === 'GET' && !match[2]) { json(res, 200, publicJob(job)); return true; }
+    if (req.method === 'DELETE' && !match[2]) {
+      if (job.saveController) {
+        job.saveController.abort(); await job.saving?.catch(() => {});
+        json(res, 200, publicJob(job)); return true;
+      }
       if (['uploading', 'running'].includes(job.status)) { job.status = 'cancelled'; job.message = 'Export cancelled. Your project is unchanged.'; job.child?.kill(); job.request?.destroy(); }
       json(res, 200, publicJob(job)); return true;
     }
@@ -170,8 +216,11 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
 
   async function stop() {
     stopping = true;
-    for (const job of jobs.values()) if (['uploading', 'running'].includes(job.status)) { job.status = 'cancelled'; job.child?.kill(); job.request?.destroy(); }
-    await Promise.allSettled([...jobs.values()].flatMap(job => [job.upload, job.work]));
+    for (const job of jobs.values()) {
+      job.saveController?.abort();
+      if (['uploading', 'running'].includes(job.status)) { job.status = 'cancelled'; job.child?.kill(); job.request?.destroy(); }
+    }
+    await Promise.allSettled([...jobs.values()].flatMap(job => [job.upload, job.work, job.saving]));
   }
   void prune().catch(error => console.error('Export cleanup:', error.message));
   return { handle, stop };

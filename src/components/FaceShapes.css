@@ -1,0 +1,7 @@
+.face-shapes summary { display: flex; justify-content: space-between; cursor: pointer; font-size: 13px; font-weight: 600; }
+.face-shapes summary span { opacity: .55; font-size: 11px; }
+.face-shapes fieldset { border: 0; padding: 12px 0 0; margin: 0; display: grid; gap: 12px; max-height: 280px; overflow-y: auto; }
+.face-shapes label { display: grid; grid-template-columns: 1fr auto; gap: 5px 8px; font-size: 12px; }
+.face-shapes label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.face-shapes output { font-variant-numeric: tabular-nums; opacity: .65; }
+.face-shapes input { grid-column: 1 / -1; width: 100%; margin: 0; }

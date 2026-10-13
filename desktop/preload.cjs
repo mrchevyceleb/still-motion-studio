@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('stillDesktop', {
+  pickFolder: () => ipcRenderer.invoke('still:pick-folder'),
   setTheme: theme => {
     if (theme === 'light' || theme === 'dark') ipcRenderer.send('still:theme', theme);
   },
