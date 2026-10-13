@@ -170,7 +170,14 @@ def validate_case(case, destination):
         pose = unreal.AnimPoseExtensions.get_anim_pose_at_time(animation, min(float(at), duration), options)
         poses.append(pose)
         samples.append({"time": float(at), "world": {name: transform(pose.get_bone_pose(name, unreal.AnimPoseSpaces.WORLD)) for name in names}})
-    deformed_bounds = skin_bounds(mesh, modifier, names, vertex_weights, poses)
+    skin_note = None
+    try:
+        deformed_bounds = skin_bounds(mesh, modifier, names, vertex_weights, poses)
+    except RuntimeError as error:
+        # An existing game character can split render vertices away from its weights; only Still's own meshes compare bounds.
+        if any(sample.get("meshBoundsCm") for sample in expected.get("samples", [])):
+            raise
+        deformed_bounds, skin_note = [], str(error)
     for sample, bounds_at_time in zip(samples, deformed_bounds):
         sample["meshBoundsCm"] = bounds_at_time
     root = roots[0] if len(roots) == 1 else None
@@ -208,6 +215,8 @@ def validate_case(case, destination):
                        "lockedRootDriftCm": max((distance(position, locked_positions[0]) for position in locked_positions), default=0.)},
         "checks": {},
     }
+    if skin_note:
+        report["deformedMeshBoundsSkipped"] = skin_note
     checks = report["checks"]
     checks["oneRoot"] = len(roots) == 1
     checks["weightedMesh"] = vertex_count > 0 and not invalid and all(abs(total - 1) < .0001 for total in sums)
@@ -215,7 +224,8 @@ def validate_case(case, destination):
     checks["unitBoneScale"] = all(max(abs(value - 1) for value in bone["scale"]) < .001 for sample in samples for bone in sample["world"].values())
     checks["rootMotionLockWorks"] = bool(locked_positions) and report["rootMotion"]["lockedRootDriftCm"] < .01
     by_name = {re.sub(r"[^a-z0-9]", "", name.lower()).replace("mixamorig", ""): bone["position"] for name, bone in zip(names, rest)}
-    if all(name in by_name for name in ("leftfoot", "rightfoot", "lefttoebase", "righttoebase", "head", "hips")):
+    # An existing game character keeps its own facing, so its case can turn these Still-character checks off.
+    if expected.get("checkOrientation", True) and all(name in by_name for name in ("leftfoot", "rightfoot", "lefttoebase", "righttoebase", "head", "hips")):
         forward = [(by_name["lefttoebase"][axis] + by_name["righttoebase"][axis] - by_name["leftfoot"][axis] - by_name["rightfoot"][axis]) * .5 for axis in range(3)]
         up = [by_name["head"][axis] - by_name["hips"][axis] for axis in range(3)]
         report["orientation"] = {"footToToeVectorCm": forward, "hipsToHeadVectorCm": up,

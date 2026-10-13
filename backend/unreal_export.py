@@ -253,20 +253,29 @@ def bone_key(value):
     return re.sub(r"[^a-z0-9]", "", re.sub(r"^mixamorig\d*[:_]*", "", str(value), flags=re.IGNORECASE).lower())
 
 
-def export_onto_reference(reference, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings):
+def export_onto_reference(reference, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings, morph_curves=None):
     """Key the reference character's own armature so Unreal plays the clip on the
     Skeleton it already imported from that FBX: same bone names, rest frames and
     hierarchy, so no retarget step can drift the pose."""
     for obj in list(scene.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
+    rate = scene.render.fps, scene.render.fps_base
     bpy.ops.import_scene.fbx(filepath=str(reference), use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
+    # The FBX importer adopts the file's frame rate (Unreal writes 25 fps), which would stretch the clip in Unreal.
+    scene.render.fps, scene.render.fps_base = rate
     armatures = [o for o in scene.objects if o.type == "ARMATURE"]
     if len(armatures) != 1:
         raise ValueError("The character FBX must contain exactly one skeleton.")
     arm = armatures[0]
+    curves = morph_curves or {}
+    # Unreal reads morph curves from animated shape keys, so keep the character meshes that carry Still's shapes.
+    faces = [o for o in scene.objects if o.type == "MESH" and o.data.shape_keys and any(k.name in curves for k in o.data.shape_keys.key_blocks)]
+    # Unreal's own FBX export puts the 0.01 unit scale on an empty above the skeleton; keep it when the empty goes.
+    arm_world = arm.matrix_world.copy()
     for obj in list(scene.objects):
-        if obj is not arm:
+        if obj is not arm and obj not in faces:
             bpy.data.objects.remove(obj, do_unlink=True)
+    arm.matrix_world = arm_world
     arm.animation_data_clear()
     # A connected child ignores its own location, which would drop pelvis travel under a root bone.
     bpy.context.view_layer.objects.active = arm
@@ -292,31 +301,51 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
     correction = {r: (turn @ rest_still[s].to_3x3().to_4x4()).inverted() @ rest[r].to_3x3().to_4x4() for r, s in matched.items()}
     roots = [b for b in bones if b.parent is None]
     pelvis = ground_trajectory["sourceBone"] if ground_trajectory else next((e["name"] for e in entries if bone_key(e["name"]) in ("hips", "pelvis")), None)
-    # A root above the pelvis (Unreal's usual "root") carries ground motion, whether or not Still's copy has it.
-    dedicated_root = len(roots) == 1 and matched.get(roots[0].name) != pelvis and bone_key(roots[0].name) not in ("hips", "pelvis")
+    # Unreal makes a top node not named "Armature" its bone 0, the only bone it extracts root motion from.
+    object_root = arm.name.split(".")[0].lower() != "armature"
+    # Otherwise a root above the pelvis (Unreal's usual "root") carries ground motion, whether or not Still's copy has it.
+    dedicated_root = object_root or len(roots) == 1 and matched.get(roots[0].name) != pelvis and bone_key(roots[0].name) not in ("hips", "pelvis")
     if root_motion == "extract" and not dedicated_root:
         warnings.append(f"{roots[0].name} is the top bone of this skeleton, so there is no root bone for Unreal to extract ground motion into. Travel stays on {roots[0].name}, the same as Preserve. Give the character a root bone above the pelvis to use Extract.")
         root_motion = "preserve"
     trajectory = ground_trajectory["bone"] if ground_trajectory else None
-    unmatched = [b.name for b in bones if b.name not in matched and not (b.parent is None and dedicated_root)]
+    unmatched = [b.name for b in bones if b.name not in matched and not (b.parent is None and dedicated_root and not object_root)]
     if unmatched:
         warnings.append("These bones are not in Still and follow their parent at rest: " + ", ".join(unmatched[:12]) + ("…" if len(unmatched) > 12 else ""))
-    frames = []
+    pelvis_ref = next((r for r, s in matched.items() if s == pelvis), None)
+    # Bones above the pelvis ride along with the travelling top node; the body below them gives that travel back.
+    above = {p.name for p in arm.data.bones[pelvis_ref].parent_recursive} if pelvis_ref else set()
+    frames, travels, relative = [], [], []
     for values in sampled:
+        travel = to_reference @ values[trajectory] @ to_reference.inverted() if trajectory and root_motion == "extract" else Matrix.Identity(4)
         posed = {}
         for b in bones:
             if b.name in matched:
                 world = values[matched[b.name]]
                 posed[b.name] = Matrix.Translation(place(world.translation)) @ turn @ world.to_3x3().to_4x4() @ correction[b.name]
+                if object_root and b.name not in above:
+                    posed[b.name] = travel.inverted() @ posed[b.name]
             elif b.parent is None:
                 posed[b.name] = rest[b.name]
-            if b.parent is None and dedicated_root and trajectory and root_motion == "extract":
-                posed[b.name] = to_reference @ values[trajectory] @ to_reference.inverted() @ posed[b.name]
+            if b.parent is None and dedicated_root and not object_root:
+                posed[b.name] = travel @ posed[b.name]
             if b.name in posed:
                 continue
             posed[b.name] = posed[b.parent.name] @ rest[b.parent.name].inverted() @ rest[b.name]
-        frames.append(posed)
-    for i, posed in enumerate(frames):
+        relative.append(posed)
+        travels.append(travel if object_root else Matrix.Identity(4))
+        frames.append({n: travels[-1] @ m for n, m in posed.items()} | ({arm.name: travel} if object_root else {}))
+    # Write the clip in the reference's own units and axes: armature data stays
+    # in its file units, and the unit scale carries the import's object scale.
+    location, orientation, object_scale = arm.matrix_world.decompose()
+    base = Matrix.LocRotScale(location, orientation, Vector((1, 1, 1)))
+    arm.matrix_world = base
+    arm.rotation_mode = "QUATERNION"
+    for i, posed in enumerate(relative):
+        if object_root:
+            arm.matrix_world = base @ travels[i]
+            for path in ("location", "rotation_quaternion", "scale"):
+                arm.keyframe_insert(path, frame=i, group=arm.name)
         for b in bones:
             pose_bone = arm.pose.bones[b.name]
             pose_bone.rotation_mode = "QUATERNION"
@@ -332,27 +361,48 @@ def export_onto_reference(reference, entries, sampled, ground_trajectory, root_m
                 for curve in bag.fcurves:
                     for key in curve.keyframe_points:
                         key.interpolation = "LINEAR"
+    exported = {}
+    for obj in faces:
+        keys = obj.data.shape_keys
+        keys.animation_data_clear()
+        for key in keys.key_blocks:
+            if key != keys.reference_key and key.name in curves:
+                for i, value in enumerate(curves[key.name]):
+                    key.value = value
+                    key.keyframe_insert("value", frame=i)
+                exported[key.name] = curves[key.name]
+        if keys.animation_data and keys.animation_data.action:
+            keys.animation_data.action.name = name + "_Shapes"
+            for layer in keys.animation_data.action.layers:
+                for strip in layer.strips:
+                    for bag in strip.channelbags:
+                        for curve in bag.fcurves:
+                            for point in curve.keyframe_points:
+                                point.interpolation = "LINEAR"
+    skipped = sorted(set(curves) - set(exported))
+    if skipped:
+        warnings.append("These face shapes are not on the character FBX, so Unreal gets no curve for them: " + ", ".join(skipped[:12]))
     scene.frame_start, scene.frame_end = 0, intervals
-    # Write the clip in the reference's own units and axes: armature data stays
-    # in its file units, and the unit scale carries the import's object scale.
-    location, orientation, object_scale = arm.matrix_world.decompose()
-    arm.matrix_world = Matrix.LocRotScale(location, orientation, Vector((1, 1, 1)))
     scene.unit_settings.system = "METRIC"
     scene.unit_settings.scale_length = object_scale.x
     forward, up = reference_axes(reference)
     bpy.ops.object.select_all(action="DESELECT")
     arm.select_set(True)
+    for obj in faces:
+        obj.select_set(True)
     bpy.context.view_layer.objects.active = arm
-    bpy.ops.export_scene.fbx(filepath=str(work / "animation.fbx"), use_selection=True, apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL",
+    bpy.ops.export_scene.fbx(filepath=str(work / "animation.fbx"), use_selection=True, mesh_smooth_type="FACE", apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL",
                              global_scale=1.0, axis_forward=forward, axis_up=up, use_space_transform=True, bake_space_transform=False,
-                             object_types={"ARMATURE"}, add_leaf_bones=False, use_armature_deform_only=False, armature_nodetype="NULL",
+                             object_types={"ARMATURE", "MESH"} if faces else {"ARMATURE"}, add_leaf_bones=False, use_armature_deform_only=False, armature_nodetype="NULL",
                              primary_bone_axis="Y", secondary_bone_axis="X", bake_anim=True, bake_anim_use_all_bones=True,
                              bake_anim_use_nla_strips=False, bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
                              bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
     (work / "character.fbx").write_bytes(Path(reference).read_bytes())
     to_ue = lambda v: [float(v[0] * unit_cm), float(-v[1] * unit_cm), float(v[2] * unit_cm)]
     return {"rootMotion": root_motion, "unitCm": unit_cm, "forward": forward, "up": up, "frames": frames,
-            "bones": [{"name": b.name, "parent": b.parent.name if b.parent else None, "restWorldCm": to_ue(rest[b.name].translation)} for b in bones],
+            "bones": ([{"name": arm.name, "parent": None, "restWorldCm": [0., 0., 0.]}] if object_root else [])
+                     + [{"name": b.name, "parent": b.parent.name if b.parent else (arm.name if object_root else None), "restWorldCm": to_ue(rest[b.name].translation)} for b in bones],
+            "morphCurves": exported,
             "alignment": {"scale": scale, "restErrorCm": rest_error, "matchedBones": len(matched), "unmatchedBones": unmatched},
             "to_ue": to_ue}
 
@@ -577,7 +627,8 @@ def convert(input_path, output_path, options):
         ground_trajectory = add_ground_trajectory(entries, sampled, expected_vertices, root_motion)
         if reference_fbx:
             progress("Writing the animation onto your character's own skeleton", .5)
-            skeleton = export_onto_reference(reference_fbx, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings)
+            morph_curves = morph_manifest(morph_samples, []).get("morphCurves", {})
+            skeleton = export_onto_reference(reference_fbx, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings, morph_curves)
             root_motion, to_ue = skeleton["rootMotion"], skeleton["to_ue"]
             manifest = {"version": 1, "name": name, "sourceSha256": source_sha, "blenderVersion": bpy.app.version_string,
                         "fbxVersion": struct.unpack_from("<I", (work / "animation.fbx").read_bytes(), 23)[0],
@@ -600,6 +651,8 @@ def convert(input_path, output_path, options):
                                          "useT0AsRefPose": False, "updateSkeletonReferencePose": False, "animationSampleRate": fps,
                                          "existingSkeleton": target_mesh, "skipCharacter": True},
                         "compatibility": "Animation-only Blender binary FBX on the reference skeleton. Validate on the destination Unreal version."}
+            if skeleton["morphCurves"]:
+                manifest.update({"morphTargets": list(skeleton["morphCurves"]), "morphCurves": skeleton["morphCurves"]})
             write_package(work, output_path, manifest, [
                 f"Import animation.fbx as Animation and select the existing Skeleton {target_mesh}.\n"
                 "   Skip character.fbx; it is the character FBX you gave Still, included for reference.\n"
