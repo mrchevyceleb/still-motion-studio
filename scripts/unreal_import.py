@@ -12,7 +12,7 @@ import sys
 import unreal
 
 
-def import_fbx(filename, destination, skeleton=None, fps=30):
+def import_fbx(filename, destination, skeleton=None, fps=30, conversion=None):
     options = unreal.FbxImportUI()
     options.set_editor_property("automated_import_should_detect_type", False)
     options.set_editor_property("import_as_skeletal", True)
@@ -29,6 +29,9 @@ def import_fbx(filename, destination, skeleton=None, fps=30):
         data.set_editor_property("convert_scene_unit", True)
         data.set_editor_property("force_front_x_axis", False)
         data.set_editor_property("import_uniform_scale", 1.)
+    # An existing character's clip must be converted exactly like that character was.
+    for key, value in (conversion or {}).items():
+        options.anim_sequence_import_data.set_editor_property(key, value)
     mesh_data = options.skeletal_mesh_import_data
     mesh_data.set_editor_property("update_skeleton_reference_pose", False)
     mesh_data.set_editor_property("use_t0_as_ref_pose", False)
@@ -88,6 +91,16 @@ def existing_skeleton(asset_path, bones):
     return skeleton
 
 
+def existing_conversion(asset_path):
+    """The FBX conversion settings an existing SkeletalMesh was imported with, if Unreal kept them."""
+    target = unreal.load_asset(asset_path)
+    data = target.get_editor_property("asset_import_data") if isinstance(target, unreal.SkeletalMesh) else None
+    if not isinstance(data, unreal.FbxAssetImportData):
+        return None
+    return {key: data.get_editor_property(key) for key in
+            ("convert_scene", "convert_scene_unit", "force_front_x_axis", "import_uniform_scale", "import_rotation", "import_translation")}
+
+
 def import_package(directory=None):
     directory = Path(directory or Path(__file__).resolve().parent)
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8-sig"))
@@ -119,7 +132,8 @@ def import_package(directory=None):
             if len(meshes) != 1:
                 raise RuntimeError("Expected one imported skeletal mesh. See Unreal's Output Log.")
             skeleton = meshes[0].get_editor_property("skeleton")
-        assets, animation_paths = import_fbx(directory / "animation.fbx", destination, skeleton, fps)
+        conversion = existing_conversion(target_path) if target_path and manifest.get("mode") == "existing-skeleton" else None
+        assets, animation_paths = import_fbx(directory / "animation.fbx", destination, skeleton, fps, conversion)
         sequences = [asset for asset in assets if isinstance(asset, unreal.AnimSequence)]
         if len(sequences) != 1 or sequences[0].get_editor_property("skeleton") != skeleton:
             raise RuntimeError("The animation could not be assigned to the selected skeleton.")

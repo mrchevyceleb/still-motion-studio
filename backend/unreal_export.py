@@ -187,6 +187,166 @@ def add_ground_trajectory(entries, sampled, expected_vertices, mode):
     return {"bone": root_name, "sourceBone": source_name, "axes": "ground XY translation and unwrapped Z yaw; vertical/body motion stays on the source skeleton", "samples": trajectory}
 
 
+def write_package(work, output_path, manifest, manual_steps, warnings):
+    (work / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    importer = Path(__file__).resolve().parents[1] / "scripts" / "unreal_import.py"
+    if not importer.is_file():
+        raise ValueError("The Unreal import helper is missing from this installation.")
+    (work / "import_unreal.py").write_bytes(importer.read_bytes())
+    retargeter = importer.with_name("unreal_retarget.py")
+    if not retargeter.is_file():
+        raise ValueError("The Unreal retarget helper is missing from this installation.")
+    (work / "unreal_retarget.py").write_bytes(retargeter.read_bytes())
+    manual_steps = ["Extract this whole ZIP first. Keep textures beside the FBX files."] + list(manual_steps)
+    (work / "IMPORT.txt").write_text(
+        "STILL — UNREAL CHARACTER AND ANIMATION\n\n"
+        "AUTOMATIC IMPORT (Unreal 5.8 verified)\n"
+        "Extract this ZIP. Enable Python Editor Script Plugin and Editor Scripting Utilities in Unreal.\n"
+        "Choose Tools > Execute Python Script and select import_unreal.py in the extracted folder.\n"
+        "The helper creates new assets under /Game/Still, uses your existing skeleton when specified,\n"
+        "and restores the previous FBX importer setting. Existing assets are never overwritten.\n\n"
+        "MANUAL IMPORT\n"
+        "These settings refer to Unreal's legacy FBX dialog. For the verified route, use the automatic helper above.\n"
+        + "\n".join(f"{i}. {step}" for i, step in enumerate(manual_steps, 1)) + "\n\n"
+        + "\n".join("NOTE: " + w for w in warnings) + "\n", encoding="utf-8")
+    prepared = work / "source.glb"
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(work.rglob("*")):
+            if path.is_file() and path != prepared:
+                archive.write(path, path.relative_to(work).as_posix())
+    validate_package(output_path)
+    output_path.with_suffix(".json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    progress("Unreal export package is ready", 1)
+
+
+def umeyama(source, target):
+    """Similarity transform (scale, rotation, offset) that best maps source points onto target points."""
+    src, dst = np.asarray(source, dtype=float), np.asarray(target, dtype=float)
+    mean_s, mean_d = src.mean(0), dst.mean(0)
+    xs, xd = src - mean_s, dst - mean_d
+    u, d, vt = np.linalg.svd(xd.T @ xs / len(src))
+    sign = np.eye(3)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0:
+        sign[2, 2] = -1
+    rotation = u @ sign @ vt
+    scale = float(np.trace(np.diag(d) @ sign) / ((xs ** 2).sum() / len(src)))
+    return scale, rotation, mean_d - scale * rotation @ mean_s
+
+
+def reference_axes(path):
+    """Axis strings that make Blender's FBX exporter write the reference file's own GlobalSettings."""
+    try:
+        from io_scene_fbx import parse_fbx
+        from io_scene_fbx.fbx_utils import RIGHT_HAND_AXES
+        from io_scene_fbx.import_fbx import elem_find_first, elem_props_get_integer
+        root, _ = parse_fbx.parse(str(path))
+        props = elem_find_first(elem_find_first(root, b"GlobalSettings"), b"Properties70")
+        key = tuple((elem_props_get_integer(props, axis, default), elem_props_get_integer(props, axis + b"Sign", 1))
+                    for axis, default in ((b"UpAxis", 2), (b"FrontAxis", 1), (b"CoordAxis", 0)))
+        up, forward = {v: k for k, v in RIGHT_HAND_AXES.items()}[key]
+        return forward, up
+    except Exception:
+        return "-Y", "Z"
+
+
+def bone_key(value):
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"^mixamorig\d*[:_]*", "", str(value), flags=re.IGNORECASE).lower())
+
+
+def export_onto_reference(reference, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings):
+    """Key the reference character's own armature so Unreal plays the clip on the
+    Skeleton it already imported from that FBX: same bone names, rest frames and
+    hierarchy, so no retarget step can drift the pose."""
+    for obj in list(scene.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.ops.import_scene.fbx(filepath=str(reference), use_anim=False, ignore_leaf_bones=False, automatic_bone_orientation=False)
+    armatures = [o for o in scene.objects if o.type == "ARMATURE"]
+    if len(armatures) != 1:
+        raise ValueError("The character FBX must contain exactly one skeleton.")
+    arm = armatures[0]
+    for obj in list(scene.objects):
+        if obj is not arm:
+            bpy.data.objects.remove(obj, do_unlink=True)
+    arm.animation_data_clear()
+    bones = sorted(arm.data.bones, key=lambda b: len(b.parent_recursive))
+    rest = {b.name: b.matrix_local.copy() for b in bones}
+    still = {bone_key(e["name"]): e for e in entries if e["kind"] in ("bone", "empty")}
+    matched = {b.name: still[bone_key(b.name)]["name"] for b in bones if bone_key(b.name) in still}
+    if len(matched) < 4:
+        raise ValueError(f"Only {len(matched)} bones of the character FBX match the character in Still. Load that same FBX into Still, animate it, then export.")
+    unit_cm = arm.matrix_world.to_scale().x * 100
+    rest_still = {e["name"]: e["rest_export"] for e in entries}
+    scale, rotation, offset = umeyama([list(rest_still[s].translation) for s in matched.values()], [list(rest[r].translation) for r in matched])
+    turn = Matrix(rotation.tolist()).to_4x4()
+    to_reference = Matrix.Translation(Vector(offset.tolist())) @ turn @ Matrix.Scale(scale, 4)
+    place = lambda point: Vector((scale * rotation @ np.array(point) + offset).tolist())
+    rest_error = max((place(rest_still[s].translation) - rest[r].translation).length for r, s in matched.items()) * unit_cm
+    if rest_error > .5:
+        raise ValueError(f"The character in Still is {rest_error:.2f} cm away from the FBX's rest pose. Load the same FBX into Still without editing its rest pose, then export again.")
+    correction = {r: (turn @ rest_still[s].to_3x3().to_4x4()).inverted() @ rest[r].to_3x3().to_4x4() for r, s in matched.items()}
+    roots = [b for b in bones if b.parent is None]
+    dedicated_root = len(roots) == 1 and roots[0].name not in matched
+    if root_motion == "extract" and not dedicated_root:
+        warnings.append(f"{roots[0].name} is the top bone of this skeleton, so there is no root bone for Unreal to extract ground motion into. Travel stays on {roots[0].name}, the same as Preserve. Give the character a root bone above the pelvis to use Extract.")
+        root_motion = "preserve"
+    trajectory = ground_trajectory["bone"] if ground_trajectory else None
+    unmatched = [b.name for b in bones if b.name not in matched and not (b.parent is None and dedicated_root)]
+    if unmatched:
+        warnings.append("These bones are not in Still and follow their parent at rest: " + ", ".join(unmatched[:12]) + ("…" if len(unmatched) > 12 else ""))
+    frames = []
+    for values in sampled:
+        posed = {}
+        for b in bones:
+            if b.name in matched:
+                world = values[matched[b.name]]
+                posed[b.name] = Matrix.Translation(place(world.translation)) @ turn @ world.to_3x3().to_4x4() @ correction[b.name]
+            elif b.parent is None:
+                ground = values.get(trajectory) if trajectory and root_motion == "extract" else None
+                posed[b.name] = (to_reference @ ground @ to_reference.inverted() if ground else Matrix.Identity(4)) @ rest[b.name]
+            else:
+                posed[b.name] = posed[b.parent.name] @ rest[b.parent.name].inverted() @ rest[b.name]
+        frames.append(posed)
+    for i, posed in enumerate(frames):
+        for b in bones:
+            pose_bone = arm.pose.bones[b.name]
+            pose_bone.rotation_mode = "QUATERNION"
+            rest_local = rest[b.parent.name].inverted() @ rest[b.name] if b.parent else rest[b.name]
+            parent = posed[b.parent.name] if b.parent else Matrix.Identity(4)
+            pose_bone.matrix_basis = rest_local.inverted() @ parent.inverted() @ posed[b.name]
+            for path in ("location", "rotation_quaternion", "scale"):
+                pose_bone.keyframe_insert(path, frame=i, group=b.name)
+    arm.animation_data.action.name = name + "_Motion"
+    for layer in arm.animation_data.action.layers:
+        for strip in layer.strips:
+            for bag in strip.channelbags:
+                for curve in bag.fcurves:
+                    for key in curve.keyframe_points:
+                        key.interpolation = "LINEAR"
+    scene.frame_start, scene.frame_end = 0, intervals
+    # Write the clip in the reference's own units and axes: armature data stays
+    # in its file units, and the unit scale carries the import's object scale.
+    location, orientation, object_scale = arm.matrix_world.decompose()
+    arm.matrix_world = Matrix.LocRotScale(location, orientation, Vector((1, 1, 1)))
+    scene.unit_settings.system = "METRIC"
+    scene.unit_settings.scale_length = object_scale.x
+    forward, up = reference_axes(reference)
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.export_scene.fbx(filepath=str(work / "animation.fbx"), use_selection=True, apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL",
+                             global_scale=1.0, axis_forward=forward, axis_up=up, use_space_transform=True, bake_space_transform=False,
+                             object_types={"ARMATURE"}, add_leaf_bones=False, use_armature_deform_only=False, armature_nodetype="NULL",
+                             primary_bone_axis="Y", secondary_bone_axis="X", bake_anim=True, bake_anim_use_all_bones=True,
+                             bake_anim_use_nla_strips=False, bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
+                             bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
+    (work / "character.fbx").write_bytes(Path(reference).read_bytes())
+    to_ue = lambda v: [float(v[0] * unit_cm), float(-v[1] * unit_cm), float(v[2] * unit_cm)]
+    return {"rootMotion": root_motion, "unitCm": unit_cm, "forward": forward, "up": up, "frames": frames,
+            "bones": [{"name": b.name, "parent": b.parent.name if b.parent else None, "restWorldCm": to_ue(rest[b.name].translation)} for b in bones],
+            "alignment": {"scale": scale, "restErrorCm": rest_error, "matchedBones": len(matched), "unmatchedBones": unmatched},
+            "to_ue": to_ue}
+
+
 def convert(input_path, output_path, options):
     fps = options.get("fps", 30)
     if isinstance(fps, bool) or fps not in (24, 30, 60):
@@ -195,6 +355,15 @@ def convert(input_path, output_path, options):
     if root_motion not in ("preserve", "extract", "in-place"):
         raise ValueError("Choose preserve, extract, or in-place root motion.")
     retarget = options.get("retarget", "none")
+    reference_fbx = options.get("referenceFbx", "") if retarget == "skeleton" else ""
+    if retarget == "skeleton":
+        # Existing Unreal character: write onto the Skeleton imported from this FBX.
+        retarget = "none"
+        options = {**options, "targetMesh": options.get("targetSkeleton", options.get("targetMesh", ""))}
+        if not options["targetMesh"]:
+            raise ValueError("Enter the Unreal Skeleton or SkeletalMesh path of your existing character.")
+        if not reference_fbx or not Path(reference_fbx).is_file() or Path(reference_fbx).read_bytes()[:18] != b"Kaydara FBX Binary":
+            raise ValueError("Choose the binary FBX your Unreal character was imported from, so Still can match its skeleton exactly.")
     if retarget not in ("none", "manny", "metahuman"):
         raise ValueError("Choose no retargeting, Manny, or MetaHuman.")
     target_mesh = options.get("targetMesh", "")
@@ -339,6 +508,38 @@ def convert(input_path, output_path, options):
             if i in sample_indices:
                 expected_vertices[i] = [(vertices_world(o, True) @ np.array(conversion)[:3, :3].T) for o in meshes]
         ground_trajectory = add_ground_trajectory(entries, sampled, expected_vertices, root_motion)
+        if reference_fbx:
+            progress("Writing the animation onto your character's own skeleton", .5)
+            skeleton = export_onto_reference(reference_fbx, entries, sampled, ground_trajectory, root_motion, scene, work, name, intervals, warnings)
+            root_motion, to_ue = skeleton["rootMotion"], skeleton["to_ue"]
+            manifest = {"version": 1, "name": name, "sourceSha256": source_sha, "blenderVersion": bpy.app.version_string,
+                        "fbxVersion": struct.unpack_from("<I", (work / "animation.fbx").read_bytes(), 23)[0],
+                        "mode": "existing-skeleton", "units": "centimeters", "forward": skeleton["forward"], "up": skeleton["up"],
+                        "referenceFbx": {"name": Path(reference_fbx).name, "sha256": hashlib.sha256(Path(reference_fbx).read_bytes()).hexdigest()},
+                        "alignment": skeleton["alignment"],
+                        "requestedFps": requested_fps, "fps": fps, "frameCount": intervals + 1, "sourceDuration": duration, "duration": export_duration,
+                        "timeScale": export_duration / duration, "rootMotion": root_motion, "rootBone": skeleton["bones"][0]["name"],
+                        "addedStationaryRoot": False, "enableRootMotionByDefault": root_motion == "extract",
+                        "groundTrajectory": ground_trajectory if root_motion != "preserve" else None,
+                        "retarget": {"mode": "none", "targetMesh": target_mesh},
+                        "boneCount": len(skeleton["bones"]), "bones": skeleton["bones"],
+                        "samples": [{"time": i / fps, "sourceTime": start + duration * i / intervals,
+                                     "worldPositionsCm": {b["name"]: to_ue(skeleton["frames"][i][b["name"]].translation) for b in skeleton["bones"]}}
+                                    for i in sample_indices],
+                        "boneAliases": [a for a in aliases if a["exported"] in {e["name"] for e in entries}],
+                        "warnings": warnings,
+                        "unrealImport": {"character": "character.fbx", "animation": "animation.fbx", "importUniformScale": 1.0,
+                                         "convertScene": True, "convertSceneUnit": True, "forceFrontXAxis": False,
+                                         "useT0AsRefPose": False, "updateSkeletonReferencePose": False, "animationSampleRate": fps,
+                                         "existingSkeleton": target_mesh, "skipCharacter": True},
+                        "compatibility": "Animation-only Blender binary FBX on the reference skeleton. Validate on the destination Unreal version."}
+            write_package(work, output_path, manifest, [
+                f"Import animation.fbx as Animation and select the existing Skeleton {target_mesh}.\n"
+                "   Skip character.fbx; it is the character FBX you gave Still, included for reference.\n"
+                "   Use the same Import Uniform Scale, Convert Scene and Force Front XAxis settings your character was imported with.\n"
+                f"   Set custom sample rate {fps}, Import Bone Tracks ON, and preserve the exported range.",
+                f"Root-motion mode: {root_motion}. Enable Root Motion is {'ON with first-frame lock' if root_motion == 'extract' else 'OFF'}."], warnings)
+            return manifest
         progress("Preparing the shared skeleton and materials", .45)
         # Copy vertex groups and mesh topology before unlinking source objects.
         export_meshes = []
@@ -506,15 +707,6 @@ def convert(input_path, output_path, options):
                                      "convertScene": True, "convertSceneUnit": True, "forceFrontXAxis": False,
                                      "useT0AsRefPose": False, "updateSkeletonReferencePose": False, "animationSampleRate": fps},
                     "compatibility": "Blender binary FBX 7400; Unreal documents FBX SDK 2020.2. Validate on the destination Unreal version."}
-        (work / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        importer = Path(__file__).resolve().parents[1] / "scripts" / "unreal_import.py"
-        if not importer.is_file():
-            raise ValueError("The Unreal import helper is missing from this installation.")
-        (work / "import_unreal.py").write_bytes(importer.read_bytes())
-        retargeter = importer.with_name("unreal_retarget.py")
-        if not retargeter.is_file():
-            raise ValueError("The Unreal retarget helper is missing from this installation.")
-        (work / "unreal_retarget.py").write_bytes(retargeter.read_bytes())
         direct_import = retarget == "none" and bool(target_mesh)
         conversion_settings = "Import scale 1; Convert Scene and Convert Scene Unit ON; Force Front XAxis OFF."
         manual_steps = ["Extract this whole ZIP first. Keep textures beside the FBX files."]
@@ -534,24 +726,7 @@ def convert(input_path, output_path, options):
             f"   Retargeting: {retarget}. The helper creates IK Rigs and a retargeter when requested.\n"
             "   Manny/MetaHuman target meshes must already exist in the destination Unreal project.")
         manual_steps.append("Material conversion is basic FBX material support. Check base color, normal, opacity, and other PBR maps in Unreal.")
-        (work / "IMPORT.txt").write_text(
-            "STILL — UNREAL CHARACTER AND ANIMATION\n\n"
-            "AUTOMATIC IMPORT (Unreal 5.8 verified)\n"
-            "Extract this ZIP. Enable Python Editor Script Plugin and Editor Scripting Utilities in Unreal.\n"
-            "Choose Tools > Execute Python Script and select import_unreal.py in the extracted folder.\n"
-            "The helper creates new assets under /Game/Still, uses your existing skeleton when specified,\n"
-            "and restores the previous FBX importer setting. Existing assets are never overwritten.\n\n"
-            "MANUAL IMPORT\n"
-            "These settings refer to Unreal's legacy FBX dialog. For the verified route, use the automatic helper above.\n"
-            + "\n".join(f"{i}. {step}" for i, step in enumerate(manual_steps, 1)) + "\n\n"
-            + "\n".join("NOTE: " + w for w in warnings) + "\n", encoding="utf-8")
-        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(work.rglob("*")):
-                if path.is_file() and path != prepared:
-                    archive.write(path, path.relative_to(work).as_posix())
-        validate_package(output_path)
-        output_path.with_suffix(".json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        progress("Unreal export package is ready", 1)
+        write_package(work, output_path, manifest, manual_steps[1:], warnings)
         return manifest
 
 
