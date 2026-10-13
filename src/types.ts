@@ -20,6 +20,8 @@ export interface CharacterAsset {
   rigged: boolean;
   height: number;
   warnings: string[];
+  referenceFbx?: ArrayBuffer;
+  referenceFbxName?: string;
 }
 export interface ProjectDocument {
   version: 1;

@@ -1,7 +1,8 @@
 export interface UnrealExportCapability { available: boolean; reason?: string }
-export interface UnrealExportResult { package: Blob; warnings: string[] }
-export interface UnrealExportOptions { name: string; fps: number; rootMotion?: 'preserve' | 'extract' | 'in-place'; retarget?: 'none' | 'manny' | 'metahuman'; targetMesh?: string }
+export type UnrealExportResult = { warnings: string[] } & ({ package: Blob; savedTo?: undefined; saveError?: string } | { savedTo: string; package?: undefined; saveError?: undefined });
+export interface UnrealExportOptions { name: string; fps: number; rootMotion?: 'preserve' | 'extract' | 'in-place'; retarget?: 'none' | 'manny' | 'metahuman' | 'skeleton'; targetMesh?: string; targetSkeleton?: string; referenceFbx?: ArrayBuffer; saveFolder?: string }
 
+export const isUnrealAssetPath = (value: string): boolean => value.length <= 512 && /^\/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)\/[A-Za-z0-9_/]+(?:\.[A-Za-z0-9_]+)?$/.test(value);
 export function readExportPreference(key: string): string {
   try { return localStorage.getItem(`still-unreal-${key}`) || ''; } catch { return ''; }
 }
@@ -57,6 +58,10 @@ export async function exportUnrealPackage(
   signal.addEventListener('abort', cancel, { once: true });
   try {
     signal.throwIfAborted();
+    if (options.retarget === 'skeleton') {
+      if (!options.targetSkeleton || !isUnrealAssetPath(options.targetSkeleton)) throw new Error('Enter a valid Unreal Skeleton asset path.');
+      if (!options.referenceFbx?.byteLength) throw new Error('Choose the character FBX you imported into Unreal.');
+    }
     onProgress('Sending your character to the local exporter…', 0.05);
     const id = crypto.randomUUID();
     jobPath = `/api/exports/${id}`;
@@ -64,9 +69,11 @@ export async function exportUnrealPackage(
     if (options.rootMotion) query.set('rootMotion', options.rootMotion);
     if (options.retarget) query.set('retarget', options.retarget);
     if (options.targetMesh) query.set('targetMesh', options.targetMesh);
+    if (options.targetSkeleton) query.set('targetSkeleton', options.targetSkeleton);
+    if (options.referenceFbx) query.set('reference', '1');
     // The ID exists before upload, so Cancel can abort the request and stop its worker.
     const job = await readResponse(await fetch(`/api/exports/unreal?${query}`, {
-      method: 'POST', headers: { 'Content-Type': 'model/gltf-binary' }, body: binary,
+      method: 'POST', headers: { 'Content-Type': 'model/gltf-binary' }, body: options.referenceFbx ? new Blob([binary, options.referenceFbx]) : binary,
       signal: AbortSignal.any([signal, AbortSignal.timeout(60000)]),
     }));
     if (job.id !== id) throw new Error('The local exporter returned an invalid job. Please try again.');
@@ -79,6 +86,25 @@ export async function exportUnrealPackage(
       if (status.status === 'error') throw new Error(typeof status.error === 'string' ? status.error : typeof status.message === 'string' ? status.message : 'The Unreal export could not finish.');
       if (status.status === 'cancelled') throw new DOMException('Cancelled', 'AbortError');
       if (status.status === 'done') {
+        const warnings = Array.isArray(status.warnings) ? status.warnings.filter((warning): warning is string => typeof warning === 'string') : [];
+        let saveError: string | undefined;
+        if (options.saveFolder !== undefined) {
+          onProgress('Saving your Unreal package into the folder…', .98);
+          try {
+            const saved = await readResponse(await fetch(`${jobPath}/save`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: options.saveFolder }),
+              signal: AbortSignal.any([signal, AbortSignal.timeout(120000)]),
+            }));
+            if (typeof saved.savedTo !== 'string' || !saved.savedTo) throw new Error('The exporter did not return the saved folder.');
+            signal.throwIfAborted();
+            completed = true;
+            onProgress('Your Unreal package is saved.', 1);
+            return { savedTo: saved.savedTo, warnings };
+          } catch (error) {
+            signal.throwIfAborted();
+            saveError = `${error instanceof Error ? error.message : 'The folder save failed.'} Downloaded the ZIP instead.`;
+          }
+        }
         const downloadPath = `${jobPath}/download`;
         if (status.downloadUrl !== undefined && status.downloadUrl !== downloadPath) throw new Error('The exporter returned an unexpected download address.');
         onProgress('Downloading your Unreal package…', .98);
@@ -90,7 +116,7 @@ export async function exportUnrealPackage(
         signal.throwIfAborted();
         completed = true;
         onProgress('Your Unreal package is ready.', 1);
-        return { package: archive, warnings: Array.isArray(status.warnings) ? status.warnings.filter((warning): warning is string => typeof warning === 'string') : [] };
+        return { package: archive, warnings, saveError };
       }
       if (!['uploading', 'queued', 'running'].includes(String(status.status))) throw new Error('The local exporter returned an unknown job status.');
       await pause(signal);

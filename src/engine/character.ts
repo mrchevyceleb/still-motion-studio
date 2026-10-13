@@ -322,6 +322,8 @@ export async function importCharacter(file: File): Promise<CharacterAsset> {
   object.traverse(node => { if (node instanceof THREE.Bone) boneNames.push(node.name.toLowerCase().replace(/[^a-z]/g, '')); });
   const kind: RigKind = boneNames.some(name => /front.*(leg|foot)/.test(name)) && boneNames.some(name => /(hind|back).*(leg|foot)/.test(name)) ? 'quadruped' : 'humanoid';
   const asset = makeAsset(normalizeImported(object), kind, file.name.replace(/\.[^.]+$/, ''), 'import', clips, [...new Set(warnings)]);
+  // Keep the source FBX on the asset, outside serialized scene metadata.
+  if (extension === 'fbx') { asset.referenceFbx = bytes; asset.referenceFbxName = file.name; }
   return asset;
 }
 
