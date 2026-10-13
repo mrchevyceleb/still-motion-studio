@@ -80,7 +80,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
   const artifact = async (blob: Blob, name: string) => ({ ...await uploadAgentFile(blob, name, signal) });
 
   switch (method) {
-    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, generation: generationReport(studio.generation) };
+    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
@@ -263,11 +263,13 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (format !== 'glb' && format !== 'unreal') throw new Error('Export format must be glb, still, unreal, or png.');
       const fps = params.fps ?? editor.fps;
       if (format === 'unreal' && ![24, 30, 60].includes(fps as number)) throw new Error('Unreal export needs 24, 30, or 60 fps. Set fps explicitly for this export.');
+      if (format === 'unreal' && params.retarget === 'skeleton' && !asset.referenceFbx?.byteLength) throw new Error('Import the original character FBX with scene.import or still_import_file before exporting onto an existing Unreal Skeleton. Saved Still projects do not retain that FBX.');
       try {
         const clip = buildAnimationClip(asset, sequence, studio.duration, { ...studio.settings, interpolation: mode });
         const binary = await exportCharacterGLB(asset, clip); signal.throwIfAborted();
         if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: studio.generation ?? null };
-        const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | undefined, targetMesh: params.targetMesh as string | undefined }, editor.progress, signal);
+        const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | 'skeleton' | undefined, targetMesh: params.targetMesh as string | undefined, targetSkeleton: params.targetSkeleton as string | undefined, ...(params.retarget === 'skeleton' ? { referenceFbx: asset.referenceFbx } : {}) }, editor.progress, signal);
+        if (!result.package) throw new Error('The Unreal package could not be downloaded.');
         return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: studio.generation ?? null };
       } finally { applyPose(asset, editor.pose); }
     }

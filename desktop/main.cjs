@@ -91,6 +91,11 @@ ipcMain.on('still:theme', (event, theme) => {
   nativeTheme.themeSource = theme;
   window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
 });
+ipcMain.handle('still:pick-folder', async event => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
 for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
   if (!updates) throw new Error('Updates are not ready.');

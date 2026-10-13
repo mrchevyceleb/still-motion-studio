@@ -9,6 +9,7 @@ export interface UpdateState {
 declare global {
   interface Window {
     stillDesktop?: {
+      pickFolder: () => Promise<string | null>;
       setTheme: (theme: 'light' | 'dark') => void;
       updates: {
         state: () => Promise<UpdateState>;

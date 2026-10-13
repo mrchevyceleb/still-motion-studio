@@ -860,13 +860,20 @@
             "enum": [
               "none",
               "manny",
-              "metahuman"
+              "metahuman",
+              "skeleton"
             ]
           },
           "targetMesh": {
             "type": "string",
             "maxLength": 512,
             "pattern": "^/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\\.[A-Za-z0-9_]+)?$"
+          },
+          "targetSkeleton": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\\.[A-Za-z0-9_]+)?$",
+            "description": "Existing Unreal Skeleton for retarget=skeleton. Requires the original FBX to be imported in this session."
           }
         }
       },
