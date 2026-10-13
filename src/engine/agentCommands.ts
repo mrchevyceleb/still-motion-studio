@@ -1,4 +1,5 @@
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
+import { morphKeyData } from './morphs';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
 import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
@@ -71,7 +72,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
   const commit = (next: AgentStudio) => { signal.throwIfAborted(); editor.commit(next); };
   const put = (time: number, pose: Pose, label?: string) => {
     const old = studio.keys.find(key => Math.abs(key.time - time) < 1e-7);
-    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose' };
+    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', ...morphKeyData(sequence, time, mode, asset.restMorphs) };
     commit({ ...studio, sourceClip: null, keys: [...studio.keys.filter(item => item.id !== old?.id), key].sort((a, b) => a.time - b.time) });
     editor.timeline(key.time);
     return { key: copy(key) };

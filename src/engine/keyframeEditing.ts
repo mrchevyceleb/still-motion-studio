@@ -45,6 +45,6 @@ export function duplicateMoment(keys: PoseKey[], source: PoseKey, duration: numb
   const nextDuration = Math.min(MAX_ANIMATION_DURATION, Math.max(duration, wanted));
   const time = nearestFreeKeyTime(keys, null, wanted, nextDuration, fps, next ? 0 : 1);
   if (time === null || (!next && time <= source.time)) return null;
-  const key: PoseKey = { id: crypto.randomUUID(), time, pose: structuredClone(source.pose), label: `${(source.label || 'Pose').slice(0, 100)} copy` };
+  const key: PoseKey = { ...structuredClone(source), id: crypto.randomUUID(), time, label: `${(source.label || 'Pose').slice(0, 100)} copy` };
   return { keys: [...keys, key].sort((a, b) => a.time - b.time), duration: nextDuration, key };
 }
