@@ -2,6 +2,13 @@ export interface UnrealExportCapability { available: boolean; reason?: string }
 export interface UnrealExportResult { package: Blob; warnings: string[] }
 export interface UnrealExportOptions { name: string; fps: number; rootMotion?: 'preserve' | 'extract' | 'in-place'; retarget?: 'none' | 'manny' | 'metahuman'; targetMesh?: string }
 
+export function readExportPreference(key: string): string {
+  try { return localStorage.getItem(`still-unreal-${key}`) || ''; } catch { return ''; }
+}
+export function rememberExportPreference(key: string, value: string): void {
+  try { localStorage.setItem(`still-unreal-${key}`, value); } catch { /* Keep the choice for this session. */ }
+}
+
 const unavailable = 'The Unreal exporter is unavailable. Start Still with its launcher, then try again.';
 
 async function readResponse(response: Response): Promise<Record<string, unknown>> {

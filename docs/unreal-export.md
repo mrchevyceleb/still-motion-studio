@@ -46,9 +46,11 @@ The optional importer was also executed directly in Unreal: it created new Bear 
 
 Choose the root-motion mode in the Unreal export dialog:
 
-- **Preserve** keeps the original skeleton and movement, with Unreal root motion disabled.
-- **Extract** adds an unweighted `RootMotion` bone carrying horizontal travel and heading. The pelvis retains bobbing, jumping height, pitch, and roll. All original world-space poses are preserved. The import helper enables root motion and `Anim First Frame` root lock on the source and retargeted animations.
-- **In-place** adds the same root but removes the ground trajectory from playback. The character stays in place while retaining its body movement.
+- **Original movement** (`preserve`) keeps the original skeleton and movement, with Unreal root motion disabled.
+- **Gameplay root motion (Extract)** adds an unweighted `RootMotion` bone carrying horizontal travel and heading. The pelvis retains bobbing, jumping height, pitch, and roll. All original world-space poses are preserved. The import helper enables root motion and `Anim First Frame` root lock on the source and retargeted animations.
+- **In place** adds the same root but removes the ground trajectory from playback. The character stays in place while retaining its body movement.
+
+The dialog defaults to Extract on a fresh install and remembers the last movement choice. Extract suits attacks and moves that travel.
 
 This extraction is a planar locomotion convention, not a reconstruction of an animator's intended trajectory. At the exact heading singularity of a horizontal half-turn, the previous heading is retained. Full three-dimensional actor travel is not extracted: vertical motion remains in the pose. An Animation Blueprint or montage must still consume root motion according to the game's movement setup; see [Epic's root-motion guide](https://dev.epicgames.com/documentation/en-us/unreal-engine/root-motion-in-unreal-engine).
 

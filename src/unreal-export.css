@@ -16,3 +16,14 @@
 .unreal-options label { display: grid; gap: 5px; font-size: 12px; font-weight: 600; }
 .unreal-options select, .unreal-options input { width: 100%; min-width: 0; border: 1px solid #dedbd3; border-radius: 9px; padding: 10px; background: #fff; color: #262624; font: inherit; }
 .unreal-options small { font-weight: 400; color: #6b6b64; }
+
+.unreal-movement { display: grid; gap: 5px; font-size: 12px; }
+.unreal-segments { display: flex; gap: 3px; padding: 3px; border: 1px solid #dedbd3; border-radius: 9px; }
+.unreal-segments button { flex: 1; min-width: 0; border: 0; border-radius: 6px; padding: 8px 5px; background: transparent; color: #6b6b64; font: inherit; font-size: 11px; cursor: pointer; }
+.unreal-segments button:first-child { flex: 2; }
+.unreal-segments button:focus-visible { outline: 2px solid #819d60; outline-offset: 1px; }
+.unreal-segments button.active { background: #e8efd5; color: #425d2d; font-weight: 600; }
+.unreal-segments button:disabled { cursor: default; }
+[data-theme='dark'] .unreal-segments { border-color: var(--line); }
+[data-theme='dark'] .unreal-options small, [data-theme='dark'] .unreal-segments button { color: var(--muted); }
+[data-theme='dark'] .unreal-segments button.active { background: #34462b; color: #d8e9bd; }
