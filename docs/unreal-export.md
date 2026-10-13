@@ -42,6 +42,33 @@ Reaction's 1.816666722-second duration does not end on a 30 fps frame boundary. 
 
 The optional importer was also executed directly in Unreal: it created new Bear assets, linked the correct Skeleton, imported a four-second sequence, and restored the Interchange setting from 1 → 0 → 1. Proof reports are local development artifacts at `.local/unreal-proof/final-legacy-1.json` and `.local/unreal-proof/import-package-smoke.json`.
 
+## Morph targets and facial shapes
+
+Characters imported from FBX or GLB with named morph targets show **Face & shapes** in the editor. Each slider runs from 0 to 1 and edits the moment at the playhead, creating a moment when needed. Values live with the pose, follow the same Smooth, Direct, or Hold interpolation, play in the viewport, and survive `.still` save/reopen, Undo/Redo, duplication, clip edits, and motion generation. Shapes with the same name on multiple mesh primitives are driven together. Characters without morph targets have no additional controls.
+
+Animated GLB export writes mesh-node `weights` channels for keyed shapes. The Unreal exporter preserves the mesh's shape keys, bakes their geometry through the same centimeter/axis transform as the base mesh, and samples weights at every exported frame. `character.fbx` contains the blend shapes. `animation.fbx` includes meshes with shapes so their blend shape channels carry the animation; packages without shapes retain skeleton-only animation FBXs. `manifest.json` records `morphTargets` and `morphCurves`, with one weight per inclusive exported frame starting at time zero (`index / fps`). Conflicting weights for the same shape name on different meshes produce an explicit error because Unreal uses one named curve to drive that shape.
+
+The supplied legacy FBX helper enables **Import Morph Targets**, imports animation curves, and retains curves whose values are all zero. It logs the morph curves found on the resulting AnimSequence and fails if an expected curve is missing. For manual import, enable those same settings and disable **Do Not Import Curve With Zero**. Source morph names must match the destination mesh when using an existing Skeleton. Manny/MetaHuman body retargeting does not map source shapes onto a different facial rig.
+
+Blender **5.2.2** proof used a two-bone, 12-vertex skinned fixture with object translation, rotation and scale, animated bone motion, and two shapes over two seconds at 30 fps:
+
+| Check | Result |
+| --- | ---: |
+| Inclusive exported frames | 61 |
+| Shapes in both re-imported FBXs | Blink, Smile |
+| Blink weights at 0 / 1 / 2 seconds | 0.15 / 0.85 / 0.25 |
+| Smile weights at 0 / 1 / 2 seconds | 0.8 / 0.2 / 1 |
+| Maximum weight error across all 61 re-imported frames | 0.000000060 |
+| Exporter evaluated vertex error, morphs included | 0.000033 cm |
+| Re-imported animation joint error | 0.000026 cm |
+| Re-imported animation evaluated vertex error | 0.000073 cm |
+
+The corresponding fixture without shapes passed with 0.000031 cm exporter vertex error, no imported shape keys, and a skeleton-only animation FBX. Its entire 34-field manifest matched the original exporter exactly. Reproduce these development checks with `scripts/morph-fixture.py` and `scripts/check-morph-export.py`, using Blender's `--python` argument. The builder accepts `--without-morphs --output <path.glb>`; the checker accepts `--input <path.glb> --package <path.zip> --output <report.json>`.
+
+`scripts/smoke-morphs.mjs` also passed editor import from GLB and FBX, slider edits, Undo/Redo, save/reopen/recovery, playback, three interpolation modes, six clip edits, and GLB weight-channel checks. Run it with Node after building the fixture; optionally set `STILL_MORPH_FBX` to the extracted animation FBX. Converting its editor-produced GLB and re-importing both FBXs measured 0.000000060 maximum weight error and 0.000079 cm evaluated vertex error. A negative control that deliberately omitted morph animation failed the exporter's unchanged evaluated-vertex verification with 29.9636 cm error.
+
+**Unreal morph import and curve validation are pending execution.** Unreal was not launched for this work. Earlier Unreal measurements establish bone animation behavior for their original fixtures, not morph behavior. `scripts/unreal_validate.py` now checks optional expected morph names/counts and evaluates float curves within 0.001 using the UE 5.8 Python API; those checks still need to run in the destination engine.
+
 ## Gameplay root motion
 
 Choose the root-motion mode in the Unreal export dialog:
@@ -60,16 +87,18 @@ Choose **Manny** when the destination project already contains the mannequin. Th
 
 The helper recognizes standard Mixamo, Still, Manny and MetaHuman bone names, builds connected spine/head/limb chains, aligns the target pose, applies Unreal's automatic full-body IK setup where its template is recognized, and bakes a new target animation under the import's `Retargeted` folder. Unrecognized names or disconnected chains return an explicit error. Target mesh assets are never copied into the ZIP or modified.
 
-Executed tests retargeted both the traveling fixture and the supplied 38-bone Reaction animation onto the installed Manny skeleton. The results had the correct target Skeleton, finite transforms, preserved duration (4 seconds and 1.816666722 seconds), and a moving, turning root. All imported and retargeted assets were then reopened in a fresh Unreal process and evaluated successfully. The local proof files are `.local/readiness-unreal/measure.json` and `reopen-proof.json`. A MetaHuman body was not available for a comparable execution test; that path shares the same retargeting machinery and requires the user's existing body asset. Facial animation, cloth and MetaHuman facial rigs are outside this body-motion transfer.
+Executed tests retargeted both the traveling fixture and the supplied 38-bone Reaction animation onto the installed Manny skeleton. The results had the correct target Skeleton, finite transforms, preserved duration (4 seconds and 1.816666722 seconds), and a moving, turning root. All imported and retargeted assets were then reopened in a fresh Unreal process and evaluated successfully. The local proof files are `.local/readiness-unreal/measure.json` and `reopen-proof.json`. A MetaHuman body was not available for a comparable execution test; that path shares the same retargeting machinery and requires the user's existing body asset. Body retargeting does not map facial controls or simulate cloth. Source facial morphs are exported separately as described above.
 
 Agent export options are `rootMotion: "preserve" | "extract" | "in-place"`, `retarget: "none" | "manny" | "metahuman"`, and optional `targetMesh` containing the Unreal asset path. With `retarget: "none"`, `targetMesh` selects an existing Skeleton or SkeletalMesh for direct animation import. With Manny or MetaHuman it selects the retarget destination SkeletalMesh. Defaults remain `preserve` and `none`.
 
-Materials and texture files use basic FBX material transfer. Check PBR connections, transparency, normal maps, and appearance in the target project; arbitrary shader graphs do not round-trip through [FBX's material pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-material-pipeline-in-unreal-engine). Physics Assets, collision behavior, LODs, cloth, and facial morph targets are outside these skeletal animation checks.
+Materials and texture files use basic FBX material transfer. Check PBR connections, transparency, normal maps, and appearance in the target project; arbitrary shader graphs do not round-trip through [FBX's material pipeline](https://dev.epicgames.com/documentation/unreal-engine/fbx-material-pipeline-in-unreal-engine). Physics Assets, collision behavior, LODs, and cloth are outside these skeletal animation checks.
 
 The exporter writes Blender binary FBX 7400. Epic's importer uses the FBX 2020.2 SDK and warns that version differences can cause compatibility issues. The measured evidence above establishes this export path on the installed 5.8.2 engine and these fixtures; it is not a guarantee for every model, importer, engine release, or game runtime.
 
 ## Repeat the validation
 
 `scripts/unreal_validate.py` runs in an isolated Unreal project with Python Editor Script Plugin, Editor Scripting Utilities, and Skeletal Mesh Modeling Tools enabled. Set `STILL_UNREAL_VALIDATION` to a JSON configuration containing a fresh `runId`, an output path, and each case's FBX paths plus reference names, parents, rest poses, sample poses, mesh bounds, duration, and height. A completed example is `.local/unreal-proof/final-legacy-1-config.json`.
+
+Each case's `expected` object can also contain `morphTargets: ["Blink", "Smile"]` and `morphCurves: {"Blink": [{"time": 0, "value": 0.15}, {"time": 1, "value": 0.85}, {"time": 2, "value": 0.25}]}`. Include every expected target name for an exact count/name check. Curves can instead be numeric arrays aligned with `sampleTimes`, or full exported arrays with `frameCount` and `fps`, matching the manifest. Missing APIs, missing curves, invalid samples, and empty imported curves produce clear errors or failed checks. Curve evaluation uses `AnimationLibrary.get_float_value_at_time`, with imported keys inspected through `get_float_keys`. The existing CPU-skinned bounds check evaluates bone deformation only; omit morph-deformed `meshBoundsCm` expectations for morph cases.
 
 Run `UnrealEditor-Cmd.exe <project.uproject> -run=pythonscript -script=<absolute scripts/unreal_validate.py> -unattended -nullrhi -nosplash -NoSound`. The validator creates assets only under a new `/Game/StillExportValidation/<runId>` path and refuses an existing validation destination. It writes measured results and explicit pass/fail checks to the configured JSON report. This is an asset validation commandlet, not an automated game-playthrough or material render test.
