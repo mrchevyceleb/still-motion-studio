@@ -4,7 +4,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import type { CharacterAsset, Pose, RigKind, Vec3 } from '../types';
-import { fitAnatomicalRig, influenceFamily, type AutoRigDiagnostics } from './anatomicalRig';
+import { fitAnatomicalRig, influenceFamily, type AnatomicalFit, type AutoRigDiagnostics } from './anatomicalRig';
+import { fitHandRig, validateRigFit } from './handRig';
 
 const DISPLAY_HEIGHT = 2.4;
 const WHITE_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -359,7 +360,7 @@ function smoothSkinWeights(geometry: THREE.BufferGeometry, bones: THREE.Bone[], 
   const vertices = geometry.getAttribute('position').count;
   // Bound scratch storage to ~25 MB. Large meshes still receive the same
   // anatomical weights; a lighter export enables the topology smoothing pass.
-  if (vertices > 250_000) return;
+  if (vertices * bones.length > 6_250_000) return;
   const totals = new Float32Array(vertices * bones.length);
   const families = bones.map(bone => influenceFamily(bone.name));
   for (let v = 0; v < vertices; v++) for (let n = 0; n < 4; n++) totals[v * bones.length + indices[v * 4 + n]] += weights[v * 4 + n] * 4;
@@ -393,16 +394,7 @@ function smoothSkinWeights(geometry: THREE.BufferGeometry, bones: THREE.Bone[], 
   }
 }
 
-export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): CharacterAsset {
-  if (asset.bones.length) {
-    // Replacing an imported skeleton is exactly what makes common Mixamo flows
-    // fragile. Existing bindings are authoritative, even for unusual bone names.
-    asset.kind = kind;
-    return asset;
-  }
-  const root = cloneSkeleton(asset.root) as THREE.Group;
-  cloneMaterials(root);
-  try {
+function collectRigGeometry(root: THREE.Group) {
   root.updateMatrixWorld(true);
   const rootInverse = root.matrixWorld.clone().invert();
   const meshes: THREE.Mesh[] = [];
@@ -453,7 +445,44 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
   });
   if (meshes.length === 0 || bounds.isEmpty()) throw new Error('A mesh is needed to create a starter rig.');
   if (vertices.length < 32) throw new Error('There is not enough character geometry to identify its limbs. Import a complete character mesh.');
+  return { meshes, bounds, vertices };
+}
+
+export function estimateAutoRig(asset: CharacterAsset, kind: RigKind, fingers = true): AnatomicalFit {
+  if (asset.bones.length) throw new Error('This character already has a rig. Its existing bones are preserved.');
+  const { vertices, bounds } = collectRigGeometry(asset.root);
   const fitted = fitAnatomicalRig(kind, vertices, bounds);
+  return kind === 'humanoid' && fingers ? fitHandRig(fitted, vertices, bounds) : fitted;
+}
+
+export function createRigPreview(asset: CharacterAsset, fit: AnatomicalFit): CharacterAsset {
+  const root = cloneSkeleton(asset.root) as THREE.Group;
+  cloneMaterials(root);
+  try {
+    createSkeleton(root, fit.joints);
+    return makeAsset(root, fit.diagnostics.bodyType, asset.name, 'import', [], []);
+  } catch (error) { disposeCharacter({ ...asset, root }); throw error; }
+}
+
+export interface AutoRigOptions { fingers?: boolean; fit?: AnatomicalFit }
+
+export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: AutoRigOptions = {}): CharacterAsset {
+  if (asset.bones.length) {
+    // Replacing an imported skeleton is exactly what makes common Mixamo flows
+    // fragile. Existing bindings are authoritative, even for unusual bone names.
+    asset.kind = kind;
+    return asset;
+  }
+  const root = cloneSkeleton(asset.root) as THREE.Group;
+  cloneMaterials(root);
+  try {
+  root.updateMatrixWorld(true);
+  const rootInverse = root.matrixWorld.clone().invert();
+  const { meshes, bounds, vertices } = collectRigGeometry(root);
+  const point = new THREE.Vector3();
+  const body = options.fit ? structuredClone(options.fit) : fitAnatomicalRig(kind, vertices, bounds);
+  const fitted = !options.fit && kind === 'humanoid' && options.fingers !== false ? fitHandRig(body, vertices, bounds) : body;
+  validateRigFit(fitted, bounds, kind);
   createSkeleton(root, fitted.joints);
   const bones: THREE.Bone[] = [];
   root.traverse((object) => { if (object instanceof THREE.Bone) bones.push(object); });
@@ -482,11 +511,12 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
           : line.closestPointToPoint(point, true, closest).distanceToSquared(point))),
       })).sort((a, b) => a.distance - b.distance);
       const family = families[candidates[0].index];
+      const localEpsilon = /Hand/.test(bones[candidates[0].index].name) ? epsilon * .15 : epsilon;
       const scored = candidates.map(candidate => {
         const other = families[candidate.index];
-        const attachment = family === 'Torso' || other === 'Torso';
+        const attachment = family === 'Torso' || other === 'Torso' || (family.startsWith('LeftHand') && other === 'LeftArm') || (family.startsWith('RightHand') && other === 'RightArm') || (other.startsWith('LeftHand') && family === 'LeftArm') || (other.startsWith('RightHand') && family === 'RightArm');
         const factor = other === family ? 1 : attachment ? .2 : .002;
-        return { ...candidate, score: factor / Math.pow(candidate.distance + epsilon * epsilon, 2) };
+        return { ...candidate, score: factor / Math.pow(candidate.distance + localEpsilon * localEpsilon, 2) };
       }).sort((a, b) => b.score - a.score).slice(0, 4);
       const scores = scored.map(candidate => candidate.score);
       const total = scores.reduce((sum, score) => sum + score, 0);
@@ -545,7 +575,8 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind): Characte
   if (maxBindError > height * 1e-4) throw new Error('The new rig would move the mesh in its rest pose. Apply its transforms and re-export before rigging.');
   const savedQuaternions = bones.map(bone => bone.quaternion.clone());
   bones.forEach(bone => {
-    if (/ForeArm$/.test(bone.name)) bone.rotateZ(.2);
+    if (/Hand(?:Thumb|Index|Middle|Ring|Pinky)[123]$/.test(bone.name)) bone.rotateZ(.12);
+    else if (/ForeArm$/.test(bone.name)) bone.rotateZ(.2);
     else if (/^(Left|Right)Leg$|LowerLeg$/.test(bone.name)) bone.rotateX(.2);
   });
   root.updateMatrixWorld(true);

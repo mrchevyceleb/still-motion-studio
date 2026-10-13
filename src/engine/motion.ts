@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey, Quat, Vec3 } from '../types';
 import { applyPose, capturePose } from './character';
 import { MAX_ANIMATION_DURATION } from './keyframeEditing';
+import { isFingerBone } from './handRig';
 
 const copyPose = (pose: Pose): Pose => pose.map(b => ({ position: [...b.position], quaternion: [...b.quaternion], scale: [...b.scale] }));
 const makeKey = (time: number, pose: Pose, label?: string): PoseKey => ({ id: crypto.randomUUID(), time, pose, label });
@@ -254,9 +255,11 @@ export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.
     return;
   }
   const limb = /hand|arm|leg|foot|toe|hoof|paw|wrist|ankle|knee|elbow/i.test(effector.name);
+  const finger = isFingerBone(effector.name);
   const chain: THREE.Bone[] = [];
   let parent = effector.parent;
   while (parent instanceof THREE.Bone && chain.length < 4) {
+    if (finger && !isFingerBone(parent.name)) break;
     if (limb && /hip|pelvis|spine|chest|torso|root/i.test(parent.name)) break;
     chain.push(parent);
     if (!(parent.parent instanceof THREE.Bone)) break;

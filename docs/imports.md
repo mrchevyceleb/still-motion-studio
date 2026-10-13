@@ -14,7 +14,9 @@ Exported GLB nodes include a small joint marker in standard glTF extras. This al
 
 ## Starter rigs
 
-An unrigged mesh can receive a humanoid or quadruped template and four normalized weights per vertex based on distance to bone segments. This is a geometric starting point, not trained AI auto-rigging. Humanoids should be upright and in a T-pose; quadrupeds should be standing, Y-up, and facing +Z. Unusual proportions, clothing, closed poses, tails, and intersecting limbs can need better fitting or hand-authored weights. Existing rigs bypass this operation entirely.
+An unrigged mesh can receive a humanoid or quadruped template and four normalized weights per vertex based on distance to bone segments. Humanoid fitting includes five fingers per hand by default: three bend joints and an endpoint for each digit. A placement preview lets you inspect both hands, drag individual landmarks, or enter their coordinates before binding. Neighboring finger branches receive separate weight families and finer distance falloff. Exposed fingertip components are found from the mesh samples; missing or ambiguous digits remain flagged estimates. Use open hands with separated fingers, and check every estimated joint. Gloves and fused fingers cannot gain separate mesh geometry from rigging alone. Body-only fitting remains available. Finger joints can be shown in the editor; Rotate edits them individually, and fingertip IK stops at the palm instead of moving the arm. Saved projects and original-skeleton exports preserve all finger joints.
+
+This is a geometric starting point, not trained AI auto-rigging. Humanoids should be upright and in an A-pose or T-pose; quadrupeds should be standing, Y-up, and facing +Z. Unusual proportions, clothing, closed poses, tails, and intersecting limbs can need better fitting or hand-authored weights. Existing rigs bypass this operation entirely; the practice humanoid keeps its original body-only skeleton so older saved scenes remain compatible.
 
 ## Verified paths
 

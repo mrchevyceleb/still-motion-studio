@@ -6,7 +6,7 @@ import './unreal-export.css';
 import './agent-scripting.css';
 import './timeline.css';
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
-import { Euler, MathUtils, Quaternion } from 'three';
+import { Euler, MathUtils, Quaternion, Vector3 } from 'three';
 import Viewport from './components/Viewport';
 import type { ViewportAPI } from './components/Viewport';
 import { connectAgentBridge } from './engine/agentBridge';
@@ -18,10 +18,13 @@ import PhysicsComparison from './components/PhysicsComparison';
 import SceneLibrary from './components/SceneLibrary';
 import KeyframeProperties from './components/KeyframeProperties';
 import ClipTools from './components/ClipTools';
+import HandRigSetup from './components/HandRigSetup';
+import { isFingerBone } from './engine/handRig';
+import type { AnatomicalFit } from './engine/anatomicalRig';
 import { assertMatchingRig, composeMotion, editMotion } from './engine/clipEditing';
 import type { ClipEdit, MotionSequence } from './engine/clipEditing';
 import UpdatesDialog, { useUpdates } from './components/UpdatesDialog';
-import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter } from './engine/character';
+import { applyPose, autoRigCharacter, createDemoCharacter, createRigPreview, disposeCharacter, estimateAutoRig, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter } from './engine/character';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './engine/motion';
 import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames, recoverNativeEngine } from './engine/assistance';
 import type { EngineProvider, EngineStatus } from './engine/assistance';
@@ -74,11 +77,14 @@ export default function App() {
   const keyDrag = useRef<KeyDrag | null>(null);
   const [selectedBone, setSelectedBone] = useState<number | null>(null);
   const [showRig, setShowRig] = useState(true);
+  const [showFingerJoints, setShowFingerJoints] = useState(false);
   const [showGhosts, setShowGhosts] = useState(false);
   const [cameraView, setCameraView] = useState<'perspective' | 'front' | 'side'>('perspective');
   const [tool, setTool] = useState<'move' | 'rotate'>('move');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [rigKind, setRigKind] = useState<RigKind>('humanoid');
+  const [rigFingers, setRigFingers] = useState(true);
+  const [rigDraft, setRigDraft] = useState<{ preview: CharacterAsset; initial: AnatomicalFit; fit: AnatomicalFit; source: CharacterAsset } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [engineChoice, setEngineChoice] = useState<EngineProvider['id']>('owned_humanoid');
@@ -149,6 +155,8 @@ export default function App() {
   const needsReview = (studio.generation?.metrics.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
   const selectedKey = poseKeys.find(key => Math.abs(key.time - time) < 0.5 / fps);
   useEffect(() => { setPoseReference(null); }, [asset.root, sceneId]);
+  useEffect(() => { if (dialog !== 'rig') setRigDraft(null); }, [dialog]);
+  useEffect(() => () => { if (rigDraft) disposeCharacter(rigDraft.preview); }, [rigDraft?.preview]);
   useEffect(() => {
     setPoseReference(reference => reference?.keyId && !studio.keys.some(key => key.id === reference.keyId && JSON.stringify(key.pose) === JSON.stringify(reference.after)) ? null : reference);
   }, [studio.keys]);
@@ -612,14 +620,27 @@ export default function App() {
     finally { setBusy(null); }
   };
 
-  const makeRig = async () => {
-    setBusy('Fitting the skeleton and skin weights…');
+  const prepareRig = async () => {
+    if (busy || asset.rigged || !hydrated) return;
+    if (rigKind !== 'humanoid' || !rigFingers) { void makeRig(); return; }
+    flushSync(() => { setBusy('Finding the hands and finger joints…'); setPlaying(false); setError(null); });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    try {
+      const fit = estimateAutoRig(asset, rigKind, true), preview = createRigPreview(asset, fit);
+      setRigDraft({ fit, initial: clone(fit), preview, source: asset });
+    } catch (error) { setError(error instanceof Error ? error.message : 'The hand joints could not be detected.'); }
+    finally { setBusy(null); }
+  };
+  const makeRig = async (fit?: AnatomicalFit) => {
+    if (busy || asset.rigged || !hydrated || fit && rigDraft?.source !== asset) return;
+    setBusy('Fitting the skeleton and skin weights…'); setError(null);
     await new Promise(resolve => setTimeout(resolve, 50));
     try {
-      const next = autoRigCharacter(asset, rigKind); setAsset({ ...next });
+      await saveCurrentScene();
+      const next = autoRigCharacter(asset, rigKind, { fingers: rigFingers, fit }); setAsset({ ...next });
       const keys = [{ id: uid(), time: 0, pose: clone(next.restPose) }, { id: uid(), time: studio.duration, pose: clone(next.restPose) }];
-      setStudio({ ...studio, keys }); setSelectedBone(null); setTime(0); setDialog(null);
-      history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = true; notify('Rig fitted to your geometry. Try a small bend at the shoulders, elbows and knees.');
+      setStudio({ ...studio, keys, generated: undefined, generation: undefined, sourceClip: null }); setSelectedBone(null); setTime(0); setDialog(null); setShowFingerJoints(!!next.bones.find(b => isFingerBone(b.name)));
+      history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = true; notify(fit?.diagnostics.hands ? 'Hands and body bound. Select a finger and use Rotate to check a small bend.' : 'Rig fitted to your geometry. Try a small bend at the shoulders, elbows and knees.');
     } catch (e) { setError(e instanceof Error ? e.message : 'The rig could not be fitted.'); }
     finally { setBusy(null); }
   };
@@ -865,7 +886,7 @@ export default function App() {
         <div className="sidebar-section intro-section"><div className="eyebrow">A LITTLE STILL. A LOT OF MOTION.</div><h1>Make your<br/>next move<span>.</span></h1><p>A few poses. Endless possibilities.</p></div>
         <div className="sidebar-section character-section"><div className="section-heading"><h2>Your character</h2><button className="icon-button" title="Start a new scene" aria-label="New scene" onClick={() => setDialog('new')}><Plus size={17}/></button></div>
           <div className="character-card"><div className="character-art"><div className="orbit-ring one"/><div className="orbit-ring two"/><PoseSketch index={1} quadruped={asset.kind === 'quadruped'}/><span className="character-spark">✳</span></div><div className="character-details"><strong title={asset.name}>{asset.name}</strong><span>{asset.source === 'demo' ? 'Your practice partner' : 'Original character'}</span></div><span className="ready-dot" title="Loaded"/></div>
-          <div className="rig-status"><ShieldCheck size={14}/>{asset.rigged ? asset.source === 'import' ? 'Original rig preserved' : `${asset.kind === 'humanoid' ? 'Human' : 'Quadruped'} rig, ready to move` : 'Ready for a simple rig'}<span>{asset.bones.length} joints</span></div>
+          <div className="rig-status"><ShieldCheck size={14}/>{asset.rigged ? getAutoRigDiagnostics(asset) ? getAutoRigDiagnostics(asset)?.hands ? 'Body and finger rig fitted' : 'Body rig fitted' : asset.source === 'import' ? 'Original rig preserved' : `${asset.kind === 'humanoid' ? 'Human' : 'Quadruped'} rig, ready to move` : 'Ready for a simple rig'}<span>{asset.bones.length} joints</span></div>
           <button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button>
           <div className="format-note">FBX, GLB, or a saved Still project</div>
         </div>
@@ -878,6 +899,13 @@ export default function App() {
 
         <div className="sidebar-section selection-section"><div className="section-heading"><h2>{selectedBone === null ? 'Make it yours' : 'Selected joint'}</h2><MousePointer2 size={14}/></div>
           {selectedBone === null ? <div className="selection-empty"><div className="little-pointer"><Move size={23}/></div><strong>Grab a joint. Try something.</strong><p>Drag the dots on your character.<br/>The rest of the limb follows along.</p><button className="text-button" onClick={() => setSelectedBone(Math.max(0, asset.bones.findIndex(b => /righthand/i.test(b.name))))} disabled={!asset.bones.length}>Try the right hand <ArrowRight size={13}/></button></div> : <div className="joint-controls"><select aria-label="Selected joint" value={selectedBone} onChange={e => setSelectedBone(Number(e.target.value))}>{asset.bones.map((bone, index) => <option key={index} value={index}>{niceName(bone.name)}</option>)}</select><div className="axis-fields">{['X', 'Y', 'Z'].map((axis, i) => <label key={axis}><span>{axis}</span><input type="number" aria-label={`${axis} joint rotation`} step="5" value={selectedRotation[i]} onChange={e => { if (e.target.value === '') return; const value = Number(e.target.value); if (!Number.isFinite(value)) return; const values = [...selectedRotation]; values[i] = value; const pose = clone(currentPose); pose[selectedBone].quaternion = new Quaternion().setFromEuler(new Euler(...values.map(MathUtils.degToRad) as [number, number, number], 'XYZ')).toArray(); writePose(pose); }}/><small>°</small></label>)}</div><button className="text-button" onClick={() => { const pose = clone(currentPose); pose[selectedBone] = clone(asset.restPose[selectedBone]); writePose(pose); }}><RotateCcw size={13}/>Reset this joint</button><p className="micro-copy">Changes become a pose automatically.</p></div>}
+          {asset.bones.some(b => isFingerBone(b.name)) && <><div className="finger-display-control"><span>Finger joints</span><Switch label="Show finger joints" checked={showFingerJoints} onChange={() => { if (!showFingerJoints) setShowRig(true); setShowFingerJoints(value => !value); }}/></div><button className="text-button finger-focus-button" onClick={() => {
+            applyPose(asset, currentPose);
+            const bone = selectedBone !== null ? asset.bones[selectedBone] : asset.bones.find(b => /hand$/i.test(b.name));
+            if (!bone || !viewportAPI.current) return;
+            const target = bone.getWorldPosition(new Vector3());
+            viewportAPI.current.setCamera({ target: target.toArray(), position: target.clone().add(new Vector3(0, .25, 1.25)).toArray(), fov: 20 }); setShowRig(true); setShowFingerJoints(true);
+          }}><Hand size={13}/>Focus selected hand / joint</button></>}
         </div>
         </div><button className="help-card" onClick={() => setDialog('help')}><span className="help-illustration"><Hand size={22}/></span><span><strong>First time animating?</strong><small>You’re in the right place.</small></span><ArrowUpRight size={16}/></button>
         <div className="sidebar-footer"><span className="small-brand">STILL STUDIO</span><span>Made for making.</span></div>
@@ -887,7 +915,7 @@ export default function App() {
         <div className="scene-heading"><div><span className="scene-dot"/>YOUR PLAYGROUND<span className="scene-separator">/</span><span className="scene-name">{studio.title || 'Untitled'}</span></div><button className="text-button" onClick={() => setDialog('help')}><CircleHelp size={14}/><span>A quick tour</span></button></div>
         <div className="stage-and-assists">
           <section className="viewport-shell" aria-label="Character editor">
-            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore} showRig={showRig} showGhosts={showGhosts && !viewingBefore} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
+            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore} showRig={showRig} showFingerJoints={showFingerJoints} showGhosts={showGhosts && !viewingBefore} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
             <div className={`viewport-top ${studio.generation?.kind === 'physics' ? 'has-physics-comparison' : ''}`}><div className="mode-pill"><span className={playing ? 'live-dot' : 'mode-dot'}/>{viewingBefore ? 'Before physics' : playing ? 'In motion' : 'Pose mode'}<span>{selectedKey ? `Pose ${keyIndex + 1}` : 'Between poses'}</span></div>{studio.generated && studio.generation?.kind === 'physics' && <div className="physics-compare-switch viewport-compare-switch" role="group" aria-label="Compare physics motion"><button aria-label="Before physics" aria-pressed={viewingBefore} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('before'); }}>Before</button><button aria-label="Side-by-side physics comparison" aria-pressed={viewingSplit} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('split'); }}>Side by side</button><button aria-label="After physics" aria-pressed={!viewingBefore && !viewingSplit} disabled={!!busy || !!dragPreview} onClick={() => setComparisonView('after')}>After</button></div>}<button className={`icon-button viewport-icon ${showGhosts ? 'active' : ''}`} aria-label="Toggle onion skin" aria-pressed={showGhosts && !viewingBefore} disabled={viewingBefore} title={viewingBefore ? 'Onion skin is available in After physics' : 'Show neighboring poses'} onClick={() => setShowGhosts(v => !v)}><Layers2 size={17}/></button></div>
             <div className="viewport-tools"><button aria-label="Move joint" title="Move joint · W" className={tool === 'move' ? 'active' : ''} onClick={() => setTool('move')}><Move size={18}/></button><button aria-label="Rotate joint" title="Rotate joint · E" className={tool === 'rotate' ? 'active' : ''} onClick={() => setTool('rotate')}><RotateCw size={18}/></button><div/><button aria-label="Show joints" title="Show joints" aria-pressed={showRig} className={showRig ? 'active secondary' : ''} onClick={() => setShowRig(v => !v)}><Bone size={18}/></button></div>
             {!viewingSplit && <div className="viewport-label"><span className="viewport-kicker">LESS LEARNING. MORE MAKING.</span><span className="viewport-big-word">Let’s move.</span></div>}
@@ -939,7 +967,7 @@ export default function App() {
     {error && <div className="error-toast" role="alert"><CircleHelp size={19}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError(null)}><X size={16}/></button></div>}
     {sparks.map(s => <span className="click-spark" key={s.id} style={{ left: s.x, top: s.y }}>✳</span>)}
 
-    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''} ${dialog === 'physics' ? 'physics-report-modal' : ''} ${dialog === 'library' ? 'scene-library-modal' : ''}`} onCancel={e => { if (busy || exportRunning || updateState?.status === 'installing') e.preventDefault(); else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !busy && !exportRunning && updateState?.status !== 'installing') setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={!!busy || exportRunning || updateState?.status === 'installing'} onClick={() => setDialog(null)}><X size={19}/></button>
+    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''} ${dialog === 'rig' && rigDraft ? 'hand-rig-modal' : ''} ${dialog === 'physics' ? 'physics-report-modal' : ''} ${dialog === 'library' ? 'scene-library-modal' : ''}`} onCancel={e => { if (busy || exportRunning || updateState?.status === 'installing') e.preventDefault(); else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !busy && !exportRunning && updateState?.status !== 'installing') setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={!!busy || exportRunning || updateState?.status === 'installing'} onClick={() => setDialog(null)}><X size={19}/></button>
       {dialog === 'library' && <SceneLibrary scenes={scenes} archives={archives} activeId={sceneId} recovering={!storageReady} onOpen={id => void openSavedScene(id)} onNew={() => setDialog('new')} onImport={() => setDialog('import')} onRename={(id, name) => changeSavedScene(id, 'rename', name)} onDuplicate={id => void changeSavedScene(id, 'duplicate')} onDelete={id => void changeSavedScene(id, 'delete')} onRecover={id => void openArchive(id)}/>}
       {dialog === 'physics' && studio.generation?.kind === 'physics' && <PhysicsComparison generation={studio.generation} onCompare={comparePhysics} onKeep={() => setDialog(null)} onRestoreOriginal={restoreBeforePhysics} onSaveReport={() => { const { comparison: _comparison, ...report } = studio.generation!; downloadFile(JSON.stringify(report, null, 2), 'physics-comparison-report.json', 'application/json'); }}/>}
       {dialog === 'updates' && <UpdatesDialog state={updateState} canInstall={hydrated && storageReady && !busy && !engine?.busy && !engine?.recovery && !agentController.current && !exportOperation.current && !keyDrag.current} onInstall={() => void installDownloadedUpdate()}/>}
@@ -953,7 +981,9 @@ export default function App() {
         <button className="export-choice" onClick={() => void exportGLB()}><Box size={24}/><span><strong>Animated character</strong><small>GLB · mesh, skeleton, and baked animation</small></span><Download size={19}/></button><button className="export-choice" onClick={saveProject}><Save size={24}/><span><strong>Editable Still project</strong><small>.still · character, poses, and settings</small></span><Download size={19}/></button><div className="modal-tip"><ShieldCheck size={19}/><span>Use your matching Unreal skeleton, create a new character, or retarget to Manny or a MetaHuman body. Mixamo bone names are made compatible with Unreal.</span></div></>}
       {dialog === 'new' && <><span className="modal-icon"><Sparkles size={25}/></span><div className="eyebrow">A FRESH START</div><h2>What’s your<br/>next move?</h2><p>Try a practice character, start from a blank pose, or bring one of your own. Your current scene is saved in the library before starting another one.</p><button className="button secondary full-width" onClick={() => void openLibrary()}><Layers2 size={16}/>Open scene library</button><div className="new-choices"><button onClick={() => createNew('humanoid')}><PoseSketch index={3}/><strong>A friendly wave</strong><span>Human · 6 poses</span></button><button onClick={() => createNew('quadruped')}><PoseSketch quadruped/><strong>Four little steps</strong><span>Quadruped · 6 poses</span></button></div><button className="export-choice compact" onClick={() => createNew('humanoid', true)}><Plus size={20}/><span><strong>Start from a blank pose</strong></span><ArrowRight size={17}/></button><button className="export-choice compact" onClick={() => setDialog('import')}><Upload size={20}/><span><strong>Import your own character</strong></span><ArrowRight size={17}/></button></>}
       {dialog === 'new' && archives.length > 0 && <div className="recent-scenes"><h3>Recent scenes</h3>{archives.map(entry => <button key={entry.id} onClick={() => void openArchive(entry.id)}><RotateCcw size={13}/><span>{entry.name}</span><small>{new Date(entry.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</small></button>)}</div>}
-      {dialog === 'rig' && <><span className="modal-icon"><Bone size={25}/></span><div className="eyebrow">A SIMPLE STARTING SKELETON</div><h2>A little structure.<br/>A lot of freedom.</h2><p>Pick the shape that fits your character. We’ll fit joints to the shape of your mesh and blend the skin around its limbs.</p><div className="new-choices rig-choices">{(['humanoid', 'quadruped'] as RigKind[]).map(kind => <button key={kind} className={rigKind === kind ? 'selected' : ''} onClick={() => setRigKind(kind)}><PoseSketch quadruped={kind === 'quadruped'}/><strong>{kind === 'humanoid' ? 'Two legs' : 'Four legs'}</strong><span>{kind === 'humanoid' ? 'Upright human · A or T pose' : 'Animal · head facing +Z'}</span></button>)}</div><div className="modal-tip"><CircleHelp size={19}/><span>Use an upright, neutral pose. Geometry fitting checks the skin binding; inspect a small bend before making larger poses.</span></div><button className="button primary full-width" onClick={() => void makeRig()} disabled={asset.rigged}>Fit my rig <ArrowRight size={16}/></button></>}
+      {dialog === 'rig' && error && <p className="rig-fit-error" role="alert">{error}</p>}
+      {dialog === 'rig' && rigDraft && <HandRigSetup preview={rigDraft.preview} fit={rigDraft.fit} initial={rigDraft.initial} theme={theme} disabled={!!busy} onChange={fit => { setError(null); setRigDraft(current => current ? { ...current, fit } : null); }} onBind={() => void makeRig(rigDraft.fit)} onBack={() => setRigDraft(null)}/>}
+      {dialog === 'rig' && !rigDraft && <><span className="modal-icon"><Bone size={25}/></span><div className="eyebrow">A SIMPLE STARTING SKELETON</div><h2>A little structure.<br/>A lot of freedom.</h2><p>Pick the shape that fits your character. We’ll fit joints to the shape of your mesh and blend the skin around its limbs.</p><div className="new-choices rig-choices">{(['humanoid', 'quadruped'] as RigKind[]).map(kind => <button key={kind} className={rigKind === kind ? 'selected' : ''} onClick={() => setRigKind(kind)}><PoseSketch quadruped={kind === 'quadruped'}/><strong>{kind === 'humanoid' ? 'Two legs' : 'Four legs'}</strong><span>{kind === 'humanoid' ? 'Upright human · A or T pose' : 'Animal · head facing +Z'}</span></button>)}</div><label className="rig-finger-option"><input type="checkbox" checked={rigFingers} disabled={rigKind !== 'humanoid' || !!busy} onChange={event => setRigFingers(event.target.checked)}/>Include hands &amp; five fingers per hand</label><div className="modal-tip"><CircleHelp size={19}/><span>Use an upright, neutral pose. Geometry fitting checks the skin binding; inspect a small bend before making larger poses.</span></div><button className="button primary full-width" onClick={() => void prepareRig()} disabled={asset.rigged || !!busy || !hydrated}>{rigKind === 'humanoid' && rigFingers ? 'Detect body & finger joints' : 'Fit my rig'} <ArrowRight size={16}/></button></>}
       {dialog === 'help' && <><span className="modal-icon"><Hand size={25}/></span><div className="eyebrow">YOU ALREADY KNOW ENOUGH</div><h2>Three steps.<br/>Your first animation.</h2><div className="tour-step"><span>01</span><div><strong>Bring a character.</strong><p>Use the practice partner or import an FBX from Mixamo. Existing rigs are preserved.</p></div></div><div className="tour-step"><span>02</span><div><strong>Make a few moments.</strong><p>Move the playhead. Drag a joint into place. Your pose is saved automatically. Use Select to drag across several keyframes, then Delete selected. One Undo restores the group. Drag a diamond to change its timing. Turn on Ripple or hold Shift while dragging to move it and every later pose together, shortening or extending the clip.</p></div></div><div className="tour-step"><span>03</span><div><strong>Let them flow.</strong><p>Choose Generate motion to fill the gaps with AI. Preview with Space, correct with physics, then export an animated GLB.</p></div></div><div className="shortcut-grid"><span><kbd>Space</kbd>Play / pause</span><span><kbd>K</kbd>Save a pose</span><span><kbd>Ctrl D</kbd>Duplicate moment</span><span><kbd>Shift drag</kbd>Ripple timing</span><span><kbd>Alt Shift ← →</kbd>Ripple one frame</span><span><kbd>W / E</kbd>Move / rotate</span><span><kbd>← →</kbd>One frame</span><span><kbd>Ctrl Z</kbd>Undo</span><span><kbd>Ctrl S</kbd>Save to library</span></div><p className="help-honesty">AI in-betweening runs trained human or animal motion models on this computer. The owned models have limited training coverage; inspect difficult contacts and acrobatics. Physics offers articulated-body correction and native Cascadeur AutoPhysics when installed. Curve interpolation and the quick ground pass are lightweight procedural tools. Generated motion stays separate from your editable key poses.</p><button className="button primary full-width" onClick={() => setDialog(null)}>Let’s make something move <ArrowRight size={16}/></button></>}
       {busy && <div className="modal-busy" role="status"><LoaderCircle size={25} className="spin"/><strong>{busy}</strong>{exportRunning && <><progress className="engine-progress" aria-label="Unreal export progress" max="1" value={progress ?? 0}/><button className="button secondary" disabled={exportCancelling} onClick={cancelUnrealExport}>{exportCancelling ? 'Cancelling…' : 'Cancel export'}</button><p className="micro-copy">Preparing the package locally. Your animation stays unchanged.</p></>}</div>}
     </div></dialog>

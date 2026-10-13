@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
 import { solveIK } from '../engine/motion';
+import { isFingerBone } from '../engine/handRig';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
 import type { Theme } from '../theme';
 import './Viewport.css';
@@ -30,6 +31,9 @@ export interface ViewportProps {
   tool: 'move' | 'rotate';
   playing: boolean;
   editable?: boolean;
+  jointPlacement?: boolean;
+  showFingerJoints?: boolean;
+  jointFilter?: readonly string[];
   apiRef?: MutableRefObject<ViewportAPI | null>;
 }
 
@@ -114,7 +118,7 @@ export default function Viewport(props: ViewportProps) {
     const orbit = new OrbitControls(camera, canvas);
     orbit.enableDamping = true;
     orbit.dampingFactor = 0.1;
-    orbit.minDistance = 1.2;
+    orbit.minDistance = props.jointPlacement ? .06 : 1.2;
     orbit.maxDistance = 15;
     orbit.maxPolarAngle = Math.PI / 2 + 0.1;
     orbit.screenSpacePanning = true;
@@ -312,7 +316,18 @@ export default function Viewport(props: ViewportProps) {
       applyPose(asset, drag.original);
       asset.root.updateMatrixWorld(true);
       if (drag.tool === 'move') {
-        if (raycaster.ray.intersectPlane(plane, intersection)) solveIK(asset, drag.index, intersection.add(drag.offset));
+        if (raycaster.ray.intersectPlane(plane, intersection)) {
+          const target = intersection.add(drag.offset);
+          if (latest.current.jointPlacement) {
+            const bone = asset.bones[drag.index];
+            const children = bone.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone).map(child => ({ child, position: child.getWorldPosition(new THREE.Vector3()) }));
+            bone.position.copy(bone.parent ? bone.parent.worldToLocal(target.clone()) : target);
+            asset.root.updateMatrixWorld(true);
+            // Placement moves one landmark; neighboring markers stay on the mesh.
+            for (const { child, position } of children) child.position.copy(bone.worldToLocal(position));
+            asset.root.updateMatrixWorld(true);
+          } else solveIK(asset, drag.index, target);
+        }
       } else {
         const bone = asset.bones[drag.index];
         const parentRotation = bone.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
@@ -388,7 +403,7 @@ export default function Viewport(props: ViewportProps) {
         const distance = camera.position.distanceTo(positions[i]);
         const worldPixel = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / height;
         handles[i].scale.setScalar(worldPixel * (selected ? 25 : 18));
-        handles[i].visible = current.showRig && (!detailedJoints[i] || selected);
+        handles[i].visible = current.showRig && (!current.jointFilter || current.jointFilter.includes(asset.bones[i].name)) && (!detailedJoints[i] || selected || !!current.jointPlacement || !!current.showFingerJoints && isFingerBone(asset.bones[i].name));
         handles[i].renderOrder = selected ? 30 : 20;
       }
       connections.forEach(([parent, child], i) => {
