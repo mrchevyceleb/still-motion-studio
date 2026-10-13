@@ -4,6 +4,11 @@ const { promisify } = require('node:util');
 const path = require('node:path');
 const run = promisify(execFile);
 const REPOSITORY = { provider: 'github', owner: 'mrchevyceleb', repo: 'still-motion-studio', private: true };
+// Electron's net requests never emit 'socket', so electron-updater's 60 s socket
+// timeout is never armed: a dropped connection mid-download waits forever. Watch
+// for silence ourselves, cancel, and retry.
+const STALL_MS = 120 * 1000, STALL_RETRIES = 3;
+class Stalled extends Error {}
 
 // Credentials stay in the main process. Neither the renderer nor release files
 // receive a token; Windows DPAPI protects the optional app-specific credential.
@@ -11,7 +16,7 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
   for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
   const gh = path.join(bundle, 'github', 'gh.exe');
   const credential = path.join(app.getPath('userData'), 'github-update-auth.bin');
-  let updater, active = false, login, timer, startup, loginDone, cleanupPromise, closing = false;
+  let updater, active = false, login, timer, startup, retry, loginDone, cleanupPromise, closing = false, lastActivity = 0, stalls = 0;
   let state = { status: 'idle', currentVersion: app.getVersion(), message: 'Updates download automatically. You choose when to restart.' };
   const publish = patch => { state = { ...state, deviceCode: undefined, ...patch }; send(state); return state; };
   const authRequired = () => publish({ status: 'auth-required', message: 'Connect a GitHub account with access to the private Still repository.' });
@@ -40,8 +45,10 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     } catch { return null; }
   }
   function configure(secret) {
-    updater = new Updater({ ...REPOSITORY, token: secret });
+    const self = updater = new Updater({ ...REPOSITORY, token: secret });
     updater.logger = null; // HTTP failures can contain private headers/URLs.
+    // A cancelled, stalled updater may still emit late events; only the current one reports.
+    const on = (event, handler) => self.on(event, (...args) => { if (updater !== self) return; lastActivity = Date.now(); handler(...args); });
     updater.autoDownload = true;
     updater.autoInstallOnAppQuit = false; // Save and stop the engine first.
     updater.allowPrerelease = false;
@@ -50,12 +57,12 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     // Private assets use authenticated API redirects; a full download avoids
     // differential range requests across expiring signed asset URLs.
     updater.disableDifferentialDownload = true;
-    updater.on('checking-for-update', () => publish({ status: 'checking', message: 'Checking GitHub…' }));
-    updater.on('update-not-available', () => publish({ status: 'current', version: undefined, progress: undefined, message: 'You have the latest release.' }));
-    updater.on('update-available', info => publish({ status: 'downloading', version: info.version, progress: 0, message: 'Downloading the next release in the background…' }));
-    updater.on('download-progress', info => publish({ status: 'downloading', progress: Math.round(info.percent), message: 'Downloading the next release in the background…' }));
-    updater.on('update-downloaded', info => publish({ status: 'ready', version: info.version, progress: 100, message: 'Update ready. Your scene will be saved before restarting.' }));
-    updater.on('error', error => {
+    on('checking-for-update', () => publish({ status: 'checking', message: 'Checking GitHub…' }));
+    on('update-not-available', () => publish({ status: 'current', version: undefined, progress: undefined, message: 'You have the latest release.' }));
+    on('update-available', info => publish({ status: 'downloading', version: info.version, progress: 0, message: 'Downloading the next release in the background…' }));
+    on('download-progress', info => publish({ status: 'downloading', progress: Math.round(info.percent), message: 'Downloading the next release in the background…' }));
+    on('update-downloaded', info => publish({ status: 'ready', version: info.version, progress: 100, message: 'Update ready. Your scene will be saved before restarting.' }));
+    on('error', error => {
       if (/401|403|404/.test(String(error.statusCode || '') + String(error.code || '') + String(error.message || ''))) authRequired();
       else publish({ status: 'error', message: 'The update could not finish. Check your connection and try again. Your installed version is still available.' });
     });
@@ -64,15 +71,46 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     if (closing || active || ['ready', 'installing'].includes(state.status)) return state;
     if (!app.isPackaged) return publish({ status: 'disabled', message: 'Automatic updates are available in the installed Windows app.' });
     active = true;
+    clearTimeout(retry);
+    let watchdog, cancellation;
     try {
       const secret = await token();
       if (!secret) return authRequired();
       configure(secret);
-      const result = await updater.checkForUpdates();
-      // checkForUpdates returns before its automatic download finishes.
-      if (result?.downloadPromise) await result.downloadPromise;
-    } catch { if (!['auth-required', 'error'].includes(state.status)) publish({ status: 'error', message: 'The update check could not finish. Check your connection and try again.' }); }
-    finally { active = false; }
+      const current = updater;
+      lastActivity = Date.now();
+      const work = (async () => {
+        const result = await current.checkForUpdates();
+        cancellation = result?.cancellationToken;
+        // checkForUpdates returns before its automatic download finishes.
+        if (result?.downloadPromise) await result.downloadPromise;
+      })();
+      work.catch(() => {}); // A stalled attempt may reject after we stop waiting.
+      const stalled = new Promise((_, reject) => {
+        watchdog = setInterval(() => {
+          // Hashing a finished download emits nothing; only silence before 100% is a stall.
+          if (state.progress >= 100) lastActivity = Date.now();
+          if (Date.now() - lastActivity > STALL_MS) reject(new Stalled());
+        }, 5000);
+      });
+      await Promise.race([work, stalled]);
+      stalls = 0;
+    } catch (error) {
+      if (error instanceof Stalled) {
+        cancellation?.cancel();
+        updater = null;
+        if (stalls < STALL_RETRIES && !closing) {
+          stalls += 1;
+          publish({ status: 'error', progress: undefined, message: 'The download stopped responding. Retrying automatically…' });
+          retry = setTimeout(() => void check(), 5000);
+          retry.unref();
+        } else {
+          stalls = 0;
+          publish({ status: 'error', progress: undefined, message: 'The download keeps stalling. Check your connection, then choose Check for updates.' });
+        }
+      } else if (!['auth-required', 'error'].includes(state.status)) publish({ status: 'error', message: 'The update check could not finish. Check your connection and try again.' });
+    }
+    finally { clearInterval(watchdog); active = false; }
     return state;
   }
   async function connect() {
@@ -120,7 +158,7 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
   async function apply() {
     if (closing || active || state.status !== 'ready' || !updater) return state;
     active = true;
-    publish({ status: 'installing', message: 'Saving complete. Restarting to install the update…' });
+    publish({ status: 'installing', message: 'Saving complete. Still will close, install for a few minutes in the background, then reopen by itself.' });
     try { await install(updater); }
     catch (error) { publish({ status: 'ready', message: error.message || 'The app could not restart. Your scene is saved; try again.' }); }
     finally { active = false; }
@@ -132,7 +170,7 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     timer = setInterval(() => void check(), 6 * 60 * 60 * 1000);
     startup.unref(); timer.unref();
   }
-  async function stop() { closing = true; clearTimeout(startup); clearInterval(timer); login?.kill(); await loginDone; }
+  async function stop() { closing = true; clearTimeout(startup); clearTimeout(retry); clearInterval(timer); login?.kill(); await loginDone; }
   return { getState: () => state, check, connect, apply, start, stop };
 }
 module.exports = { createUpdates };

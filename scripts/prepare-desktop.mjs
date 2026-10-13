@@ -1,5 +1,5 @@
 /** Assemble and publish a fresh offline Windows runtime. */
-import { cp, mkdir, readFile, writeFile, access, lstat, rename, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile, access, lstat, rename, rm, realpath } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,11 +30,13 @@ await mkdir(bundle); // Never reuse a partially assembled release.
 try {
   if (!await exists(python)) {
     const base = execFileSync('uv', ['python', 'find', '--managed-python', '3.10'], { encoding: 'utf8', windowsHide: true }).trim();
-    await cp(path.dirname(base), cache, { recursive: true, filter: filename => !filename.includes('site-packages') && !filename.endsWith('__pycache__') });
+    // uv's short-version folder is a junction. Copy the real files, never the link,
+    // or uv pip install below writes into the developer's global uv Python.
+    await cp(await realpath(path.dirname(base)), cache, { recursive: true, dereference: true, filter: filename => !filename.includes('site-packages') && !filename.endsWith('__pycache__') });
   }
   execFileSync('uv', ['pip', 'install', '--exact', '--break-system-packages', '--python', python, '-r', path.join(root, 'requirements-desktop.txt'), '--extra-index-url', 'https://download.pytorch.org/whl/cpu', '--index-strategy', 'unsafe-best-match'], { stdio: 'inherit', windowsHide: true });
   execFileSync(python, ['-c', 'import torch,numpy,scipy,safetensors,mujoco; assert torch.version.cuda is None; print("Offline CPU runtime verified")'], { stdio: 'inherit', windowsHide: true });
-  await cp(cache, path.join(bundle, 'python'), { recursive: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
+  await cp(cache, path.join(bundle, 'python'), { recursive: true, dereference: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
 
   for (const name of ['server', 'backend', 'shared', 'dist']) {
     await cp(path.join(root, name), path.join(bundle, 'app', name), { recursive: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
