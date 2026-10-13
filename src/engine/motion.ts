@@ -233,7 +233,9 @@ export function simplifyKeys(keys: PoseKey[], count: number): PoseKey[] {
       const pair = [sorted[start], sorted[end]];
       for (let i = start + 1; i < end; i++) {
         const predicted = createMorphSampler(pair, 'smooth')(sorted[i].time);
-        const morphError = Math.max(0, ...Object.entries(sorted[i].morphs ?? {}).map(([name, value]) => Math.abs(value - (predicted[name] ?? 0))));
+        // A shape missing from a key plays at rest, so a key returning a shape to rest still counts.
+        const names = new Set([sorted[i], ...pair].flatMap(key => Object.keys(key.morphs ?? {})));
+        const morphError = Math.max(0, ...[...names].map(name => Math.abs((sorted[i].morphs?.[name] ?? 0) - (predicted[name] ?? 0))));
         const error = Math.max(morphError, poseError(sorted[i].pose, samplePose(pair, sorted[i].time, 'smooth')));
         if (error > maxError) { maxError = error; best = i; }
       }

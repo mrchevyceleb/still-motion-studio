@@ -1,6 +1,9 @@
 import { mkdir, readFile, writeFile, stat, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { inflateRawSync } from 'node:zlib';
+import { inflateRaw } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const inflate = promisify(inflateRaw);
 
 const MAX_EXTRACT_BYTES = 1024 * 1024 * 1024;
 const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, value) => {
@@ -74,7 +77,7 @@ export async function saveExportPackage(filename, folder, name, signal) {
       const destination = path.join(savedTo, ...entry.parts);
       if (entry.directory) { await mkdir(destination, { recursive: true }); continue; }
       await mkdir(path.dirname(destination), { recursive: true });
-      const data = entry.method === 0 ? entry.data : inflateRawSync(entry.data, { maxOutputLength: Math.max(1, entry.unpacked) });
+      const data = entry.method === 0 ? entry.data : await inflate(entry.data, { maxOutputLength: Math.max(1, entry.unpacked) });
       if (data.length !== entry.unpacked || crc32(data) !== entry.checksum) throw new Error('The Unreal package contains an incomplete or damaged ZIP entry.');
       await writeFile(destination, data, { flag: 'wx' });
     }

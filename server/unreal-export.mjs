@@ -215,7 +215,10 @@ export function createUnrealExportService({ root, dataRoot = root, reserve, rele
 
   async function stop() {
     stopping = true;
-    for (const job of jobs.values()) if (['uploading', 'running'].includes(job.status)) { job.status = 'cancelled'; job.child?.kill(); job.request?.destroy(); }
+    for (const job of jobs.values()) {
+      job.saveController?.abort();
+      if (['uploading', 'running'].includes(job.status)) { job.status = 'cancelled'; job.child?.kill(); job.request?.destroy(); }
+    }
     await Promise.allSettled([...jobs.values()].flatMap(job => [job.upload, job.work, job.saving]));
   }
   void prune().catch(error => console.error('Export cleanup:', error.message));

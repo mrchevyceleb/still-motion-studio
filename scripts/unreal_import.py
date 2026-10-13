@@ -105,8 +105,23 @@ def existing_skeleton(asset_path, bones):
 def existing_conversion(asset_path):
     """The FBX conversion settings an existing SkeletalMesh was imported with, if Unreal kept them."""
     target = unreal.load_asset(asset_path)
-    data = target.get_editor_property("asset_import_data") if isinstance(target, unreal.SkeletalMesh) else None
-    if not isinstance(data, unreal.FbxAssetImportData):
+    meshes = [target] if isinstance(target, unreal.SkeletalMesh) else []
+    if isinstance(target, unreal.Skeleton):
+        # A Skeleton keeps no import settings; the character mesh built on it does.
+        try:
+            registry = unreal.AssetRegistryHelpers.get_asset_registry()
+            found = [a for p in unreal.EditorAssetLibrary.find_package_referencers_for_asset(asset_path, False) for a in registry.get_assets_by_package_name(str(p))]
+            found = found or registry.get_assets_by_class(unreal.TopLevelAssetPath("/Script/Engine", "SkeletalMesh"))
+            skeleton_path = target.get_path_name()
+            for data in found:
+                if str(data.asset_class_path.asset_name) == "SkeletalMesh" and skeleton_path in str(data.get_tag_value("Skeleton")):
+                    mesh = data.get_asset()
+                    if isinstance(mesh, unreal.SkeletalMesh) and mesh.get_editor_property("skeleton") == target:
+                        meshes.append(mesh)
+        except Exception as error:
+            unreal.log_warning("Still could not read the character's import settings: " + str(error))
+    data = next((d for d in (m.get_editor_property("asset_import_data") for m in meshes) if isinstance(d, unreal.FbxAssetImportData)), None)
+    if data is None:
         return None
     return {key: data.get_editor_property(key) for key in
             ("convert_scene", "convert_scene_unit", "force_front_x_axis", "import_uniform_scale", "import_rotation", "import_translation")}

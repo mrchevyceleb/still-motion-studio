@@ -32,6 +32,10 @@ def distance(a, b):
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
+class SkinVertexMismatch(RuntimeError):
+    pass
+
+
 def skin_bounds(mesh, modifier, names, vertex_weights, poses):
     """Evaluate all imported vertices using imported bind poses and weights."""
     dynamic, outcome = unreal.GeometryScript_AssetUtils.copy_mesh_from_skeletal_mesh(
@@ -41,7 +45,7 @@ def skin_bounds(mesh, modifier, names, vertex_weights, poses):
     _, values, gaps = dynamic.get_all_vertex_positions(False)
     positions = [vector(value) for value in values.convert_vector_list_to_array()]
     if gaps or len(positions) != len(vertex_weights):
-        raise RuntimeError("Unreal's mesh geometry and skin-weight vertex indices do not align.")
+        raise SkinVertexMismatch("Unreal's mesh geometry and skin-weight vertex indices do not align.")
     indices = {name: index for index, name in enumerate(names)}
     influences = [[(indices[name], weight) for name, weight in values] for values in vertex_weights]
     rest = [modifier.get_bone_transform(name, True) for name in names]
@@ -173,7 +177,7 @@ def validate_case(case, destination):
     skin_note = None
     try:
         deformed_bounds = skin_bounds(mesh, modifier, names, vertex_weights, poses)
-    except RuntimeError as error:
+    except SkinVertexMismatch as error:
         # An existing game character can split render vertices away from its weights; only Still's own meshes compare bounds.
         if any(sample.get("meshBoundsCm") for sample in expected.get("samples", [])):
             raise
