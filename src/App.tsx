@@ -23,7 +23,7 @@ import AnimationImport from './components/AnimationImport';
 import HandRigSetup from './components/HandRigSetup';
 import { isFingerBone } from './engine/handRig';
 import type { AnatomicalFit } from './engine/anatomicalRig';
-import { assertMatchingRig, composeMotion, editMotion } from './engine/clipEditing';
+import { assertMatchingRig, composeMotion, editMotion, rangeSpeedTime } from './engine/clipEditing';
 import type { ClipEdit, MotionSequence } from './engine/clipEditing';
 import UpdatesDialog, { useUpdates } from './components/UpdatesDialog';
 import { applyPose, autoRigCharacter, createDemoCharacter, createRigPreview, disposeCharacter, estimateAutoRig, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter, swapCharacterLook } from './engine/character';
@@ -473,7 +473,7 @@ export default function App() {
       const warning = 'Clip edited after generation. Review contacts and rerun physics to refresh its measurements.';
       const generation = take && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
       commit({ ...studio, keys: authored.keys, generated: take?.keys, generation, duration: authored.duration, sourceClip: null, settings: { ...studio.settings, interpolation: authored.interpolation } }, 'Clip edited. One Undo restores the entire motion. Review playback and contacts.');
-      setTime(edit.kind === 'trim' ? Math.max(0, Math.min(authored.duration, time - edit.start)) : edit.kind === 'speed' ? time / edit.factor : edit.kind === 'reverse' ? studio.duration - time : Math.min(time, authored.duration));
+      setTime(edit.kind === 'trim' ? Math.max(0, Math.min(authored.duration, time - edit.start)) : edit.kind === 'speed' ? time / edit.factor : edit.kind === 'speed-range' ? rangeSpeedTime(edit, time) : edit.kind === 'reverse' ? studio.duration - time : Math.min(time, authored.duration));
       setPlaying(false); setPoseReference(null);
     } catch (error) { setError(error instanceof Error ? error.message : 'This clip could not be edited.'); }
   };

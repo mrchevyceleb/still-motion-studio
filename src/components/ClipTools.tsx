@@ -20,6 +20,7 @@ export default function ClipTools(props: Props) {
   const finite = (value: string) => value.trim() !== '' && Number.isFinite(Number(value));
   const validRange = finite(start) && finite(end) && Number(start) >= 0 && Number(end) <= props.duration && Number(end) - Number(start) >= 1 / props.fps;
   const validSpeed = finite(speed) && Number(speed) >= .1 && Number(speed) <= 10 && props.duration / Number(speed) >= 1 / props.fps && props.duration / Number(speed) <= 600;
+  const validRangeSpeed = validRange && Number(end) - Number(start) >= 2 / props.fps && finite(speed) && Number(speed) >= .1 && Number(speed) <= 10 && Number(speed) !== 1;
   const validBlend = finite(blend) && Number(blend) >= 1 / props.fps && Number(blend) <= props.duration / 2;
   const validRepeat = validBlend && finite(count) && Number.isInteger(Number(count)) && Number(count) >= 2 && Number(count) <= 20 && props.duration * Number(count) <= 600;
   const chosen = props.clips[Number(clip)];
@@ -38,6 +39,8 @@ export default function ClipTools(props: Props) {
         <label>Speed · ×<input aria-label="Clip speed" type="number" min="0.1" max="10" step="0.1" value={speed} onChange={e => setSpeed(e.target.value)}/></label>
         <button className="button" disabled={!validSpeed || Number(speed) === 1} onClick={() => { props.onEdit({ kind: 'speed', factor: Number(speed) }); setSpeed('1'); }}>Apply speed</button>
       </div>
+      <button className="button" disabled={!validRangeSpeed} onClick={() => { props.onEdit({ kind: 'speed-range', start: Number(start), end: Number(end), factor: Number(speed) }); setSpeed('1'); }}>Speed up range only</button>
+      <p>Speed up range only changes the speed between Start and End, easing in and out, so the motion before and after keeps its timing. Above 1 is faster.</p>
       <div className="clip-tool-actions"><button className="button" onClick={() => props.onEdit({ kind: 'reverse' })}>Reverse motion</button><button className="button" onClick={() => props.onEdit({ kind: 'in-place' })}>Make in place</button></div>
       <p>In place locks hip travel on X/Z. Height changes and turns remain.</p>
       <div className="clip-tool-fields">

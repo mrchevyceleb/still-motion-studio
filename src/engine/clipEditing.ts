@@ -7,6 +7,7 @@ import type { CharacterAsset, InterpolationMode, Pose, PoseKey } from '../types'
 
 export interface MotionSequence { keys: PoseKey[]; duration: number; interpolation: InterpolationMode }
 export type ClipEdit = { kind: 'trim'; start: number; end: number } | { kind: 'speed'; factor: number }
+  | { kind: 'speed-range'; start: number; end: number; factor: number }
   | { kind: 'reverse' } | { kind: 'in-place' } | { kind: 'loop'; blend: number } | { kind: 'repeat'; count: number; blend: number };
 const key = (time: number, pose: Pose, shapes: Pick<PoseKey, 'morphs'> = {}): PoseKey => ({ id: crypto.randomUUID(), time, pose, ...shapes });
 
@@ -139,6 +140,20 @@ function loopSequence(asset: CharacterAsset, sequence: MotionSequence, blend: nu
   return { keys, duration: sequence.duration, interpolation: 'linear' };
 }
 
+/** Where a moment lands after a range speed edit. The speed eases in and out over the range's edges
+ *  (a quarter of the range, at most 0.12 s), so motion entering and leaving it keeps its own pace. */
+export function rangeSpeedTime(edit: { start: number; end: number; factor: number }, time: number): number {
+  const { start: a, end: b, factor } = edit;
+  const ramp = Math.min(.12, (b - a) / 4), k = 1 / factor - 1;
+  const area = (x: number) => x * x * x - x * x * x * x / 2;   // integral of smoothstep from 0 to x
+  const rampIn = a + ramp + k * ramp / 2, middle = rampIn + (b - a - 2 * ramp) / factor, out = middle + ramp * (1 + k / 2);
+  if (time <= a) return time;
+  if (time <= a + ramp) { const x = (time - a) / ramp; return a + ramp * (x + k * area(x)); }
+  if (time <= b - ramp) return rampIn + (time - a - ramp) / factor;
+  if (time <= b) { const z = (time - b + ramp) / ramp; return middle + ramp * (z + k * (z - area(z))); }
+  return out + time - b;
+}
+
 /** Whole-clip edits return new data; callers retain a single Undo snapshot. */
 export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit: ClipEdit, fps: number): MotionSequence {
   validDuration(sequence.duration, fps);
@@ -155,6 +170,13 @@ export function editMotion(asset: CharacterAsset, sequence: MotionSequence, edit
     if (!Number.isFinite(edit.factor) || edit.factor < .1 || edit.factor > 10) throw new Error('Choose a speed from 0.1× to 10×.');
     const duration = sequence.duration / edit.factor; validDuration(duration, fps);
     return { ...sequence, duration, keys: sequence.keys.map(k => ({ ...k, time: k.time / edit.factor })) };
+  }
+  if (edit.kind === 'speed-range') {
+    if (!Number.isFinite(edit.start) || !Number.isFinite(edit.end) || edit.start < 0 || edit.end > sequence.duration || edit.end - edit.start < 2 / fps) throw new Error('Choose a range of at least two frames inside the clip.');
+    if (!Number.isFinite(edit.factor) || edit.factor < .1 || edit.factor > 10) throw new Error('Choose a speed from 0.1× to 10×.');
+    const duration = rangeSpeedTime(edit, sequence.duration); validDuration(duration, fps);
+    // Keys keep their poses and only move in time, so the motion before and after the range is untouched.
+    return { ...sequence, duration, keys: sequence.keys.map(k => ({ ...k, time: rangeSpeedTime(edit, k.time) })) };
   }
   if (edit.kind === 'reverse') {
     // Bake holds as well: reversing only key times would reverse the wrong held pose.
