@@ -28,6 +28,11 @@
 .clip-length-tools input { width: 76px; padding: 7px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 5px; }
 .clip-length-tools .button { padding: 7px 10px; font-size: 10px; }
 .clip-length-tools > span { font-size: 10px; color: var(--muted); }
+.timeline-edit-tools kbd, .editor-footer kbd { margin-left: 4px; font-size: 9px; opacity: .75; }
+.keyboard-shortcuts { margin: 20px 0; }
+.keyboard-shortcuts > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.keyboard-shortcuts dd { margin: 0; flex-shrink: 0; }
+.keyboard-shortcuts kbd { padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); font-size: 11px; }
 @media (max-width: 720px) {
   .duplicate-pose-button { padding: 7px; }
   .duplicate-pose-button span { display: none; }
