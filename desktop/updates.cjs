@@ -12,11 +12,11 @@ class Stalled extends Error {}
 
 // Credentials stay in the main process. Neither the renderer nor release files
 // receive a token; Windows DPAPI protects the optional app-specific credential.
-function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
+function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Updater }) {
   for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
-  const gh = path.join(bundle, 'github', 'gh.exe');
+  const gh = path.join(runtime, 'github', 'gh.exe');
   const credential = path.join(app.getPath('userData'), 'github-update-auth.bin');
-  let updater, active = false, login, timer, startup, retry, loginDone, cleanupPromise, closing = false, lastActivity = 0, stalls = 0;
+  let updater, active = false, login, timer, startup, retry, loginDone, cleanupPromise, closing = false, lastActivity = 0;
   let state = { status: 'idle', currentVersion: app.getVersion(), message: 'Updates download automatically. You choose when to restart.' };
   const publish = patch => { state = { ...state, deviceCode: undefined, ...patch }; send(state); return state; };
   const authRequired = () => publish({ status: 'auth-required', message: 'Connect a GitHub account with access to the private Still repository.' });
@@ -49,7 +49,9 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     updater.logger = null; // HTTP failures can contain private headers/URLs.
     // A cancelled, stalled updater may still emit late events; only the current one reports.
     const on = (event, handler) => self.on(event, (...args) => { if (updater !== self) return; lastActivity = Date.now(); handler(...args); });
-    updater.autoDownload = true;
+    // We start the download ourselves with its own cancellation token, so a stalled
+    // download can always be cancelled and an abandoned check can never start one.
+    updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false; // Save and stop the engine first.
     updater.allowPrerelease = false;
     updater.allowDowngrade = false;
@@ -57,7 +59,7 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
     // Private assets use authenticated API redirects; a full download avoids
     // differential range requests across expiring signed asset URLs.
     updater.disableDifferentialDownload = true;
-    on('checking-for-update', () => publish({ status: 'checking', message: 'Checking GitHub…' }));
+    on('checking-for-update', () => publish({ status: 'checking', progress: undefined, message: 'Checking GitHub…' }));
     on('update-not-available', () => publish({ status: 'current', version: undefined, progress: undefined, message: 'You have the latest release.' }));
     on('update-available', info => publish({ status: 'downloading', version: info.version, progress: 0, message: 'Downloading the next release in the background…' }));
     on('download-progress', info => publish({ status: 'downloading', progress: Math.round(info.percent), message: 'Downloading the next release in the background…' }));
@@ -67,7 +69,9 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
       else publish({ status: 'error', message: 'The update could not finish. Check your connection and try again. Your installed version is still available.' });
     });
   }
-  async function check() {
+  // A manual or scheduled check starts a fresh retry chain; only stall retries continue one.
+  function check() { clearTimeout(retry); return attempt(0); }
+  async function attempt(stalls) {
     if (closing || active || ['ready', 'installing'].includes(state.status)) return state;
     if (!app.isPackaged) return publish({ status: 'disabled', message: 'Automatic updates are available in the installed Windows app.' });
     active = true;
@@ -81,34 +85,28 @@ function createUpdates({ app, safeStorage, bundle, send, install, Updater }) {
       lastActivity = Date.now();
       const work = (async () => {
         const result = await current.checkForUpdates();
-        cancellation = result?.cancellationToken;
-        // checkForUpdates returns before its automatic download finishes.
-        if (result?.downloadPromise) await result.downloadPromise;
+        // A check abandoned after a stall may still answer; it must not start a download.
+        if (updater !== current || !result?.isUpdateAvailable) return;
+        cancellation = result.cancellationToken;
+        await current.downloadUpdate(cancellation);
       })();
       work.catch(() => {}); // A stalled attempt may reject after we stop waiting.
+      // Any silence, while checking or downloading, counts. Progress events keep it alive
+      // and the download resolves on update-downloaded, so no completed step is mistaken.
       const stalled = new Promise((_, reject) => {
-        watchdog = setInterval(() => {
-          // Hashing a finished download emits nothing; only silence before 100% is a stall.
-          if (state.progress >= 100) lastActivity = Date.now();
-          if (Date.now() - lastActivity > STALL_MS) reject(new Stalled());
-        }, 5000);
+        watchdog = setInterval(() => { if (Date.now() - lastActivity > STALL_MS) reject(new Stalled()); }, 5000);
       });
       await Promise.race([work, stalled]);
-      stalls = 0;
     } catch (error) {
       if (error instanceof Stalled) {
         cancellation?.cancel();
         updater = null;
         if (stalls < STALL_RETRIES && !closing) {
-          stalls += 1;
           publish({ status: 'error', progress: undefined, message: 'The download stopped responding. Retrying automatically…' });
-          retry = setTimeout(() => void check(), 5000);
+          retry = setTimeout(() => void attempt(stalls + 1), 5000);
           retry.unref();
-        } else {
-          stalls = 0;
-          publish({ status: 'error', progress: undefined, message: 'The download keeps stalling. Check your connection, then choose Check for updates.' });
-        }
-      } else if (!['auth-required', 'error'].includes(state.status)) publish({ status: 'error', message: 'The update check could not finish. Check your connection and try again.' });
+        } else publish({ status: 'error', progress: undefined, message: 'The download keeps stalling. Check your connection, then choose Check for updates.' });
+      } else if (!['auth-required', 'error'].includes(state.status)) publish({ status: 'error', progress: undefined, message: 'The update check could not finish. Check your connection and try again.' });
     }
     finally { clearInterval(watchdog); active = false; }
     return state;
