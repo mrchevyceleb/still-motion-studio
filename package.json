@@ -1,7 +1,7 @@
 {
   "name": "still-motion-studio",
   "private": true,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -12,7 +12,7 @@
     "desktop": "electron .",
     "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
     "desktop:pack": "npm run desktop:prepare && electron-builder --dir",
-    "desktop:dist": "npm run desktop:prepare && electron-builder --win nsis --publish never",
+    "desktop:dist": "npm run desktop:prepare && node scripts/build-desktop.mjs",
     "desktop:release": "npm run desktop:dist && node scripts/release-desktop.mjs"
   },
   "dependencies": {

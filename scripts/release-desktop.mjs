@@ -24,20 +24,28 @@ const notes = path.resolve(root, process.argv[2] || `docs/releases/v${version}.m
 if (!(await readFile(notes, 'utf8')).trim()) throw new Error('Release notes are empty.');
 const directory = path.join(root, '.local', 'installers');
 const installer = `Still-Motion-Studio-Setup-${version}.exe`;
+const updateInstaller = `Still-Motion-Studio-Update-${version}.exe`;
 const metadata = yaml.load(await readFile(path.join(directory, 'latest.yml'), 'utf8'));
 const packedVersion = JSON.parse(await readFile(path.join(directory, 'win-unpacked/resources/runtime/app/package.json'), 'utf8')).version;
-const info = metadata?.files?.find(file => file.url === installer);
-if (metadata?.version !== version || packedVersion !== version || metadata.path !== installer || !info) throw new Error('Build the current version before publishing.');
-const bytes = await readFile(path.join(directory, installer));
-const sha512 = createHash('sha512').update(bytes).digest('base64');
-if (info.sha512 !== sha512 || metadata.sha512 !== sha512 || info.size !== bytes.length) throw new Error('Installer hash or size differs from latest.yml.');
-await stat(path.join(directory, installer + '.blockmap'));
-const assets = [installer, installer + '.blockmap', 'latest.yml'];
+const { id: runtimeId } = JSON.parse(await readFile(path.join(directory, 'win-unpacked/resources/runtime/runtime.json'), 'utf8'));
+// The full installer must stay first so releases older than the runtime split never take the app-only one.
+if (metadata?.version !== version || packedVersion !== version || metadata.path !== installer || metadata.runtimeId !== runtimeId
+  || metadata.files?.map(file => file.url).join() !== [installer, updateInstaller].join()) throw new Error('Build the current version with npm run desktop:dist before publishing.');
+let sha512;
+for (const info of metadata.files) {
+  const bytes = await readFile(path.join(directory, info.url));
+  const digest = createHash('sha512').update(bytes).digest('base64');
+  if (info.sha512 !== digest || info.size !== bytes.length) throw new Error(`Installer hash or size differs from latest.yml: ${info.url}`);
+  if (info.url === installer) sha512 = digest;
+  await stat(path.join(directory, info.url + '.blockmap'));
+}
+if (metadata.sha512 !== sha512) throw new Error('Installer hash differs from latest.yml.');
+const assets = [installer, installer + '.blockmap', updateInstaller, updateInstaller + '.blockmap', 'latest.yml'];
 const sums = [];
 for (const file of assets) sums.push(`${createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex')}  ${file}`);
 await writeFile(path.join(directory, 'SHA256SUMS.txt'), sums.join('\n') + '\n');
 assets.push('SHA256SUMS.txt');
-await writeFile(path.join(directory, 'release-source.json'), JSON.stringify({ repository: repo, version, commit, installer, sha512 }, null, 2) + '\n');
+await writeFile(path.join(directory, 'release-source.json'), JSON.stringify({ repository: repo, version, commit, installer, sha512, updateInstaller, runtimeId }, null, 2) + '\n');
 assets.push('release-source.json');
 let previous;
 try { previous = api([`repos/${repo}/releases/latest`]); }

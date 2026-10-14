@@ -44,6 +44,13 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
       return (await run(gh, ['auth', 'token', '--hostname', 'github.com'], { windowsHide: true, timeout: 15000, maxBuffer: 16384 })).stdout.trim();
     } catch { return null; }
   }
+  // Releases list the full installer first, so builds that predate this check always
+  // get the runtime. When the release ships the runtime this install already has,
+  // download the small app-only installer instead.
+  function preferAppOnly(info) {
+    const index = info?.files?.findIndex(file => /^Still-Motion-Studio-Update-[^/]+\.exe$/.test(file.url)) ?? -1;
+    if (info.runtimeId === runtimeId && index > 0) info.files.unshift(...info.files.splice(index, 1));
+  }
   function configure(secret) {
     const self = updater = new Updater({ ...REPOSITORY, token: secret });
     updater.logger = null; // HTTP failures can contain private headers/URLs.
@@ -87,6 +94,7 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
         const result = await current.checkForUpdates();
         // A check abandoned after a stall may still answer; it must not start a download.
         if (updater !== current || !result?.isUpdateAvailable) return;
+        preferAppOnly(result.updateInfo);
         cancellation = result.cancellationToken;
         await current.downloadUpdate(cancellation);
       })();
