@@ -1,6 +1,6 @@
 # Windows desktop
 
-Download **Still-Motion-Studio-Setup-0.2.16.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+Download **Still-Motion-Studio-Setup-0.2.19.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
 
 The runtime (Python, Blender, models and the GitHub CLI) lives in `%LOCALAPPDATA%\Still Motion Studio\runtime\<id>`, outside the install folder. The first launch after a full install moves it there. Each release ships two installers: **Still-Motion-Studio-Setup** (full, for new installs and for releases that change the runtime) and **Still-Motion-Studio-Update** (app only). Automatic updates take the app-only installer when the runtime id matches, so they finish in under a minute. Uninstalling removes the runtime folder; updating never touches it.
 
