@@ -47,9 +47,11 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
   // Releases list the full installer first, so builds that predate this check always
   // get the runtime. When the release ships the runtime this install already has,
   // download the small app-only installer instead.
+  let appOnly = false;
   function preferAppOnly(info) {
     const index = info?.files?.findIndex(file => /^Still-Motion-Studio-Update-[^/]+\.exe$/.test(file.url)) ?? -1;
-    if (info.runtimeId === runtimeId && index > 0) info.files.unshift(...info.files.splice(index, 1));
+    appOnly = info?.runtimeId === runtimeId && index >= 0;
+    if (appOnly && index > 0) info.files.unshift(...info.files.splice(index, 1));
   }
   function configure(secret) {
     const self = updater = new Updater({ ...REPOSITORY, token: secret });
@@ -164,7 +166,7 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
   async function apply() {
     if (closing || active || state.status !== 'ready' || !updater) return state;
     active = true;
-    publish({ status: 'installing', message: 'Saving complete. Still will close, install for a few minutes in the background, then reopen by itself.' });
+    publish({ status: 'installing', message: appOnly ? 'Saving complete. Still will close, install the update and reopen by itself in under a minute.' : 'Saving complete. Still will close, install the update and its runtime (a few minutes, this time only), then reopen by itself.' });
     try { await install(updater); }
     catch (error) { publish({ status: 'ready', message: error.message || 'The app could not restart. Your scene is saved; try again.' }); }
     finally { active = false; }
