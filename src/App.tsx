@@ -140,6 +140,8 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [fitOpen, setFitOpen] = useState(false);
   const [lookRevision, setLookRevision] = useState(0);
+  // Fit a part previews on the live meshes; any dialog (Export above all) closes it, dropping an unapplied preview.
+  useEffect(() => { if (dialog) setFitOpen(false); }, [dialog]);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [agentConnection, setAgentConnection] = useState<AgentConnection>({ connected: false });
   const [agentActivity, setAgentActivity] = useState<{ method: string; status: 'running' | 'done' | 'error' | 'cancelled'; message?: string } | null>(null);

@@ -32,10 +32,14 @@ const fitMatrix = (fit: PartFit, centre: THREE.Vector3) => new THREE.Matrix4()
  * keeps riding its bones in every pose, the saved scene and every export.
  */
 export function partFitter(asset: CharacterAsset, mesh: THREE.Mesh) {
+  // A geometry shared with another mesh gets its own copy, so only this part moves.
+  let shared = false;
+  asset.root.traverse(node => { if (node !== mesh && node instanceof THREE.Mesh && node.geometry === mesh.geometry) shared = true; });
+  if (shared) mesh.geometry = mesh.geometry.clone();
   const geometry = mesh.geometry;
   const count = geometry.getAttribute('position').count;
   // Positions move as points; normals by the inverse transpose; tangents and relative morphs as directions.
-  type Kind = 'point' | 'normal' | 'vector';
+  type Kind = 'point' | 'normal' | 'vector' | 'normalDelta';
   const channels: { attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute; kind: Kind; saved: Float64Array }[] = [];
   const track = (attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined, kind: Kind) => {
     if (!attribute || attribute.count !== count || attribute.itemSize < 3) return;
@@ -47,7 +51,8 @@ export function partFitter(asset: CharacterAsset, mesh: THREE.Mesh) {
   track(geometry.getAttribute('normal'), 'normal');
   track(geometry.getAttribute('tangent'), 'vector');
   for (const attribute of geometry.morphAttributes.position ?? []) track(attribute, geometry.morphTargetsRelative ? 'vector' : 'point');
-  for (const attribute of geometry.morphAttributes.normal ?? []) track(attribute, 'normal');
+  for (const attribute of geometry.morphAttributes.normal ?? []) track(attribute, geometry.morphTargetsRelative ? 'normalDelta' : 'normal');
+  const baseNormals = channels.find(channel => channel.attribute === geometry.getAttribute('normal'))?.saved;
 
   // Per vertex: geometry space -> character space in the rest pose, exactly as the skinning shader does it.
   const toRest = new Float64Array(count * 16);
@@ -57,7 +62,8 @@ export function partFitter(asset: CharacterAsset, mesh: THREE.Mesh) {
     const toRoot = asset.root.matrixWorld.clone().invert();
     if (mesh instanceof THREE.SkinnedMesh) {
       const { bones, boneInverses } = mesh.skeleton;
-      const boneMatrices = bones.map((bone, index) => toRoot.clone().multiply(bone.matrixWorld).multiply(boneInverses[index]).multiply(mesh.bindMatrix).elements);
+      const skinToRoot = toRoot.clone().multiply(mesh.matrixWorld).multiply(mesh.bindMatrixInverse);
+      const boneMatrices = bones.map((bone, index) => skinToRoot.clone().multiply(bone.matrixWorld).multiply(boneInverses[index]).multiply(mesh.bindMatrix).elements);
       const indices = geometry.getAttribute('skinIndex'), weights = geometry.getAttribute('skinWeight');
       for (let v = 0; v < count; v++) {
         for (let k = 0; k < 4; k++) {
@@ -74,7 +80,7 @@ export function partFitter(asset: CharacterAsset, mesh: THREE.Mesh) {
   } finally { applyPose(asset, pose); }
 
   const positions = channels[0].saved;
-  const point = new THREE.Vector3(), forward = new THREE.Matrix4(), inverse = new THREE.Matrix4(), local = new THREE.Matrix4(), linear = new THREE.Matrix3(), normals = new THREE.Matrix3();
+  const point = new THREE.Vector3(), base = new THREE.Vector3(), forward = new THREE.Matrix4(), inverse = new THREE.Matrix4(), local = new THREE.Matrix4(), linear = new THREE.Matrix3(), normals = new THREE.Matrix3();
   const bounds = new THREE.Box3();
   // A vertex with no skin weights renders nowhere; it neither sets the centre nor moves.
   const bound = new Uint8Array(count);
@@ -97,7 +103,10 @@ export function partFitter(asset: CharacterAsset, mesh: THREE.Mesh) {
         if (moved) {
           if (kind === 'point') point.applyMatrix4(local);
           else if (kind === 'vector') point.applyMatrix3(linear);
-          else point.applyMatrix3(normals).normalize();
+          else if (kind === 'normal') point.applyMatrix3(normals).normalize();
+          // A relative normal target is a delta: turn the morphed normal, then subtract the turned base.
+          else if (!baseNormals) point.applyMatrix3(normals);
+          else { base.fromArray(baseNormals, v * 3); point.add(base).applyMatrix3(normals).normalize().sub(base.applyMatrix3(normals).normalize()); }
         }
         attribute.setXYZ(v, point.x, point.y, point.z);
       }
