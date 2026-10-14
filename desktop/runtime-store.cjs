@@ -15,19 +15,24 @@ async function healthy(dir, id) {
   return marker === id && await exists(path.join(dir, 'python', 'python.exe')) && await exists(path.join(dir, 'blender', 'blender.exe'));
 }
 
-// Antivirus can hold a freshly installed file for a moment; another drive needs a copy.
-async function move(from, to) {
+// Antivirus can hold a freshly installed file for a moment, so renames retry briefly.
+async function settle(from, to) {
   for (let attempt = 0; ; attempt++) {
     try { return await rename(from, to); }
     catch (error) {
-      if (error.code === 'EXDEV' || attempt >= 20) break;
+      if (error.code === 'EXDEV' || attempt >= 20) throw error;
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
+}
+
+async function move(from, to) {
+  try { return await settle(from, to); } catch {}
+  // Another drive: copy once, then retire the source with one rename. It is never deleted in
+  // place, so a half-deleted leftover can't be taken for a fresh full install.
   await cp(from, to, { recursive: true, filter: source => source !== path.join(from, '.complete') });
   await writeFile(path.join(to, '.complete'), await readFile(path.join(from, '.complete'), 'utf8'));
-  // Retire the source at once, so a half-deleted leftover is never taken for a fresh full install.
-  await rename(from, `${from}-old`).catch(() => rm(from, { recursive: true, force: true }));
+  await settle(from, `${from}-old`).catch(() => {});
 }
 
 async function resolveRuntime(bundle, store) {
@@ -55,10 +60,10 @@ async function resolveRuntime(bundle, store) {
     if (await exists(target)) await rename(target, path.join(store, `trash-${randomUUID()}`));
     await rename(incoming, target);
   }
-  // Best effort: a leftover copy in the install folder slows the next uninstall,
+  // Best effort: a retired copy in the install folder slows the next uninstall,
   // and runtimes from older releases only waste disk.
   void (async () => {
-    for (const leftover of [shipped, `${shipped}-old`]) await rm(leftover, { recursive: true, force: true });
+    await rm(`${shipped}-old`, { recursive: true, force: true });
     for (const name of await readdir(store)) {
       if (name !== id && (RUNTIME_ID.test(name) || name.startsWith('incoming-') || name.startsWith('trash-'))) await rm(path.join(store, name), { recursive: true, force: true });
     }
