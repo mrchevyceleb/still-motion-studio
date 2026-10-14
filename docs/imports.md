@@ -18,6 +18,17 @@ An unrigged mesh can receive a humanoid or quadruped template and four normalize
 
 This is a geometric starting point, not trained AI auto-rigging. Humanoids should be upright and in an A-pose or T-pose; quadrupeds should be standing, Y-up, and facing +Z. Unusual proportions, clothing, closed poses, tails, and intersecting limbs can need better fitting or hand-authored weights. Existing rigs bypass this operation entirely; the practice humanoid keeps its original body-only skeleton so older saved scenes remain compatible.
 
+## Apply a separate Mixamo animation
+
+1. Use **Import a character** to load your rigged character. Download its initial Mixamo FBX with **With Skin** if you need the mesh too.
+2. In Mixamo, choose the animation for the same character and download an FBX. **Without Skin** includes the animated skeleton; **With Skin** also works.
+3. Choose **Import animation** under **Your character**, then select that animation file. Select its clip if it has several.
+4. Choose **Apply to character** to replace the current motion, or **Append after current motion** to add it to the end. Set the transition duration for an append; zero makes a cut.
+
+The existing character and skin are retained; only editable motion keys change. One Undo restores the previous take. Saved scenes, GLB and Unreal exports use the imported or combined motion. Review contacts after blending.
+
+This is compatible-skeleton animation transfer, not automatic retargeting. Matching joints may have different Mixamo namespaces or file order, but the animated joints, ancestry, bind transforms and fixed parent coordinate frames must agree. Missing or ambiguous joints and incompatible rigs are rejected without changing the scene. For a differently rigged character, retarget the animation to its skeleton before importing. **Import a character** and a file dropped onto the workspace open a new scene; they do not apply motion to the current character.
+
 ## Verified paths
 
 - Humanoid and quadruped demo construction, joint edits, and project round trips.

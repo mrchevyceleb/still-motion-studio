@@ -7,6 +7,7 @@ interface Props {
   duration: number; fps: number; clips: { name: string; duration: number }[]; disabled: boolean;
   onEdit: (edit: ClipEdit) => void; onAppend: (index: number, blend: number) => void;
   onAppendProject: (file: File, blend: number) => void; onPause: () => void;
+  onImportAnimation: () => void;
 }
 
 export default function ClipTools(props: Props) {
@@ -46,11 +47,12 @@ export default function ClipTools(props: Props) {
       <div className="clip-tool-actions"><button className="button" disabled={!validBlend} onClick={() => props.onEdit({ kind: 'loop', blend: Number(blend) })}>Close loop seam</button><button className="button" disabled={!validRepeat} onClick={() => props.onEdit({ kind: 'repeat', count: Number(count), blend: Number(blend) })}>Repeat motion</button></div>
       <p>Loop blend eases the end pose into the next cycle. Repeats keep travel and heading. Review foot contacts after blending.</p>
       <div className="clip-compose">
-        <strong>Blend another take</strong>
+        <strong>Add another animation</strong>
+        <button className="button" onClick={props.onImportAnimation}>Append animation FBX or GLB</button>
         {props.clips.length > 0 && <><label>Character clip<select aria-label="Clip to append" value={clip} onChange={e => setClip(e.target.value)}>{props.clips.map((item, index) => <option key={index} value={index}>{item.name || `Animation ${index + 1}`}</option>)}</select></label><button className="button" disabled={!appendBlend} onClick={() => props.onAppend(Number(clip), Number(blend))}>Append selected clip</button></>}
         <input ref={fileInput} type="file" accept=".still" hidden onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) props.onAppendProject(file, Number(blend)); }}/>
         <button className="button" disabled={!finite(blend) || Number(blend) < 0 || Number(blend) > props.duration / 2} onClick={() => fileInput.current?.click()}>Append saved .still take</button>
-        <p>Uses the motion saved from this character. Position and heading align at the blend; a different rig needs retargeting first.</p>
+        <p>Append adds motion after this take and aligns position and heading. Animation files must match this character's rig. Saved .still takes must come from this character.</p>
       </div>
     </fieldset>
   </details>;
