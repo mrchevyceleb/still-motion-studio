@@ -32,6 +32,21 @@
 .timeline-view-tools .button { padding: 4px 9px; }
 .timeline-scroll { overflow-x: auto; margin: 10px 2px 0; padding: 0 6px 7px; scrollbar-color: var(--muted) var(--paper); }
 .timeline-scroll .scrubber { margin: 0; min-width: 100%; }
+.compact-timeline { margin-top: 12px; padding: 10px 14px 0; }
+.compact-timeline .timeline-heading { margin-bottom: 8px; }
+.timeline-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
+.timeline-toolbar .keyframe-clipboard, .timeline-toolbar .timeline-edit-tools, .timeline-toolbar .timeline-view-tools { margin: 0; gap: 6px; }
+.timeline-toolbar .button { padding: 5px 8px; font-size: 10px; }
+.timeline-toolbar .editing-hint { display: none; }
+.timeline-toolbar .timeline-view-tools { margin-left: auto; }
+.timeline-details { max-height: min(34vh, 320px); overflow-y: auto; padding: 8px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.timeline-details .clip-length-tools { padding: 0 0 8px; }
+.timeline-details .keyframe-properties { margin-bottom: 0; }
+.compact-timeline .pose-cards { height: 56px; }
+.compact-timeline .pose-card { padding: 4px 6px; }
+.compact-timeline .pose-card .pose-sketch { height: 42px; width: 42px; top: 3px; }
+.compact-timeline .transport { height: 38px; }
+.compact-timeline .timeline-scroll { margin-top: 6px; padding-bottom: 4px; }
 .timeline-edit-tools kbd, .editor-footer kbd { margin-left: 4px; font-size: 9px; opacity: .75; }
 .keyboard-shortcuts { margin: 20px 0; }
 .keyboard-shortcuts > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
