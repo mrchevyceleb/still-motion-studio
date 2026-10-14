@@ -1,5 +1,5 @@
 /** Build the full installer (with the runtime) and the app-only update installer, then one feed. */
-import { readFile, writeFile, copyFile, rm } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, rm, access } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,13 @@ const config = JSON.parse(await readFile(path.join(root, 'electron-builder.json'
 const { id: runtimeId } = JSON.parse(await readFile(path.join(root, '.local/desktop-bundle/runtime.json'), 'utf8'));
 const full = path.join(root, '.local/installers');
 const update = path.join(root, '.local/installers-update');
-const win = (output, overrides = {}) => build({ projectDir: root, win: ['nsis'], publish: 'never', config: { ...config, directories: { ...config.directories, output }, ...overrides } });
+// electron-builder unions a config object's arrays with electron-builder.json (so a filtered
+// extraResources would sit beside the unfiltered one). A config file path is used on its own.
+async function win(output, overrides = {}) {
+  const file = path.join(root, '.local', `builder-${path.basename(output)}.json`);
+  await writeFile(file, JSON.stringify({ ...config, directories: { ...config.directories, output }, ...overrides }));
+  return build({ projectDir: root, win: ['nsis'], publish: 'never', config: file });
+}
 
 // The update installer refuses to run unless this exact runtime is already installed,
 // so running it by hand on an older or fresh PC can't leave Still without its runtime.
@@ -49,6 +55,8 @@ await rm(update, { recursive: true, force: true });
 await win(full);
 // Same app, without deps/: installs in seconds because the runtime already sits outside the install folder.
 await win(update, { artifactName: 'Still-Motion-Studio-Update-${version}.${ext}', nsis: { ...config.nsis, include: guard }, extraResources: [{ from: '.local/desktop-bundle', to: 'runtime', filter: ['**/*', '!deps', '!deps/**/*'] }] });
+
+if (await access(path.join(update, 'win-unpacked/resources/runtime/deps')).then(() => true, () => false)) throw new Error('The update installer must not carry the runtime.');
 
 const feed = yaml.load(await readFile(path.join(full, 'latest.yml'), 'utf8'));
 const slim = yaml.load(await readFile(path.join(update, 'latest.yml'), 'utf8'));
