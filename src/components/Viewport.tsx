@@ -31,6 +31,7 @@ export interface ViewportProps {
   cameraView: 'perspective' | 'front' | 'side';
   tool: 'move' | 'rotate';
   moveModel?: boolean;
+  zoomToCursor?: boolean;
   playing: boolean;
   editable?: boolean;
   jointPlacement?: boolean;
@@ -44,6 +45,7 @@ type Runtime = ViewportAPI & {
   frame: (view: ViewportProps['cameraView']) => void;
   ghosts: (poses: Pose[], visible: boolean) => void;
   refresh: () => void;
+  zoomToCursor: (enabled: boolean) => void;
 };
 
 function jointTexture(selected: boolean): THREE.CanvasTexture {
@@ -118,6 +120,7 @@ export default function Viewport(props: ViewportProps) {
 
     const camera = new THREE.PerspectiveCamera(34, 1, 0.02, 120);
     const orbit = new OrbitControls(camera, canvas);
+    orbit.zoomToCursor = props.zoomToCursor ?? true;
     orbit.enableDamping = true;
     orbit.dampingFactor = 0.1;
     orbit.minDistance = props.jointPlacement ? .06 : 1.2;
@@ -382,12 +385,29 @@ export default function Viewport(props: ViewportProps) {
     function keyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') cancelDrag();
     }
+    let forwardingWheel = false;
+    function wheel(event: WheelEvent) {
+      if (!latest.current.comparisonPose || !orbit.zoomToCursor || forwardingWheel) return;
+      const rect = canvas.getBoundingClientRect(), paneWidth = rect.width / 2;
+      if (paneWidth <= 0) return;
+      // Both panes share a camera. Map the hovered half onto the control's full canvas.
+      const x = event.clientX - rect.left;
+      const forwarded = new WheelEvent('wheel', {
+        clientX: rect.left + (x >= paneWidth ? x - paneWidth : x) * 2, clientY: event.clientY,
+        deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ, deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey, cancelable: true,
+      });
+      event.preventDefault(); event.stopImmediatePropagation();
+      forwardingWheel = true;
+      try { canvas.dispatchEvent(forwarded); } finally { forwardingWheel = false; }
+    }
 
     canvas.addEventListener('pointerdown', pointerDown, true);
     canvas.addEventListener('pointermove', pointerMove, true);
     canvas.addEventListener('pointerup', endDrag, true);
     canvas.addEventListener('pointercancel', endDrag, true);
     canvas.addEventListener('keydown', keyDown);
+    canvas.addEventListener('wheel', wheel, { capture: true, passive: false });
     window.addEventListener('blur', cancelDrag);
     let width = 0;
     let height = 0;
@@ -488,7 +508,7 @@ export default function Viewport(props: ViewportProps) {
       return { position: camera.position.toArray() as Vec3, target: orbit.target.toArray() as Vec3, fov: camera.fov, width, height, limits: { coordinates: 10000, fov: [10, 100], distance: [orbit.minDistance, orbit.maxDistance] } };
     };
     const api: Runtime = {
-      frame, ghosts: updateGhosts, getCamera, setTheme,
+      frame, ghosts: updateGhosts, getCamera, setTheme, zoomToCursor: enabled => { orbit.zoomToCursor = enabled; },
       refresh: () => { if (width > 0 && height > 0) renderScene(performance.now(), true); },
       capture: async () => {
         if (disposed) throw new Error('This viewport is no longer active.');
@@ -541,6 +561,7 @@ export default function Viewport(props: ViewportProps) {
       canvas.removeEventListener('pointerup', endDrag, true);
       canvas.removeEventListener('pointercancel', endDrag, true);
       canvas.removeEventListener('keydown', keyDown);
+      canvas.removeEventListener('wheel', wheel, true);
       window.removeEventListener('blur', cancelDrag);
       orbit.dispose();
       scene.remove(asset.root);
@@ -576,6 +597,7 @@ export default function Viewport(props: ViewportProps) {
 
   useEffect(() => { runtime.current?.frame(props.cameraView); }, [props.cameraView]);
   useEffect(() => { runtime.current?.setTheme(props.theme); }, [props.theme, props.asset]);
+  useEffect(() => { runtime.current?.zoomToCursor(props.zoomToCursor ?? true); }, [props.zoomToCursor, props.asset]);
   useEffect(() => { runtime.current?.ghosts(props.ghostPoses, props.showGhosts); }, [props.asset, props.ghostPoses, props.showGhosts]);
   useEffect(() => {
     const canvas = container.current?.querySelector('canvas');

@@ -2,11 +2,11 @@
 
 A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-Release 0.2.19 adds a labelled Move model tool in the viewport. Click it or press G, then drag the character across the floor. Shift-drag raises or lowers the whole model. Bone rotations and animation timing stay unchanged; one Undo restores the move. Existing character libraries, keyframe editing and keyboard shortcuts remain available.
+Release 0.2.20 adds Fit a part for adjusting a character’s mesh, speed changes over a selected range, and zoom toward the mouse pointer by default with a saved viewport preference. It also includes the Move model tool (G), character libraries and keyboard shortcuts.
 
 ## Install or develop
 
-Download **Still-Motion-Studio-Setup-0.2.19.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
+Download **Still-Motion-Studio-Setup-0.2.20.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 

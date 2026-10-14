@@ -11,7 +11,7 @@ import type { CharacterAsset, Pose, Vec3 } from '../types';
 import type { Theme } from '../theme';
 import './HandRigSetup.css';
 
-interface Props { preview: CharacterAsset; fit: AnatomicalFit; initial: AnatomicalFit; theme: Theme; disabled: boolean; onChange: (fit: AnatomicalFit) => void; onBind: () => void; onBack: () => void }
+interface Props { preview: CharacterAsset; fit: AnatomicalFit; initial: AnatomicalFit; theme: Theme; zoomToCursor?: boolean; disabled: boolean; onChange: (fit: AnatomicalFit) => void; onBind: () => void; onBack: () => void }
 
 function LandmarkField({ value, label, onCommit }: { value: number; label: string; onCommit: (value: number) => void }) {
   const shown = String(Number(value.toFixed(5))), [draft, setDraft] = useState(shown);
@@ -72,7 +72,7 @@ export default function HandRigSetup(props: Props) {
     <fieldset disabled={props.disabled}>
       <div className="hand-rig-toolbar"><label>Hand<select aria-label="Hand to fit" value={side} onChange={e => { setSide(e.target.value as HandSide); setLandmark('1'); }}><option>Left</option><option>Right</option></select></label><label>Finger<select aria-label="Finger to fit" value={finger} onChange={e => { setFinger(e.target.value); setLandmark('1'); }}>{FINGERS.map(name => <option key={name} value={name}>{name} · {confidenceLabel(info?.digits?.find(d => d.finger === name)?.landmarks.End ?? 'estimated')}</option>)}</select></label><button className="button secondary" onClick={focus}><Crosshair size={14}/>Focus hand</button></div>
       <div className={`hand-fit-note ${info?.status === 'estimated' ? 'estimated' : ''}`} role="status">{info?.status === 'detected' ? '5 separated fingertips detected. Bend joints are estimated; check their placement and finger labels.' : `${info?.detectedTips ?? 0}/5 separated fingertips found. The finger selector marks estimates; correct their joints to match your mesh.`}</div>
-      <div className="hand-rig-viewport"><Viewport asset={props.preview} pose={pose} theme={props.theme} apiRef={api} selectedBone={selectedBone} onSelectBone={index => {
+      <div className="hand-rig-viewport"><Viewport zoomToCursor={props.zoomToCursor} asset={props.preview} pose={pose} theme={props.theme} apiRef={api} selectedBone={selectedBone} onSelectBone={index => {
         if (index === null) return;
         const name = props.preview.bones[index].name;
         if (name === `${side}Hand`) setLandmark('wrist');

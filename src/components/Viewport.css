@@ -4,6 +4,8 @@
 .model-move-toggle { position: absolute; right: 18px; top: 68px; box-shadow: 0 2px 8px #203b3010; }
 .model-move-toggle[aria-pressed='true'] { background: var(--green); border-color: var(--green); color: var(--paper); }
 .model-move-toggle kbd { font-size: 9px; opacity: .7; }
+.viewport-zoom-setting { display: flex; align-items: center; gap: 20px; margin: 24px 0; }
+.viewport-zoom-setting p { margin-top: 8px; }
 .motion-viewport-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; color: #555e4c; }
 .motion-viewport-error strong { font-size: 18px; }
 .motion-viewport-error p { max-width: 360px; font-size: 13px; line-height: 1.6; }
