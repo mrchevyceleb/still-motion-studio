@@ -85,14 +85,14 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
     if (!app.isPackaged) return publish({ status: 'disabled', message: 'Automatic updates are available in the installed Windows app.' });
     active = true;
     clearTimeout(retry);
-    let watchdog, cancellation;
+    let watchdog, cancellation, work;
     try {
       const secret = await token();
       if (!secret) return authRequired();
       configure(secret);
       const current = updater;
       lastActivity = Date.now();
-      const work = (async () => {
+      work = (async () => {
         const result = await current.checkForUpdates();
         // A check abandoned after a stall may still answer; it must not start a download.
         if (updater !== current || !result?.isUpdateAvailable) return;
@@ -111,6 +111,8 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
       if (error instanceof Stalled) {
         cancellation?.cancel();
         updater = null;
+        // Let the cancelled request settle first so two downloads never share the pending cache.
+        await Promise.race([work?.catch(() => {}), new Promise(resolve => setTimeout(resolve, 15000))]);
         if (stalls < STALL_RETRIES && !closing) {
           publish({ status: 'error', progress: undefined, message: 'The download stopped responding. Retrying automatically…' });
           retry = setTimeout(() => void attempt(stalls + 1), 5000);

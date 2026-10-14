@@ -14,10 +14,23 @@ const full = path.join(root, '.local/installers');
 const update = path.join(root, '.local/installers-update');
 const win = (output, overrides = {}) => build({ projectDir: root, win: ['nsis'], publish: 'never', config: { ...config, directories: { ...config.directories, output }, ...overrides } });
 
+// The update installer refuses to run unless this exact runtime is already installed,
+// so running it by hand on an older or fresh PC can't leave Still without its runtime.
+const guard = path.join(root, '.local/update-installer.nsh');
+await writeFile(guard, `!include "${path.join(root, 'desktop', 'installer.nsh')}"
+!macro customInit
+  \${IfNot} \${FileExists} "$LOCALAPPDATA\\Still Motion Studio\\runtime\\${runtimeId}\\.complete"
+    MessageBox MB_OK|MB_ICONSTOP "This is the quick update for an existing Still install. Run Still-Motion-Studio-Setup from github.com/mrchevyceleb/still-motion-studio/releases/latest instead." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  \${EndIf}
+!macroend
+`);
+
 await rm(update, { recursive: true, force: true });
 await win(full);
 // Same app, without deps/: installs in seconds because the runtime already sits outside the install folder.
-await win(update, { artifactName: 'Still-Motion-Studio-Update-${version}.${ext}', extraResources: [{ from: '.local/desktop-bundle', to: 'runtime', filter: ['**/*', '!deps', '!deps/**/*'] }] });
+await win(update, { artifactName: 'Still-Motion-Studio-Update-${version}.${ext}', nsis: { ...config.nsis, include: guard }, extraResources: [{ from: '.local/desktop-bundle', to: 'runtime', filter: ['**/*', '!deps', '!deps/**/*'] }] });
 
 const feed = yaml.load(await readFile(path.join(full, 'latest.yml'), 'utf8'));
 const slim = yaml.load(await readFile(path.join(update, 'latest.yml'), 'utf8'));

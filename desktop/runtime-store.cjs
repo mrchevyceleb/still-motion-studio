@@ -8,19 +8,34 @@ const RUNTIME_ID = /^[\da-f]{64}$/;
 // The heavy runtime (Python, Blender, models, gh) lives outside the install folder,
 // in a folder named by its content hash. App-only updates ship without it, so the
 // installer never deletes or re-extracts those ~30k files unless the hash changes.
+// A runtime counts only when its marker names this exact build and its main tools are
+// still there (antivirus quarantine or a half-deleted folder must not pass).
+async function healthy(dir, id) {
+  const marker = await readFile(path.join(dir, '.complete'), 'utf8').catch(() => '');
+  return marker === id && await exists(path.join(dir, 'python', 'python.exe')) && await exists(path.join(dir, 'blender', 'blender.exe'));
+}
+
 async function resolveRuntime(bundle, store) {
   const { id } = JSON.parse(await readFile(path.join(bundle, 'runtime.json'), 'utf8'));
   if (!RUNTIME_ID.test(id)) throw new Error('The installed runtime manifest is invalid.');
   const target = path.join(store, id);
   const shipped = path.join(bundle, 'deps');
-  if (!await exists(path.join(target, '.complete'))) {
-    if (!await exists(shipped)) throw new Error('Still\'s runtime files are missing. Run the full Still-Motion-Studio-Setup installer from https://github.com/mrchevyceleb/still-motion-studio/releases/latest once to restore them.');
+  if (!await healthy(target, id)) {
     await mkdir(store, { recursive: true });
-    const incoming = path.join(store, `incoming-${randomUUID()}`);
-    // A same-drive rename is instant. A custom install folder on another drive copies once.
-    try { await rename(shipped, incoming); }
-    catch { await cp(shipped, incoming, { recursive: true }); }
-    await writeFile(path.join(incoming, '.complete'), id);
+    let incoming;
+    if (await exists(shipped)) {
+      incoming = path.join(store, `incoming-${randomUUID()}`);
+      // A same-drive rename is instant. A custom install folder on another drive copies once.
+      try { await rename(shipped, incoming); }
+      catch { await cp(shipped, incoming, { recursive: true }); }
+      await writeFile(path.join(incoming, '.complete'), id);
+    } else {
+      // A launch that stopped mid-move left the finished runtime in a marked incoming folder.
+      for (const name of await readdir(store)) {
+        if (!incoming && name.startsWith('incoming-') && await healthy(path.join(store, name), id)) incoming = path.join(store, name);
+      }
+      if (!incoming) throw new Error('Still\'s runtime files are missing. Run the full Still-Motion-Studio-Setup installer from https://github.com/mrchevyceleb/still-motion-studio/releases/latest once to restore them.');
+    }
     await rm(target, { recursive: true, force: true });
     await rename(incoming, target);
   }
