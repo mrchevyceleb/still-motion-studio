@@ -754,7 +754,7 @@ export default function App() {
       const document: ProjectDocument = { version: 1, characterId: id, name: `Scene ${number}`, duration: 4, fps: 30, keys, settings: { ...DEFAULT_SETTINGS }, sourceClip: null, boneNames: saved.boneNames, character: saved.model };
       const newId = uid(), token = { id: newId, revision: 0 };
       const result = await saveLocal(document, newId, saved.thumbnail, token);
-      sceneTokens.current.set(result.id, token); activeSceneId.current = result.id;
+      sceneTokens.current.set(result.id, { id: result.id, revision: result.revision }); activeSceneId.current = result.id;
       ++saveGeneration.current;
       setSceneId(result.id); setCharacterId(result.characterId); setHasActiveScene(true);
       setAsset(next); setStudio({ title: document.name, duration: 4, keys, settings: document.settings, sourceClip: null });
@@ -981,7 +981,7 @@ export default function App() {
     const shortened = value < studio.duration;
     const trim = (keys: PoseKey[], interpolation: InterpolationMode) => {
       const retained = keys.filter(key => key.time <= value);
-      if (!retained.length) retained.push({ id: uid(), time: 0, pose: samplePose(keys, 0, interpolation), ...morphKeyData(keys, 0, interpolation, asset.restMorphs) });
+      if (!retained.length || retained[0].time > 0) retained.unshift({ id: uid(), time: 0, pose: samplePose(keys, 0, interpolation), ...morphKeyData(keys, 0, interpolation, asset.restMorphs) });
       if (retained.some(key => Math.abs(key.time - value) < 1e-9)) return retained;
       return [...retained, { id: uid(), time: value, pose: samplePose(keys, value, interpolation), ...morphKeyData(keys, value, interpolation, asset.restMorphs) }];
     };
