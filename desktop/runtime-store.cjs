@@ -26,6 +26,8 @@ async function move(from, to) {
   }
   await cp(from, to, { recursive: true, filter: source => source !== path.join(from, '.complete') });
   await writeFile(path.join(to, '.complete'), await readFile(path.join(from, '.complete'), 'utf8'));
+  // Retire the source at once, so a half-deleted leftover is never taken for a fresh full install.
+  await rename(from, `${from}-old`).catch(() => rm(from, { recursive: true, force: true }));
 }
 
 async function resolveRuntime(bundle, store) {
@@ -56,7 +58,7 @@ async function resolveRuntime(bundle, store) {
   // Best effort: a leftover copy in the install folder slows the next uninstall,
   // and runtimes from older releases only waste disk.
   void (async () => {
-    await rm(shipped, { recursive: true, force: true });
+    for (const leftover of [shipped, `${shipped}-old`]) await rm(leftover, { recursive: true, force: true });
     for (const name of await readdir(store)) {
       if (name !== id && (RUNTIME_ID.test(name) || name.startsWith('incoming-') || name.startsWith('trash-'))) await rm(path.join(store, name), { recursive: true, force: true });
     }
