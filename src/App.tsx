@@ -32,11 +32,13 @@ import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames
 import type { EngineProvider, EngineStatus } from './engine/assistance';
 import { exportUnrealPackage, getUnrealExportCapability, isUnrealAssetPath, readExportPreference, rememberExportPreference } from './engine/unrealExport';
 import type { UnrealExportCapability } from './engine/unrealExport';
-import { archiveLocal, downloadFile, editScene, embedCharacter, listArchives, listScenes, loadSession, readArchive, readScene, saveLocal, validateProject } from './engine/project';
+import { archiveLocal, downloadFile, editScene, embedCharacter, initializeCharacterLibrary, listArchives, listCharacters, listScenes, loadSession, readArchive, readCharacter, readScene, renameCharacter, saveLocal, validateProject } from './engine/project';
 import type { ArchiveEntry, SceneEntry, SceneWriteToken } from './engine/project';
+import type { CharacterEntry } from './engine/characterLibrary';
+import { characterFingerprint } from './engine/characterLibrary';
 import { sceneThumbnail } from './engine/sceneThumbnail';
 import { DEFAULT_SETTINGS } from './types';
-import { duplicateMoment, MAX_ANIMATION_DURATION, nearestFreeKeyTime, rippleMoment } from './engine/keyframeEditing';
+import { duplicateMoment, MAX_ANIMATION_DURATION, moveMoment, nearestFreeKeyTime, pasteMoments, rippleMoment } from './engine/keyframeEditing';
 import { applyKeyframeProperty, offsetKeyframes, setModelPosition } from './engine/poseProperties';
 import { morphKeyData } from './engine/morphs';
 import type { PoseProperty, PoseReference, PropertyAxes } from './engine/poseProperties';
@@ -72,6 +74,11 @@ export default function App() {
   const [comparisonView, setComparisonView] = useState<'before' | 'split' | 'after'>('after');
   const [dragPreview, setDragPreview] = useState<{ id: string; time: number; keys: PoseKey[]; duration: number; ripple: boolean } | null>(null);
   const [ripple, setRipple] = useState(false);
+  const [keyClipboard, setKeyClipboard] = useState<{ keys: PoseKey[]; character: string } | null>(null);
+  const [moveTime, setMoveTime] = useState('');
+  const [movingKey, setMovingKey] = useState<string | null>(null);
+  const [durationInput, setDurationInput] = useState('4');
+  useEffect(() => { setDurationInput(String(Number(studio.duration.toFixed(3)))); }, [studio.duration]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [poseReference, setPoseReference] = useState<PoseReference | null>(null);
@@ -119,6 +126,11 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [archives, setArchives] = useState<ArchiveEntry[]>([]);
   const [scenes, setScenes] = useState<SceneEntry[]>([]);
+  const [characters, setCharacters] = useState<CharacterEntry[]>([]);
+  const [characterId, setCharacterId] = useState<string>();
+  const [libraryCharacterId, setLibraryCharacterId] = useState<string>();
+  const [hasActiveScene, setHasActiveScene] = useState(true);
+  const currentCharacter = characters.find(character => character.id === characterId);
   const [sceneId, setSceneId] = useState<string>(uid);
   const activeSceneId = useRef(sceneId);
   activeSceneId.current = sceneId;
@@ -166,6 +178,7 @@ export default function App() {
   const physicsProvider = physicsProviders.find(provider => provider.id === physicsChoice) ?? physicsProviders[0];
   const needsReview = (studio.generation?.metrics.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
   const selectedKey = poseKeys.find(key => Math.abs(key.time - time) < 0.5 / fps);
+  useEffect(() => { setMovingKey(null); }, [sceneId, selectedKey?.id]);
   useEffect(() => { setPoseReference(null); }, [asset.root, sceneId]);
   useEffect(() => { if (dialog !== 'rig') setRigDraft(null); }, [dialog]);
   useEffect(() => () => { if (rigDraft) disposeCharacter(rigDraft.preview); }, [rigDraft?.preview]);
@@ -271,11 +284,12 @@ export default function App() {
     if (next.rigKind) setAsset(current => current.kind === next.rigKind ? current : { ...current, kind: next.rigKind! });
   }, [studio, asset.kind]);
 
-  const documentFor = useCallback((): ProjectDocument => ({ version: 1, name: studio.title, duration: studio.duration, fps, keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded]);
+  const documentFor = useCallback((): ProjectDocument => ({ version: 1, characterId, name: studio.title, duration: studio.duration, fps, keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded, characterId]);
   const persistDocument = useCallback(async (document: ProjectDocument, id: string, thumbnail?: string) => {
     let token = sceneTokens.current.get(id);
     if (!token) { token = { id, revision: 0 }; sceneTokens.current.set(id, token); }
     const result = await saveLocal(document, id, thumbnail, token);
+    if (activeSceneId.current === id || activeSceneId.current === result.id) setCharacterId(result.characterId);
     sceneTokens.current.set(result.id, token);
     if (result.forked && activeSceneId.current === id) {
       activeSceneId.current = result.id; setSceneId(result.id);
@@ -284,18 +298,19 @@ export default function App() {
     return result;
   }, [notify]);
   const saveCurrentScene = useCallback(async () => {
+    if (!hasActiveScene) return;
     if (!storageReady) throw new Error('Saved scenes could not be loaded. Reopen Still before replacing this scene.');
     const document = documentFor(), id = sceneId, generation = ++saveGeneration.current;
     const thumbnail = await sceneThumbnail(viewportAPI.current?.capture);
     if (generation !== saveGeneration.current) return;
     await persistDocument(document, id, thumbnail);
-    setScenes(await listScenes());
+    setScenes(await listScenes()); setCharacters(await listCharacters());
     if (generation === saveGeneration.current) { dirty.current = false; setSaveStatus('Saved in your library'); }
-  }, [documentFor, sceneId, storageReady, persistDocument]);
-  const openLibrary = async () => {
+  }, [documentFor, sceneId, storageReady, hasActiveScene, persistDocument]);
+  const openLibrary = async (focusCharacterId?: string) => {
     if (busy || !hydrated) return;
     setBusy('Saving your scene…'); setPlaying(false);
-    try { if (storageReady) await saveCurrentScene(); else setScenes(await listScenes()); setDialog('library'); }
+    try { if (storageReady) await saveCurrentScene(); else setScenes(await listScenes()); setCharacters(await listCharacters()); setLibraryCharacterId(focusCharacterId); setDialog('library'); }
     catch { setError('Your scene could not be saved. Export a .still copy and free storage before switching scenes.'); }
     finally { setBusy(null); }
   };
@@ -306,7 +321,7 @@ export default function App() {
     flushSync(() => { setBusy('Saving your scene for the update…'); setPlaying(false); });
     ++saveGeneration.current;
     try {
-      await persistDocument(documentFor(), sceneId);
+      if (hasActiveScene) await persistDocument(documentFor(), sceneId);
       dirty.current = false;
       setSaveStatus('Saved on this device');
       const result = await window.stillDesktop!.updates.install();
@@ -333,7 +348,7 @@ export default function App() {
     if (signal?.aborted) { disposeCharacter(nextAsset); signal.throwIfAborted(); }
     const apply = () => {
       activeSceneId.current = id;
-      setSceneId(id);
+      setSceneId(id); setCharacterId(document.characterId); setHasActiveScene(true);
       setAsset(nextAsset); setStudio({ title: document.name, keys: document.keys, generated: document.generated, generation: document.generation, duration: document.duration, settings: document.settings, sourceClip: document.sourceClip != null && document.sourceClip < nextAsset.clips.length ? document.sourceClip : null });
       setFps(document.fps); setTime(0); setSelectedBone(null); setPlaying(false);
       history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = false;
@@ -343,14 +358,27 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    listArchives().then(entries => { if (!cancelled) setArchives(entries); }).catch(() => {});
-    listScenes().then(entries => { if (!cancelled) setScenes(entries); }).catch(() => {});
-    loadSession().then(async saved => { if (saved.document && !cancelled) { sceneTokens.current.set(saved.sceneId, { id: saved.sceneId, revision: saved.revision }); await restoreDocument(saved.document, undefined, saved.sceneId, async () => saved.sceneId); } if (!cancelled) setStorageReady(true); }).catch(() => { if (!cancelled) { setSaveStatus('Local recovery unavailable'); setError('Your recovery scene could not be opened. Choose a saved scene from Scenes, or reopen Still to retry. Your stored scenes have not been changed.'); } }).finally(() => { if (!cancelled) setHydrated(true); });
+    void (async () => {
+      let libraryReady = true;
+      try { await initializeCharacterLibrary(); }
+      catch { libraryReady = false; }
+      const [saved, library, entries, backups] = await Promise.all([loadSession(), listCharacters(), listScenes(), listArchives()]);
+      if (cancelled) return;
+      setCharacters(library); setScenes(entries); setArchives(backups);
+      if (saved.document) {
+        sceneTokens.current.set(saved.sceneId, { id: saved.sceneId, revision: saved.revision });
+        await restoreDocument(saved.document, undefined, saved.sceneId, async () => saved.sceneId);
+      } else if (library.length || entries.length) { setHasActiveScene(false); setDialog('library'); }
+      if (!cancelled) {
+        setStorageReady(libraryReady);
+        if (!libraryReady) { setSaveStatus('Character library unavailable'); setError('The character library could not be updated. Your saved scenes are available for recovery in Characters. Export a .still backup and free storage before making changes.'); }
+      }
+    })().catch(() => { if (!cancelled) { setSaveStatus('Local recovery unavailable'); setError('Your recovery scene could not be opened. Choose a saved character and scene from Characters, or reopen Still to retry. Your saved work has not been changed.'); } }).finally(() => { if (!cancelled) setHydrated(true); });
     return () => { cancelled = true; };
   }, [restoreDocument]);
 
   useEffect(() => {
-    if (!hydrated || !storageReady) return;
+    if (!hydrated || !storageReady || !hasActiveScene) return;
     const generation = ++saveGeneration.current;
     dirty.current = true;
     setSaveStatus('Saving…');
@@ -359,11 +387,11 @@ export default function App() {
       void sceneThumbnail(viewportAPI.current?.capture).then(async thumbnail => {
         if (generation !== saveGeneration.current) return;
         await persistDocument(document, id, thumbnail);
-        if (generation === saveGeneration.current) { setSaveStatus('Saved in your library'); dirty.current = false; setScenes(await listScenes()); }
+        if (generation === saveGeneration.current) { setSaveStatus('Saved in your library'); dirty.current = false; setScenes(await listScenes()); setCharacters(await listCharacters()); }
       }).catch(() => { if (generation === saveGeneration.current) setSaveStatus('Save a project file to keep changes'); });
     }, 750);
     return () => clearTimeout(timer);
-  }, [documentFor, hydrated, sceneId, storageReady, persistDocument]);
+  }, [documentFor, hydrated, sceneId, storageReady, hasActiveScene, persistDocument]);
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => { if (dirty.current) { event.preventDefault(); event.returnValue = ''; } };
@@ -494,20 +522,63 @@ export default function App() {
     if (!selectedKey || keyDrag.current) return;
     const duplicate = duplicateMoment(studio.keys, selectedKey, studio.duration, fps);
     if (!duplicate) { notify(selectedKey.time === studio.duration && studio.duration === MAX_ANIMATION_DURATION ? 'This moment is at the 10-minute limit. Move it earlier to make room for a copy.' : 'The timeline has no empty frames. Increase its duration or remove a pose.'); return; }
-    commit({ ...studio, keys: duplicate.keys, duration: duplicate.duration, sourceClip: null }, 'Moment duplicated. Drag its diamond to change the timing.');
+    commit({ ...studio, keys: duplicate.keys, duration: duplicate.duration, sourceClip: null, generated: undefined, generation: undefined }, 'Moment duplicated. Drag its diamond to change the timing.');
     setPlaying(false); setTime(duplicate.key.time);
   }, [selectedKey, studio, fps, commit, notify]);
+
+  const copyKeyframes = useCallback(() => {
+    if (busy || !asset.rigged || keyDrag.current) return;
+    const keys = selectionMode ? studio.keys.filter(key => selectedIds.has(key.id)) : selectedKey ? [selectedKey] : [];
+    if (!keys.length) { notify('Click a keyframe diamond to copy it.'); return; }
+    setKeyClipboard({ keys: clone(keys), character: characterFingerprint(embedded, asset.bones.map(bone => bone.name)) });
+    notify(`${keys.length === 1 ? 'Keyframe' : `${keys.length} keyframes`} copied. Click a time on the timeline, then Paste.`);
+  }, [busy, asset, selectionMode, studio.keys, selectedIds, selectedKey, embedded, notify]);
+  const pasteKeyframes = useCallback(() => {
+    if (!keyClipboard || busy || keyDrag.current || !asset.rigged) return;
+    try {
+      if (keyClipboard.character !== characterFingerprint(embedded, asset.bones.map(bone => bone.name))) throw new Error('These keyframes belong to another character. Open a scene for that character to paste them.');
+      const result = pasteMoments(studio.keys, keyClipboard.keys, time, studio.duration, fps);
+      commit({ ...studio, keys: result.keys, duration: result.duration, sourceClip: null, generated: undefined, generation: undefined }, `${result.pasted.length === 1 ? 'Keyframe' : `${result.pasted.length} keyframes`} pasted at ${result.pasted[0].time.toFixed(2)}s.${result.replaced ? ` Replaced ${result.replaced} existing ${result.replaced === 1 ? 'pose' : 'poses'}.` : ''} Undo restores your previous motion.`);
+      setPlaying(false); setSelectionMode(false); setTime(result.pasted[0].time);
+    } catch (error) { setError(error instanceof Error ? error.message : 'The keyframes could not be pasted.'); }
+  }, [keyClipboard, busy, asset, embedded, studio, time, fps, commit]);
+  const moveSelectedKey = () => {
+    if (!selectedKey || busy || !moveTime.trim()) return;
+    const wanted = Number(moveTime);
+    if (!Number.isFinite(wanted) || wanted < 0 || wanted > MAX_ANIMATION_DURATION) { setError('Enter a time between 0 and 600 seconds.'); return; }
+    const result = moveMoment(studio.keys, selectedKey.id, wanted, Math.max(studio.duration, wanted), fps);
+    if (!result) { setError('Keep at least two poses. Move this keyframe to another time.'); return; }
+    commit({ ...studio, keys: result.keys, duration: result.duration, sourceClip: null, generated: undefined, generation: undefined }, `Keyframe moved to ${result.time.toFixed(2)}s.${result.replaced ? ' Replaced the pose at that time.' : ''} Undo restores it.`);
+    setPlaying(false); setTime(result.time); setMovingKey(null);
+  };
+  const removeKeys = useCallback((keys: PoseKey[], message: string) => {
+    // Removing an ending must not replace the retained take with newly interpolated motion.
+    const end = keys.at(-1)!.time;
+    const retainedIds = new Set(keys.map(key => key.id));
+    const trailingOnly = studio.keys.filter(key => !retainedIds.has(key.id)).every(key => key.time > end);
+    let generated: PoseKey[] | undefined;
+    if (trailingOnly && end > 0 && (studio.generated || studio.settings.interpolation === 'smooth')) {
+      if (studio.generated) {
+        generated = studio.generated.filter(key => key.time <= end);
+        if (!generated.length) generated.push({ id: uid(), time: 0, pose: samplePose(studio.generated, 0, 'linear'), ...morphKeyData(studio.generated, 0, 'linear', asset.restMorphs) });
+        if (!generated.some(key => Math.abs(key.time - end) < 1e-9)) generated.push({ id: uid(), time: end, pose: samplePose(studio.generated, end, 'linear'), ...morphKeyData(studio.generated, end, 'linear', asset.restMorphs) });
+      } else generated = editMotion(asset, { keys: studio.keys, duration: studio.duration, interpolation: studio.settings.interpolation }, { kind: 'trim', start: 0, end }, fps).keys;
+    }
+    const warning = 'Ending keyframes removed. Retained playback is preserved; rerun physics to refresh measurements.';
+    const generation = generated && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+    commit({ ...studio, keys, generated, generation, sourceClip: null }, `${message} Remaining keyframes keep their timing.${trailingOnly ? ' Use Remove empty tail to end the clip here.' : ''}`);
+  }, [studio, asset, fps, commit]);
   const deleteKey = useCallback(() => {
     if (selectionMode) {
       if (!selectedIds.size) return;
       const keys = studio.keys.filter(key => !selectedIds.has(key.id));
       if (keys.length < 2) { notify('Keep at least two poses. Select a smaller range to delete.'); return; }
-      commit({ ...studio, sourceClip: null, keys }, `${studio.keys.length - keys.length} poses removed. Undo restores them together.`);
+      removeKeys(keys, `${studio.keys.length - keys.length} poses removed. Undo restores them together.`);
       setSelectedIds(new Set()); return;
     }
     if (!selectedKey || studio.keys.length <= 2) return;
-    commit({ ...studio, sourceClip: null, keys: studio.keys.filter(k => k.id !== selectedKey.id) }, 'Pose removed. Undo is always here.');
-  }, [selectedKey, studio, commit, selectionMode, selectedIds, notify]);
+    removeKeys(studio.keys.filter(k => k.id !== selectedKey.id), 'Pose removed. Undo is always here.');
+  }, [selectedKey, studio, removeKeys, selectionMode, selectedIds, notify]);
 
   const saveProject = useCallback(() => {
     try { downloadFile(JSON.stringify(documentFor()), `${studio.title.trim() || 'Untitled'}.still`, 'application/json'); dirty.current = false; notify('Editable project saved, with your character included.'); }
@@ -518,12 +589,15 @@ export default function App() {
     const keydown = (event: KeyboardEvent) => {
       if (selectionDrag.current) { if (event.key === 'Escape') { event.preventDefault(); cancelSelection(); } return; }
       if (keyDrag.current) { if (event.key === 'Escape') { event.preventDefault(); cancelKeyDrag(); } return; }
-      if ((event.target as HTMLElement).matches('input, textarea, select, [contenteditable="true"]') || dialog || busy || !hydrated) return;
       const mod = event.ctrlKey || event.metaKey;
+      const target = event.target as HTMLElement;
+      if (target.matches('input, textarea, select, [contenteditable="true"]') && !(mod && target.matches('input[type="range"]')) || dialog || busy || !hydrated || !hasActiveScene) return;
       if (mod && event.key.toLowerCase() === 'a' && selectionMode) { event.preventDefault(); setSelectedIds(new Set(studio.keys.map(key => key.id))); }
       else if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); if (event.shiftKey) saveProject(); else void saveCurrentScene().catch(() => setError('Could not save this scene. Export a .still copy to keep your work.')); }
       else if (mod && event.key.toLowerCase() === 'd') { event.preventDefault(); duplicateKey(); }
+      else if (mod && event.key.toLowerCase() === 'c') { event.preventDefault(); copyKeyframes(); }
+      else if (mod && event.key.toLowerCase() === 'v') { event.preventDefault(); pasteKeyframes(); }
       else if (event.code === 'Space') { event.preventDefault(); setPlaying(v => !v); }
       else if (event.key.toLowerCase() === 'k') { event.preventDefault(); addKey(); }
       else if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); deleteKey(); }
@@ -534,7 +608,7 @@ export default function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [dialog, busy, hydrated, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, deleteKey, studio.keys, studio.duration, fps, selectionMode]);
+  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, studio.keys, studio.duration, fps, selectionMode]);
 
   const handleImport = async (file: File) => {
     if (busy) return;
@@ -558,7 +632,7 @@ export default function App() {
         catch (e) { keys = [{ id: uid(), time: 0, pose: clone(nextAsset.restPose) }, { id: uid(), time: 4, pose: clone(nextAsset.restPose) }]; animationError = `Character loaded, but its animation was not imported. ${e instanceof Error ? e.message : 'This animation could not be sampled.'}`; nextAsset.warnings.push(animationError); }
       } else keys = [{ id: uid(), time: 0, pose: clone(nextAsset.restPose) }, { id: uid(), time: 4, pose: clone(nextAsset.restPose) }];
       await preserveScene();
-      setSceneId(uid()); setAsset(nextAsset); setStudio({ title: file.name.replace(/\.[^.]+$/, ''), keys, duration, settings: { ...DEFAULT_SETTINGS, interpolation: importedAnimation ? 'linear' : 'smooth' }, sourceClip: importedAnimation ? 0 : null });
+      setSceneId(uid()); setCharacterId(undefined); setHasActiveScene(true); setAsset(nextAsset); setStudio({ title: file.name.replace(/\.[^.]+$/, ''), keys, duration, settings: { ...DEFAULT_SETTINGS, interpolation: importedAnimation ? 'linear' : 'smooth' }, sourceClip: importedAnimation ? 0 : null });
       setTime(0); setSelectedBone(null); history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1);
       dirty.current = true;
       if (!nextAsset.rigged) { setRigKind('humanoid'); setDialog('rig'); }
@@ -574,9 +648,10 @@ export default function App() {
     try {
       if (file.size > 200 * 1024 * 1024) throw new Error('Use a file smaller than 200 MB for a responsive editing session.');
       source = await importCharacter(file);
+      await preserveScene();
       const next = swapCharacterLook(asset, source);
-      setAsset(next); dirty.current = true;
-      notify(`${file.name.replace(/\.[^.]+$/, '')} now wears this skeleton. Every pose and key is unchanged.`);
+      setSceneId(uid()); setCharacterId(undefined); setHasActiveScene(true); setAsset(next); dirty.current = true;
+      notify(`${file.name.replace(/\.[^.]+$/, '')} saved as a new character with this motion. Your original character and scenes stay saved.`);
     } catch (e) { setError(e instanceof Error ? e.message : 'That look could not be fitted to this skeleton.'); }
     finally { if (source) disposeCharacter(source); setBusy(null); if (lookInput.current) lookInput.current.value = ''; }
   };
@@ -590,12 +665,13 @@ export default function App() {
   };
 
   const preserveScene = async () => {
+    if (!hasActiveScene) return;
     try { await saveCurrentScene(); await archiveLocal(documentFor()); setArchives(await listArchives()); }
     catch { throw new Error('Your current scene could not be backed up. Save a .still file and free browser storage before replacing it.'); }
   };
 
   const openSavedScene = async (id: string) => {
-    if (busy || id === sceneId) { if (!busy) setDialog(null); return; }
+    if (busy || hasActiveScene && id === sceneId) { if (!busy) setDialog(null); return; }
     setBusy('Opening your scene…'); setPlaying(false);
     try {
       const { document: saved, revision } = await readScene(id);
@@ -623,7 +699,14 @@ export default function App() {
         if (!title || title.length > 200) throw new Error('Give this scene a name of 1–200 characters.');
         await persistDocument({ ...documentFor(), name: title }, targetId);
         setStudio(current => ({ ...current, title }));
-      } else await editScene(targetId, change, name);
+      } else {
+        if (change === 'delete' && targetId === activeSceneId.current) ++saveGeneration.current;
+        await editScene(targetId, change, name);
+        if (change === 'delete' && targetId === activeSceneId.current) {
+          setHasActiveScene(false); dirty.current = false; setPlaying(false);
+          setSaveStatus('Choose a scene'); setDialog('library');
+        }
+      }
       setScenes(await listScenes()); notify(change === 'duplicate' ? 'Scene duplicated. Open the copy to try another direction.' : change === 'delete' ? 'Scene deleted from the library.' : 'Scene renamed.');
       return true;
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not update this scene.'); return false; }
@@ -646,13 +729,51 @@ export default function App() {
     finally { setBusy(null); }
   };
 
+  const changeCharacterName = async (id: string, name: string): Promise<boolean> => {
+    if (busy || !storageReady) return false;
+    setBusy('Renaming your character…');
+    try { await renameCharacter(id, name); setCharacters(await listCharacters()); notify('Character renamed. Its model, rig and scenes are preserved.'); return true; }
+    catch (error) { setError(error instanceof Error ? error.message : 'Could not rename this character.'); return false; }
+    finally { setBusy(null); }
+  };
+
+  const createCharacterScene = async (id: string) => {
+    if (busy || !storageReady || !hydrated) return;
+    flushSync(() => { setBusy('Starting a scene with your saved character…'); setPlaying(false); });
+    let next: CharacterAsset | undefined;
+    let applied = false;
+    try {
+      await preserveScene();
+      const saved = await readCharacter(id);
+      next = saved.model.type === 'demo' ? createDemoCharacter(saved.kind) : await restoreCharacter(saved.model.object, saved.kind, saved.model.name);
+      if (!next.rigged || next.bones.length !== saved.boneNames.length || next.bones.some((bone, index) => bone.name !== saved.boneNames[index])) throw new Error('This saved character’s rig could not be restored.');
+      const existing = (await listScenes()).filter(scene => scene.characterId === id);
+      let number = 1;
+      while (existing.some(scene => scene.name === `Scene ${number}`)) number++;
+      const keys = [0, 4].map(time => ({ id: uid(), time, pose: clone(next!.restPose), ...(next!.restMorphs ? { morphs: clone(next!.restMorphs) } : {}) }));
+      const document: ProjectDocument = { version: 1, characterId: id, name: `Scene ${number}`, duration: 4, fps: 30, keys, settings: { ...DEFAULT_SETTINGS }, sourceClip: null, boneNames: saved.boneNames, character: saved.model };
+      const newId = uid(), token = { id: newId, revision: 0 };
+      const result = await saveLocal(document, newId, saved.thumbnail, token);
+      sceneTokens.current.set(result.id, token); activeSceneId.current = result.id;
+      ++saveGeneration.current;
+      setSceneId(result.id); setCharacterId(result.characterId); setHasActiveScene(true);
+      setAsset(next); setStudio({ title: document.name, duration: 4, keys, settings: document.settings, sourceClip: null });
+      applied = true;
+      setFps(30); setTime(0); setSelectedBone(null); setDialog(null); setError(null);
+      history.current = { past: [], future: [] }; setHistoryVersion(value => value + 1); dirty.current = false;
+      setScenes(await listScenes()); setCharacters(await listCharacters());
+      notify(`New scene for ${saved.name}. Your saved rig is ready.`);
+    } catch (error) { setError(error instanceof Error ? error.message : 'Could not create a scene for this character.'); }
+    finally { if (next && !applied) disposeCharacter(next); setBusy(null); }
+  };
+
   const createNew = async (kind: RigKind, blank = false) => {
     if (busy) return;
     setBusy('Making room for your next move…');
     try {
     await preserveScene();
     const next = createDemoCharacter(kind); const keys = blank ? [{ id: uid(), time: 0, pose: clone(next.restPose) }, { id: uid(), time: 4, pose: clone(next.restPose) }] : createDemoKeys(next);
-    setSceneId(uid()); setAsset(next); setStudio({ title: blank ? 'My next move' : kind === 'humanoid' ? 'A little hello' : 'Four little steps', keys, duration: 4, settings: { ...DEFAULT_SETTINGS } });
+    setSceneId(uid()); setCharacterId(undefined); setHasActiveScene(true); setAsset(next); setStudio({ title: blank ? 'My next move' : kind === 'humanoid' ? 'A little hello' : 'Four little steps', keys, duration: 4, settings: { ...DEFAULT_SETTINGS } });
     setTime(blank ? 0 : .8); setSelectedBone(null); setPlaying(false); setDialog(null);
     history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = true; notify('Fresh canvas. Make it move.');
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not start a new scene.'); }
@@ -820,10 +941,7 @@ export default function App() {
     const rect = timeline.current?.getBoundingClientRect(); if (!rect) return;
     if (rect.width <= 0) return;
     const wanted = drag.startTime + (clientX - drag.startX) / rect.width * drag.studio.duration;
-    const nextTime = drag.ripple ? null : nearestFreeKeyTime(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps);
-    const result = drag.ripple ? rippleMoment(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps) : nextTime === null ? null : {
-      keys: drag.studio.keys.map(key => key.id === drag.id ? { ...key, time: nextTime } : key).sort((a, b) => a.time - b.time), duration: drag.studio.duration, time: nextTime,
-    };
+    const result = drag.ripple ? rippleMoment(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps) : moveMoment(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps);
     if (!result) return;
     drag.moved = true; drag.time = result.time; drag.result = result;
     setDragPreview(current => current?.id === drag.id && current.time === result.time ? current : { id: drag.id, ...result, ripple: drag.ripple });
@@ -837,7 +955,8 @@ export default function App() {
     previewKeyDrag(clientX, pointerId);
     keyDrag.current = null; setDragPreview(null);
     if (drag.moved && drag.result && drag.time !== drag.startTime) {
-      commit({ ...studio, sourceClip: null, keys: drag.result.keys, duration: drag.result.duration });
+      const replaced = studio.keys.length - drag.result.keys.length;
+      commit({ ...studio, sourceClip: null, keys: drag.result.keys, duration: drag.result.duration, generated: undefined, generation: undefined }, `Keyframe moved to ${drag.time.toFixed(2)}s.${replaced ? ' Replaced the pose at that time. Undo restores it.' : ''}`);
       setTime(drag.time);
     }
   };
@@ -856,9 +975,22 @@ export default function App() {
     setPlaying(false); setTime(nextTime);
   };
   const changeDuration = (value: number) => {
-    if (!Number.isFinite(value) || value < .1 || value > MAX_ANIMATION_DURATION) return;
-    commit({ ...studio, sourceClip: null, duration: value, keys: studio.keys.map(k => ({ ...k, time: k.time * value / studio.duration })) });
-    setTime(t => Math.min(value, t * value / studio.duration));
+    if (busy || keyDrag.current || selectionDrag.current) return;
+    if (!Number.isFinite(value) || value < .1 || value > MAX_ANIMATION_DURATION) { setDurationInput(String(studio.duration)); setError('Set the clip end between 0.1 and 600 seconds.'); return; }
+    if (value === studio.duration || value === Number(studio.duration.toFixed(3))) return;
+    const shortened = value < studio.duration;
+    const trim = (keys: PoseKey[], interpolation: InterpolationMode) => {
+      const retained = keys.filter(key => key.time <= value);
+      if (!retained.length) retained.push({ id: uid(), time: 0, pose: samplePose(keys, 0, interpolation), ...morphKeyData(keys, 0, interpolation, asset.restMorphs) });
+      if (retained.some(key => Math.abs(key.time - value) < 1e-9)) return retained;
+      return [...retained, { id: uid(), time: value, pose: samplePose(keys, value, interpolation), ...morphKeyData(keys, value, interpolation, asset.restMorphs) }];
+    };
+    const keys = shortened ? trim(studio.keys, studio.settings.interpolation) : studio.keys;
+    const generated = shortened && studio.generated ? trim(studio.generated, 'linear') : studio.generated;
+    const warning = 'Clip end changed after generation. Review playback and rerun physics to refresh its measurements.';
+    const generation = studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+    commit({ ...studio, sourceClip: null, duration: value, keys, generated, generation }, shortened ? `Clip ends at ${value.toFixed(2)}s. Earlier keyframes keep their timing. Undo restores the trimmed end.` : `Clip extended to ${value.toFixed(2)}s. Your keyframe timing is unchanged.`);
+    setPlaying(false); setTime(t => Math.min(value, t));
   };
 
   agentSnapshot.current = () => ({
@@ -869,14 +1001,14 @@ export default function App() {
     view: { cameraView, showRig, showGhosts, tool, selectedBone },
     camera: viewportAPI.current?.getCamera() ?? null,
     history: { canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 },
-    providers: engine?.providers ?? [], busy, progress,
+    providers: engine?.providers ?? [], busy: busy ?? (!hasActiveScene ? 'Choose a saved scene or create a new scene.' : null), progress,
   });
   agentEditor.current = {
     asset, studio, time, fps, pose: currentPose, snapshot: () => agentSnapshot.current(), document: documentFor,
     archive: preserveScene, save: saveCurrentScene,
     restore: async (document, signal) => { await restoreDocument(document, signal); },
     replace: (next, nextStudio, nextTime = 0) => flushSync(() => {
-      setSceneId(uid()); setAsset(next); setStudio(nextStudio); setTime(nextTime); setSelectedBone(null); setPlaying(false); setDialog(null);
+      setSceneId(uid()); setCharacterId(undefined); setHasActiveScene(true); setAsset(next); setStudio(nextStudio); setTime(nextTime); setSelectedBone(null); setPlaying(false); setDialog(null);
       history.current = { past: [], future: [] }; setHistoryVersion(value => value + 1); dirty.current = true;
     }),
     commit: next => flushSync(() => commit(next)),
@@ -939,18 +1071,18 @@ export default function App() {
       {window.stillDesktop && <button className={`button updates-button ${updateState?.status === 'ready' ? 'ready' : ''}`} onClick={() => setDialog('updates')}><Download size={14}/>{updateState?.status === 'ready' ? 'Update ready' : 'Updates'}</button>}
       <a className="wordmark" href="#" aria-label="Still home" onClick={e => { e.preventDefault(); void openLibrary(); }}><span className="brand-symbol"><img src="/still-icon.png" alt=""/></span>still<span className="wordmark-dot">.</span></a>
       <div className="header-divider" />
-      <div className="project-heading"><button className="button library-button" aria-label="Scene library" onClick={() => void openLibrary()}><Layers2 size={15}/><span>Scenes</span></button><input aria-label="Project name" value={studio.title} maxLength={200} onChange={e => { dirty.current = true; setStudio({ ...studio, title: e.target.value }); }}/></div>
-      <div className="header-right"><span className="save-status"><span className="status-dot"/>{saveStatus}</span><button className="icon-button theme-toggle" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} onClick={toggleTheme}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button><button className={`button agent-button ${agentConnection.connected ? 'connected' : ''}`} aria-label="Agent scripting" onClick={() => setDialog('agent')}><span className="status-dot"/>Agent</button><div className="history-tools" data-version={historyVersion}><button className="icon-button" title="Undo · Ctrl Z" aria-label="Undo" disabled={!history.current.past.length} onClick={undo}><Undo2 size={17}/></button><button className="icon-button" title="Redo · Ctrl Shift Z" aria-label="Redo" disabled={!history.current.future.length} onClick={redo}><Redo2 size={17}/></button></div><button className="button export-button" onClick={() => setDialog('export')}><ArrowUpRight size={16}/>Export<span className="key-hint">↗</span></button></div>
+      <div className="project-heading"><button className="button library-button" aria-label="Character library" disabled={!!busy || !hydrated} onClick={() => void openLibrary()}><Layers2 size={15}/><span>Characters</span></button>{hasActiveScene && <button className="character-breadcrumb" aria-label={`Scenes for ${currentCharacter?.name ?? asset.name}`} disabled={!!busy || !hydrated} onClick={() => void openLibrary(characterId)}><ChevronRight size={13}/><span>{currentCharacter?.name ?? asset.name}</span><ChevronRight size={13}/></button>}<input disabled={!hasActiveScene} aria-label="Scene name" value={studio.title} maxLength={200} onChange={e => { dirty.current = true; setStudio({ ...studio, title: e.target.value }); }}/></div>
+      <div className="header-right"><span className="save-status"><span className="status-dot"/>{saveStatus}</span><button className="icon-button theme-toggle" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} aria-pressed={theme === 'dark'} onClick={toggleTheme}>{theme === 'dark' ? <Sun size={18}/> : <Moon size={18}/>}</button><button className={`button agent-button ${agentConnection.connected ? 'connected' : ''}`} aria-label="Agent scripting" onClick={() => setDialog('agent')}><span className="status-dot"/>Agent</button><div className="history-tools" data-version={historyVersion}><button className="icon-button" title="Undo · Ctrl Z" aria-label="Undo" disabled={!history.current.past.length} onClick={undo}><Undo2 size={17}/></button><button className="icon-button" title="Redo · Ctrl Shift Z" aria-label="Redo" disabled={!history.current.future.length} onClick={redo}><Redo2 size={17}/></button></div><button className="button export-button" disabled={!hasActiveScene} onClick={() => setDialog('export')}><ArrowUpRight size={16}/>Export<span className="key-hint">↗</span></button></div>
     </header>
 
-    <div className="workspace">
+    <div className="workspace" inert={!hasActiveScene}>
       <aside className="left-sidebar">
         <div className="sidebar-section intro-section"><div className="eyebrow">A LITTLE STILL. A LOT OF MOTION.</div><h1>Make your<br/>next move<span>.</span></h1><p>A few poses. Endless possibilities.</p></div>
-        <div className="sidebar-section character-section"><div className="section-heading"><h2>Your character</h2><button className="icon-button" title="Start a new scene" aria-label="New scene" onClick={() => setDialog('new')}><Plus size={17}/></button></div>
-          <div className="character-card"><div className="character-art"><div className="orbit-ring one"/><div className="orbit-ring two"/><PoseSketch index={1} quadruped={asset.kind === 'quadruped'}/><span className="character-spark">✳</span></div><div className="character-details"><strong title={asset.name}>{asset.name}</strong><span>{asset.source === 'demo' ? 'Your practice partner' : 'Original character'}</span></div><span className="ready-dot" title="Loaded"/></div>
+        <div className="sidebar-section character-section"><div className="section-heading"><h2>Your character</h2><button className="icon-button" title="Browse saved characters" aria-label="Browse characters" onClick={() => void openLibrary()}><Plus size={17}/></button></div>
+          <div className="character-card"><div className="character-art"><div className="orbit-ring one"/><div className="orbit-ring two"/><PoseSketch index={1} quadruped={asset.kind === 'quadruped'}/><span className="character-spark">✳</span></div><div className="character-details"><strong title={currentCharacter?.name ?? asset.name}>{currentCharacter?.name ?? asset.name}</strong><span>{asset.rigged ? 'Saved model · locked rig' : 'Add a rig to save this character'}</span></div><span className="ready-dot" title="Loaded"/></div>
           <div className="rig-status"><ShieldCheck size={14}/>{asset.rigged ? getAutoRigDiagnostics(asset) ? getAutoRigDiagnostics(asset)?.hands ? 'Body and finger rig fitted' : 'Body rig fitted' : asset.source === 'import' ? 'Original rig preserved' : `${asset.kind === 'humanoid' ? 'Human' : 'Quadruped'} rig, ready to move` : 'Ready for a simple rig'}<span>{asset.bones.length} joints</span></div>
           <div className="character-import-actions"><button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button><button className="import-button animation-import-button" aria-label="Import animation" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={17}/><span>Import animation</span><span className="plus-small" aria-hidden="true">+</span></button><button className="import-button animation-import-button" aria-label="Swap look" title="Put a new mesh and paint on this skeleton. Bones and keys stay exactly the same." disabled={!asset.rigged || !!busy || !hydrated} onClick={() => lookInput.current?.click()}><Shirt size={17}/><span>Swap look</span><span className="plus-small" aria-hidden="true">+</span></button></div>
-          <div className="format-note">FBX, GLB, or a saved Still project</div>
+          <button className="button secondary character-new-scene" aria-label="New scene with this character" disabled={!asset.rigged || !!busy || !hydrated || !characterId} onClick={() => characterId && void createCharacterScene(characterId)}><Plus size={15}/>New scene with this character</button><button className="text-button" disabled={!!busy || !characterId} onClick={() => void openLibrary(characterId)}><Layers2 size={13}/>All scenes for this character</button><div className="format-note">FBX, GLB, or a saved .still scene</div>
         </div>
 
         <button className="mobile-inspector-toggle" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(v => !v)}><SlidersHorizontal size={15}/>Character &amp; joint controls{asset.warnings.length > 0 && <span>{asset.warnings.length} notes</span>}<ChevronDown size={14}/></button><div className="inspector-body" data-open={inspectorOpen}><div className="sidebar-section animation-section"><div className="section-heading"><h2>Animation</h2><span className="tiny-badge">{studio.keys.length} POSES</span></div>
@@ -998,7 +1130,15 @@ export default function App() {
         </div>
 
         <section className="timeline-section" aria-label="Animation timeline" onDragStart={e => e.preventDefault()}><div className="timeline-heading"><div className="timeline-title"><h2>Your moments</h2><span>{studio.keys.length} poses<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generation?.kind === 'physics' ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions">{studio.keys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="button duplicate-pose-button" title="Duplicate selected moment · Ctrl D" aria-label="Duplicate selected moment" disabled={!selectedKey || !asset.rigged || !!dragPreview || selectionMode} onClick={duplicateKey}><Copy size={14}/><span>Duplicate</span></button>{!selectionMode && <button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={!selectedKey || studio.keys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button>}<button className="button add-pose-button" disabled={!asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
-          <div className="timeline-edit-tools"><button className="button ripple-button" aria-label="Select keyframes" aria-pressed={selectionMode} disabled={!!busy || !!dragPreview} onClick={() => { setSelectionMode(value => !value); setSelectedIds(new Set()); setRipple(false); }}><MousePointer2 size={13}/>Select</button><button className="button ripple-button" aria-label="Ripple edit" aria-pressed={ripple} title="Move a pose and all later poses together, adjusting the clip length" disabled={!!busy || !!dragPreview || selectionMode} onClick={() => setRipple(value => !value)}><ArrowRight size={13}/>Ripple<span>{ripple ? 'On' : 'Off'}</span></button>{selectionMode ? <><span>Drag across diamonds. Ctrl-click to add or remove.</span><button className="button selection-delete" disabled={!selectedIds.size || !!selectionRange} onClick={deleteKey}><Trash2 size={13}/>Delete {selectedIds.size || ''} selected</button><span role="status">{selectedIds.size} selected · keep at least 2 poses</span></> : <span>{ripple ? 'Drag a diamond to move it and all later poses.' : 'Drag a diamond to retime. Shift-drag moves all later poses.'}</span>}{dragPreview?.ripple && <output>{dragPreview.duration.toFixed(2)}s total</output>}</div>
+          <div className="keyframe-clipboard" aria-label="Keyframe editing tools">
+            <button className="button" aria-label="Move selected keyframe" disabled={!selectedKey || selectionMode || !!busy || !!dragPreview} onClick={() => { setPlaying(false); setMovingKey(selectedKey!.id); setMoveTime(selectedKey!.time.toFixed(3)); }}><Move size={14}/>Move…</button>
+            <button className="button" aria-label="Copy keyframes" title="Copy selected keyframes · Ctrl C" disabled={selectionMode ? !selectedIds.size || !!busy || !!selectionRange : !selectedKey || !!busy || !!dragPreview} onClick={copyKeyframes}><Copy size={14}/>Copy</button>
+            <button className="button" aria-label="Paste keyframes at playhead" title="Paste at the playhead · Ctrl V" disabled={!keyClipboard || !!busy || !!dragPreview || !!selectionRange} onClick={pasteKeyframes}><Save size={14}/>Paste here</button>
+            <span>{keyClipboard ? keyClipboard.keys.length + ' copied · paste at ' + time.toFixed(2) + 's' : 'Click a diamond to select it. Move it, or Copy → click a time → Paste.'}</span>
+          </div>
+          {movingKey && selectedKey && <form className="keyframe-move" onSubmit={event => { event.preventDefault(); moveSelectedKey(); }}><label>Move keyframe to <input autoFocus aria-label="Move keyframe to seconds" type="number" min="0" max={MAX_ANIMATION_DURATION} step={1 / fps} value={moveTime} onChange={event => setMoveTime(event.target.value)}/> seconds</label><button className="button primary" disabled={!!busy || !moveTime.trim()}>Move keyframe</button><button type="button" className="text-button" onClick={() => setMovingKey(null)}>Cancel</button><small>A pose at that time is replaced. Undo restores it.</small></form>}
+          <div className="clip-length-tools" aria-label="Clip length tools"><label>Clip end <input aria-label="Clip end seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step={1 / fps} value={durationInput} disabled={!!busy || !!dragPreview || !!selectionRange} onChange={event => setDurationInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); changeDuration(durationInput.trim() ? Number(durationInput) : NaN); } }}/> s</label><button className="button" disabled={!!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(durationInput.trim() ? Number(durationInput) : NaN)}>Set end</button><button className="button" aria-label="End clip at playhead" disabled={time < .1 || time >= studio.duration || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(time)}>End clip here</button><button className="button" aria-label="Remove empty clip tail" disabled={studio.keys.at(-1)!.time < .1 || studio.keys.at(-1)!.time >= studio.duration - 1e-9 || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(studio.keys.at(-1)!.time)}>Remove empty tail</button><span>Trims the end. Earlier keyframes stay in place.</span></div>
+          <div className="timeline-edit-tools"><button className="button ripple-button" aria-label="Select keyframes" aria-pressed={selectionMode} disabled={!!busy || !!dragPreview} onClick={() => { setSelectionMode(value => !value); setSelectedIds(new Set()); setRipple(false); }}><MousePointer2 size={13}/>Select</button><button className="button ripple-button" aria-label="Ripple edit" aria-pressed={ripple} title="Move a pose and all later poses together, adjusting the clip length" disabled={!!busy || !!dragPreview || selectionMode} onClick={() => setRipple(value => !value)}><ArrowRight size={13}/>Ripple<span>{ripple ? 'On' : 'Off'}</span></button>{selectionMode ? <><span>Drag across diamonds. Ctrl-click to add or remove.</span><button className="button selection-delete" disabled={!selectedIds.size || !!selectionRange} onClick={deleteKey}><Trash2 size={13}/>Delete {selectedIds.size || ''} selected</button><span role="status">{selectedIds.size} selected · keep at least 2 poses</span></> : <span>{ripple ? 'Drag a diamond to move it and all later poses.' : 'Drag a diamond to move it. Drop on a pose to replace it. Shift-drag moves later poses.'}</span>}{dragPreview?.ripple && <output>{dragPreview.duration.toFixed(2)}s total</output>}</div>
           {asset.rigged && <KeyframeProperties key={`${sceneId}:${asset.root.uuid}`} asset={asset} pose={currentPose} selectedBone={selectedBone} reference={poseReference} selectedCount={selectedIds.size} selectionMode={selectionMode} disabled={!!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore}
             onPosition={position => { try { const pose = setModelPosition(asset, currentPose, position); if (pose !== currentPose) writePose(pose); } catch (error) { setError(error instanceof Error ? error.message : 'The model could not be moved.'); } }}
             onCopy={() => { setPlaying(false); setPoseReference({ keyId: selectedKey?.id ?? null, time, before: clone(currentPose), after: clone(currentPose), bone: selectedBone }); notify('Property values copied. Select poses and choose the axes to paste.'); }}
@@ -1017,7 +1157,7 @@ export default function App() {
               onPointerDown={e => { e.stopPropagation(); if (e.button !== 0 || !timeline.current || keyDrag.current) return; e.preventDefault(); e.currentTarget.focus({ preventScroll: true }); if (selectionMode) { startSelection(e.clientX, e.pointerId, e.ctrlKey || e.metaKey, key); return; } keyDrag.current = { id: key.id, pointerId: e.pointerId, startX: e.clientX, startTime: key.time, time: key.time, beforeTime: time, moved: false, ripple: ripple || e.shiftKey, studio, asset, fps }; timeline.current.setPointerCapture(e.pointerId); setPlaying(false); setTime(key.time); }}/>)}</div>
             <div className="playhead" style={{ left: `${time / timelineDuration * 100}%` }}><span/></div><input className="accessible-scrubber" aria-label="Timeline playhead" type="range" min="0" max={timelineDuration} step={1 / fps} value={time} onChange={e => { setPlaying(false); setTime(Number(e.target.value)); }}/>
           </div>
-          <div className="transport"><div className="playback-buttons"><button className="icon-button" aria-label="Go to beginning" onClick={() => { setPlaying(false); setTime(0); }}><SkipBack size={15}/></button><button className="icon-button" aria-label="Previous frame" onClick={() => { setPlaying(false); setTime(t => Math.max(0, t - 1 / fps)); }}><ChevronLeft size={19}/></button><button className="play-button" aria-label={playing ? 'Pause animation' : 'Play animation'} onClick={() => setPlaying(v => !v)}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="icon-button" aria-label="Next frame" onClick={() => { setPlaying(false); setTime(t => Math.min(studio.duration, t + 1 / fps)); }}><ChevronRight size={19}/></button><button className="icon-button" aria-label="Go to end" onClick={() => { setPlaying(false); setTime(studio.duration); }}><SkipForward size={15}/></button><span className="timecode">{time.toFixed(2)}<span>/ {timelineDuration.toFixed(2)} s</span></span></div><span className="transport-tip"><kbd>space</kbd> to play. Curiosity to create.</span><div className="duration-controls"><label><input aria-label="Animation duration seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step=".5" value={Number(timelineDuration.toFixed(3))} onChange={e => changeDuration(Number(e.target.value))}/>sec</label><select aria-label="Frames per second" value={fps} onChange={e => setFps(Number(e.target.value))}><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div></div>
+          <div className="transport"><div className="playback-buttons"><button className="icon-button" aria-label="Go to beginning" onClick={() => { setPlaying(false); setTime(0); }}><SkipBack size={15}/></button><button className="icon-button" aria-label="Previous frame" onClick={() => { setPlaying(false); setTime(t => Math.max(0, t - 1 / fps)); }}><ChevronLeft size={19}/></button><button className="play-button" aria-label={playing ? 'Pause animation' : 'Play animation'} onClick={() => setPlaying(v => !v)}>{playing ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button className="icon-button" aria-label="Next frame" onClick={() => { setPlaying(false); setTime(t => Math.min(studio.duration, t + 1 / fps)); }}><ChevronRight size={19}/></button><button className="icon-button" aria-label="Go to end" onClick={() => { setPlaying(false); setTime(studio.duration); }}><SkipForward size={15}/></button><span className="timecode">{time.toFixed(2)}<span>/ {timelineDuration.toFixed(2)} s</span></span></div><span className="transport-tip"><kbd>space</kbd> to play. Curiosity to create.</span><div className="duration-controls"><label><input aria-label="Animation duration seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step=".5" value={dragPreview ? String(Number(timelineDuration.toFixed(3))) : durationInput} disabled={!!busy || !!dragPreview || !!selectionRange} onChange={e => setDurationInput(e.target.value)} onBlur={() => changeDuration(durationInput.trim() ? Number(durationInput) : NaN)} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>sec</label><select aria-label="Frames per second" value={fps} onChange={e => setFps(Number(e.target.value))}><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div></div>
         </section>
         <footer className="editor-footer"><span><span className="status-dot"/>Everything stays on your device.</span><div className="ticker"><span>SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY. &nbsp;✳&nbsp; SMALL MOVES. BIG POSSIBILITIES. &nbsp;✳&nbsp; YOUR CHARACTER. YOUR WAY.</span></div><button onClick={() => setDialog('help')}><Keyboard size={13}/><span>Shortcuts</span></button></footer>
       </main>
@@ -1031,13 +1171,13 @@ export default function App() {
     {error && <div className="error-toast" role="alert"><CircleHelp size={19}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError(null)}><X size={16}/></button></div>}
     {sparks.map(s => <span className="click-spark" key={s.id} style={{ left: s.x, top: s.y }}>✳</span>)}
 
-    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''} ${dialog === 'rig' && rigDraft ? 'hand-rig-modal' : ''} ${dialog === 'physics' ? 'physics-report-modal' : ''} ${dialog === 'library' ? 'scene-library-modal' : ''}`} onCancel={e => { if (busy || exportRunning || updateState?.status === 'installing') e.preventDefault(); else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !busy && !exportRunning && updateState?.status !== 'installing') setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={!!busy || exportRunning || updateState?.status === 'installing'} onClick={() => setDialog(null)}><X size={19}/></button>
-      {dialog === 'library' && <SceneLibrary scenes={scenes} archives={archives} activeId={sceneId} recovering={!storageReady} onOpen={id => void openSavedScene(id)} onNew={() => setDialog('new')} onImport={() => setDialog('import')} onRename={(id, name) => changeSavedScene(id, 'rename', name)} onDuplicate={id => void changeSavedScene(id, 'duplicate')} onDelete={id => void changeSavedScene(id, 'delete')} onRecover={id => void openArchive(id)}/>}
+    <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''} ${dialog === 'rig' && rigDraft ? 'hand-rig-modal' : ''} ${dialog === 'physics' ? 'physics-report-modal' : ''} ${dialog === 'library' ? 'scene-library-modal' : ''}`} onCancel={e => { if (busy || exportRunning || updateState?.status === 'installing' || !hasActiveScene) { e.preventDefault(); if (!busy && !hasActiveScene) setDialog('library'); } else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !busy && !exportRunning && updateState?.status !== 'installing' && hasActiveScene) setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={!!busy || exportRunning || updateState?.status === 'installing' || !hasActiveScene && dialog === 'library'} onClick={() => setDialog(hasActiveScene ? null : 'library')}><X size={19}/></button>
+      {dialog === 'library' && <SceneLibrary characters={characters} scenes={scenes} archives={archives} activeId={hasActiveScene ? sceneId : ''} initialCharacterId={libraryCharacterId} recovering={!storageReady} onOpen={id => void openSavedScene(id)} onNew={id => void createCharacterScene(id)} onAddCharacter={() => setDialog('new')} onRenameCharacter={changeCharacterName} onRename={(id, name) => changeSavedScene(id, 'rename', name)} onDuplicate={id => void changeSavedScene(id, 'duplicate')} onDelete={id => changeSavedScene(id, 'delete')} onRecover={id => void openArchive(id)}/>}
       {dialog === 'physics' && studio.generation?.kind === 'physics' && <PhysicsComparison generation={studio.generation} onCompare={comparePhysics} onKeep={() => setDialog(null)} onRestoreOriginal={restoreBeforePhysics} onSaveReport={() => { const { comparison: _comparison, ...report } = studio.generation!; downloadFile(JSON.stringify(report, null, 2), 'physics-comparison-report.json', 'application/json'); }}/>}
       {dialog === 'updates' && <UpdatesDialog state={updateState} canInstall={hydrated && storageReady && !busy && !engine?.busy && !engine?.recovery && !agentController.current && !exportOperation.current && !keyDrag.current} onInstall={() => void installDownloadedUpdate()}/>}
       {dialog === 'agent' && <><span className="modal-icon"><Keyboard size={25}/></span><div className="eyebrow">YOUR AGENT. YOUR ANIMATION.</div><h2>Make moves<br/>with a little code.</h2><p>Give an AI agent control of this scene through local scripts or MCP. It can inspect joints, edit poses, run AI and physics, save projects, and export to Unreal.</p><div className="modal-tip"><span className="status-dot"/><span><strong>{agentConnection.connected ? 'Ready for scripts' : 'Waiting for the local service'}</strong><br/>{agentConnection.connected ? 'This tab can stay in the background while your agent works.' : agentConnection.error || 'Start Still with its launcher to connect.'}</span></div>{agentConnection.sessionId && <p className="agent-session">Session: {agentConnection.sessionId}</p>}<p>Start in the project folder:</p><pre className="agent-command">node scripts/still-agent.mjs sessions{`\n`}node scripts/still-agent.mjs schema</pre><p>Give your agent <strong>docs/agent-scripting.md</strong>. For MCP, launch <strong>node scripts/still-mcp.mjs</strong> from your agent’s MCP configuration.</p><div className="agent-actions"><button className="button secondary" onClick={() => { void navigator.clipboard.writeText(`Use Still's local agent API to work on my animation. Read docs/agent-scripting.md in the Still project. Target session ${agentConnection.sessionId || '(list sessions first)'}. Inspect the scene and schema before changing it, use expectedRevision for edits, and save a .still backup before replacing my work.`).then(() => notify('Instructions copied for your agent.')).catch(() => notify('Select the session ID and use docs/agent-scripting.md.')); }}><Copy size={15}/>Copy agent instructions</button></div><div className="agent-last">{agentActivity ? <><strong>{agentActivity.status === 'done' ? 'Completed' : agentActivity.status === 'error' ? 'Needs attention' : agentActivity.status === 'cancelled' ? 'Stopped' : 'Working'} · {agentActivity.method}</strong>{agentActivity.message && <p>{agentActivity.message}</p>}</> : 'Pose edits use Undo. Replacing a scene keeps a Recent scenes backup. Access stays on this computer.'}</div></>}
       {dialog === 'animation' && <AnimationImport key={`${sceneId}:${asset.root.uuid}`} target={asset} duration={studio.duration} fps={fps} initialMode={animationImportMode} onBusy={loading => { setBusy(current => loading ? 'Reading animation file…' : current === 'Reading animation file…' ? null : current); setPlaying(false); }} onApply={applyImportedAnimation}/>}
-      {dialog === 'import' && <><span className="modal-icon"><Upload size={25}/></span><div className="eyebrow">BRING YOUR CHARACTER</div><h2>Import a character.</h2><p>Open a rigged FBX or GLB as a new scene. Its skeleton and skin weights stay intact. Your current scene saves in the library.</p><button className="modal-dropzone" onClick={() => importInput.current?.click()}><Upload size={27}/><strong>Choose a character or saved project</strong><span>FBX · GLB · .still project · up to 200 MB</span></button><div className="modal-tip"><ShieldCheck size={19}/><span>For a Mixamo character, download <strong>FBX Binary → With Skin</strong>. Then use <strong>Import animation</strong> to apply another motion to it.</span></div><button className="button secondary full-width" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={16}/>Import animation onto current character</button><p className="micro-copy">No skeleton? You can fit a basic human or quadruped rig after importing. Upright, neutral poses work best.</p></>}
+      {dialog === 'import' && <><span className="modal-icon"><Upload size={25}/></span><div className="eyebrow">BRING YOUR CHARACTER</div><h2>Import a character.</h2><p>Save a rigged FBX or GLB as a character with its first scene. Its skeleton and skin weights stay intact. Your current work saves before switching.</p><button className="modal-dropzone" onClick={() => importInput.current?.click()}><Upload size={27}/><strong>Choose a character or saved scene</strong><span>FBX · GLB · .still scene · up to 200 MB</span></button><div className="modal-tip"><ShieldCheck size={19}/><span>For a Mixamo character, download <strong>FBX Binary → With Skin</strong>. Then use <strong>Import animation</strong> to apply another motion to it.</span></div><button className="button secondary full-width" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={16}/>Import animation onto current character</button><p className="micro-copy">No skeleton? You can fit a basic human or quadruped rig after importing. Upright, neutral poses work best.</p></>}
       {dialog === 'export' && <><span className="modal-icon"><ArrowUpRight size={25}/></span><div className="eyebrow">TAKE YOUR MOTION WITH YOU</div><h2>Made a move?<br/>Make it useful.</h2><p>Take your character and the motion you’re previewing into your next project.</p>
         <button className={`export-choice unreal-export ${unrealCapability?.available && asset.rigged ? 'recommended' : ''}`} disabled={!asset.rigged || !unrealCapability?.available || !!busy || !!exportBlocked} onClick={() => void exportUnreal()} aria-describedby="unreal-export-note"><Box size={24}/><span><strong>Unreal Engine · FBX</strong><small>{retarget === 'skeleton' ? 'Animation only + import guide' : 'Character + animation + textures + import guide'}</small><span className="export-recommendation">{!asset.rigged ? 'A rig is needed first' : unrealCapability?.available ? 'Recommended for Unreal' : unrealCapability === null ? 'Checking local exporter…' : 'Exporter unavailable'}</span></span>{unrealCapability === null ? <LoaderCircle size={19} className="spin"/> : <Download size={19}/>}</button>
         <div className="unreal-options">
@@ -1050,13 +1190,12 @@ export default function App() {
         </div><p id="unreal-export-note" className="export-caption">{!asset.rigged ? 'Fit a rig before Unreal export. Close this dialog and choose Add a rig.' : !unrealCapability?.available ? unrealCapability?.reason || (unrealCapability === null ? 'Checking this computer’s export tools.' : 'Start Still with its launcher to enable Unreal export.') : exportBlocked || `${saveIntoFolder ? 'Folder export' : 'ZIP package'} · ${fps} fps · ${rootMotion === 'extract' ? 'Gameplay root motion' : rootMotion === 'in-place' ? 'In place' : 'Original movement'}`}</p>
         {exportSummary && <div className={`export-result ${exportSummary.error ? 'export-error' : ''}`} role={exportSummary.error || exportSummary.saveError ? 'alert' : 'status'}><strong>{exportSummary.error ? <CircleHelp size={15}/> : <Check size={15}/>}{exportSummary.error ? 'Export could not finish' : exportSummary.cancelled ? 'Export cancelled' : exportSummary.savedTo ? `Saved to ${exportSummary.savedTo}` : 'Unreal package downloaded'}</strong><p>{exportSummary.error || (exportSummary.cancelled ? 'Your character and animation are unchanged.' : exportSummary.savedTo ? 'Open the saved folder and run import_unreal.py in Unreal. Follow the included import guide.' : exportSummary.existingSkeleton ? 'Unzip the package and run import_unreal.py to import the animation onto your selected skeleton. For manual import, skip character.fbx and select that skeleton for animation.fbx.' : 'Unzip the package and follow its import guide. Import the character first, then its animation onto the same skeleton.')}</p>{exportSummary.saveError && <p>{exportSummary.saveError}</p>}{exportSummary.warnings.length > 0 && <details open><summary>Export notes</summary>{exportSummary.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}</div>}
         {needsReview && <div className="modal-tip"><CircleHelp size={18}/><span>This motion has review flags. Check the pass details and playback before using the exported animation.</span></div>}
-        <button className="export-choice" onClick={() => void exportGLB()}><Box size={24}/><span><strong>Animated character</strong><small>GLB · mesh, skeleton, and baked animation</small></span><Download size={19}/></button><button className="export-choice" onClick={saveProject}><Save size={24}/><span><strong>Editable Still project</strong><small>.still · character, poses, and settings</small></span><Download size={19}/></button><div className="modal-tip"><ShieldCheck size={19}/><span>Use your matching Unreal skeleton, create a new character, or retarget to Manny or a MetaHuman body. Mixamo bone names are made compatible with Unreal.</span></div></>}
-      {dialog === 'new' && <><span className="modal-icon"><Sparkles size={25}/></span><div className="eyebrow">A FRESH START</div><h2>What’s your<br/>next move?</h2><p>Try a practice character, start from a blank pose, or bring one of your own. Your current scene is saved in the library before starting another one.</p><button className="button secondary full-width" onClick={() => void openLibrary()}><Layers2 size={16}/>Open scene library</button><div className="new-choices"><button onClick={() => createNew('humanoid')}><PoseSketch index={3}/><strong>A friendly wave</strong><span>Human · 6 poses</span></button><button onClick={() => createNew('quadruped')}><PoseSketch quadruped/><strong>Four little steps</strong><span>Quadruped · 6 poses</span></button></div><button className="export-choice compact" onClick={() => createNew('humanoid', true)}><Plus size={20}/><span><strong>Start from a blank pose</strong></span><ArrowRight size={17}/></button><button className="export-choice compact" onClick={() => setDialog('import')}><Upload size={20}/><span><strong>Import your own character</strong></span><ArrowRight size={17}/></button></>}
-      {dialog === 'new' && archives.length > 0 && <div className="recent-scenes"><h3>Recent scenes</h3>{archives.map(entry => <button key={entry.id} onClick={() => void openArchive(entry.id)}><RotateCcw size={13}/><span>{entry.name}</span><small>{new Date(entry.updatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</small></button>)}</div>}
+        <button className="export-choice" onClick={() => void exportGLB()}><Box size={24}/><span><strong>Animated character</strong><small>GLB · mesh, skeleton, and baked animation</small></span><Download size={19}/></button><button className="export-choice" onClick={saveProject}><Save size={24}/><span><strong>Editable Still scene</strong><small>.still · character, poses, and settings</small></span><Download size={19}/></button><div className="modal-tip"><ShieldCheck size={19}/><span>Use your matching Unreal skeleton, create a new character, or retarget to Manny or a MetaHuman body. Mixamo bone names are made compatible with Unreal.</span></div></>}
+      {dialog === 'new' && <><span className="modal-icon"><Bone size={25}/></span><div className="eyebrow">SAVE A CHARACTER ONCE</div><h2>Add a character.</h2><p>Import a model with its rig, or choose a practice character. Each character gets its own collection of scenes.</p><button className="export-choice compact" onClick={() => setDialog('import')}><Upload size={20}/><span><strong>Import your own character</strong><small>FBX or GLB · existing rigs preserved</small></span><ArrowRight size={17}/></button><div className="new-choices"><button onClick={() => createNew('humanoid')}><PoseSketch index={3}/><strong>Practice partner</strong><span>Human · rigged and ready</span></button><button onClick={() => createNew('quadruped')}><PoseSketch quadruped/><strong>Four-legged friend</strong><span>Quadruped · rigged and ready</span></button></div><button className="text-button" onClick={() => void openLibrary()}><ArrowLeft size={14}/>Back to characters</button></>}
       {dialog === 'rig' && error && <p className="rig-fit-error" role="alert">{error}</p>}
       {dialog === 'rig' && rigDraft && <HandRigSetup preview={rigDraft.preview} fit={rigDraft.fit} initial={rigDraft.initial} theme={theme} disabled={!!busy} onChange={fit => { setError(null); setRigDraft(current => current ? { ...current, fit } : null); }} onBind={() => void makeRig(rigDraft.fit)} onBack={() => setRigDraft(null)}/>}
       {dialog === 'rig' && !rigDraft && <><span className="modal-icon"><Bone size={25}/></span><div className="eyebrow">A SIMPLE STARTING SKELETON</div><h2>A little structure.<br/>A lot of freedom.</h2><p>Pick the shape that fits your character. We’ll fit joints to the shape of your mesh and blend the skin around its limbs.</p><div className="new-choices rig-choices">{(['humanoid', 'quadruped'] as RigKind[]).map(kind => <button key={kind} className={rigKind === kind ? 'selected' : ''} onClick={() => setRigKind(kind)}><PoseSketch quadruped={kind === 'quadruped'}/><strong>{kind === 'humanoid' ? 'Two legs' : 'Four legs'}</strong><span>{kind === 'humanoid' ? 'Upright human · A or T pose' : 'Animal · head facing +Z'}</span></button>)}</div><label className="rig-finger-option"><input type="checkbox" checked={rigFingers} disabled={rigKind !== 'humanoid' || !!busy} onChange={event => setRigFingers(event.target.checked)}/>Include hands &amp; five fingers per hand</label><div className="modal-tip"><CircleHelp size={19}/><span>Use an upright, neutral pose. Geometry fitting checks the skin binding; inspect a small bend before making larger poses.</span></div><button className="button primary full-width" onClick={() => void prepareRig()} disabled={asset.rigged || !!busy || !hydrated}>{rigKind === 'humanoid' && rigFingers ? 'Detect body & finger joints' : 'Fit my rig'} <ArrowRight size={16}/></button></>}
-      {dialog === 'help' && <><span className="modal-icon"><Hand size={25}/></span><div className="eyebrow">YOU ALREADY KNOW ENOUGH</div><h2>Three steps.<br/>Your first animation.</h2><div className="tour-step"><span>01</span><div><strong>Bring a character.</strong><p>Use the practice partner or import an FBX from Mixamo. Existing rigs are preserved.</p></div></div><div className="tour-step"><span>02</span><div><strong>Make a few moments.</strong><p>Move the playhead. Drag a joint into place. Your pose is saved automatically. Use Select to drag across several keyframes, then Delete selected. One Undo restores the group. Drag a diamond to change its timing. Turn on Ripple or hold Shift while dragging to move it and every later pose together, shortening or extending the clip.</p></div></div><div className="tour-step"><span>03</span><div><strong>Let them flow.</strong><p>Choose Generate motion to fill the gaps with AI. Preview with Space, correct with physics, then export an animated GLB.</p></div></div><div className="shortcut-grid"><span><kbd>Space</kbd>Play / pause</span><span><kbd>K</kbd>Save a pose</span><span><kbd>Ctrl D</kbd>Duplicate moment</span><span><kbd>Shift drag</kbd>Ripple timing</span><span><kbd>Alt Shift ← →</kbd>Ripple one frame</span><span><kbd>W / E</kbd>Move / rotate</span><span><kbd>← →</kbd>One frame</span><span><kbd>Ctrl Z</kbd>Undo</span><span><kbd>Ctrl S</kbd>Save to library</span></div><p className="help-honesty">AI in-betweening runs trained human or animal motion models on this computer. The owned models have limited training coverage; inspect difficult contacts and acrobatics. Physics offers articulated-body correction and native Cascadeur AutoPhysics when installed. Curve interpolation and the quick ground pass are lightweight procedural tools. Generated motion stays separate from your editable key poses.</p><button className="button primary full-width" onClick={() => setDialog(null)}>Let’s make something move <ArrowRight size={16}/></button></>}
+      {dialog === 'help' && <><span className="modal-icon"><Hand size={25}/></span><div className="eyebrow">YOU ALREADY KNOW ENOUGH</div><h2>Three steps.<br/>Your first animation.</h2><div className="tour-step"><span>01</span><div><strong>Bring a character.</strong><p>Use the practice partner or import an FBX from Mixamo. Existing rigs are preserved.</p></div></div><div className="tour-step"><span>02</span><div><strong>Make a few moments.</strong><p>Move the playhead. Drag a joint into place. Your pose is saved automatically. Use Select to drag across several keyframes, then Delete selected. One Undo restores the group. Drag a diamond to change its timing. Turn on Ripple or hold Shift while dragging to move it and every later pose together, shortening or extending the clip.</p></div></div><div className="tour-step"><span>03</span><div><strong>Let them flow.</strong><p>Choose Generate motion to fill the gaps with AI. Preview with Space, correct with physics, then export an animated GLB.</p></div></div><div className="shortcut-grid"><span><kbd>Space</kbd>Play / pause</span><span><kbd>K</kbd>Save a pose</span><span><kbd>Ctrl D</kbd>Duplicate moment</span><span><kbd>Ctrl C / V</kbd>Copy / paste keyframes</span><span><kbd>Shift drag</kbd>Ripple timing</span><span><kbd>Alt Shift ← →</kbd>Ripple one frame</span><span><kbd>W / E</kbd>Move / rotate</span><span><kbd>← →</kbd>One frame</span><span><kbd>Ctrl Z</kbd>Undo</span><span><kbd>Ctrl S</kbd>Save to library</span></div><p className="help-honesty">AI in-betweening runs trained human or animal motion models on this computer. The owned models have limited training coverage; inspect difficult contacts and acrobatics. Physics offers articulated-body correction and native Cascadeur AutoPhysics when installed. Curve interpolation and the quick ground pass are lightweight procedural tools. Generated motion stays separate from your editable key poses.</p><button className="button primary full-width" onClick={() => setDialog(null)}>Let’s make something move <ArrowRight size={16}/></button></>}
       {busy && <div className="modal-busy" role="status"><LoaderCircle size={25} className="spin"/><strong>{busy}</strong>{exportRunning && <><progress className="engine-progress" aria-label="Unreal export progress" max="1" value={progress ?? 0}/><button className="button secondary" disabled={exportCancelling} onClick={cancelUnrealExport}>{exportCancelling ? 'Cancelling…' : 'Cancel export'}</button><p className="micro-copy">Preparing the package locally. Your animation stays unchanged.</p></>}</div>}
     </div></dialog>
   </div>;

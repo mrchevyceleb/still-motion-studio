@@ -27,6 +27,7 @@ export interface CharacterAsset {
 }
 export interface ProjectDocument {
   version: 1;
+  characterId?: string;
   name: string;
   duration: number;
   fps: number;

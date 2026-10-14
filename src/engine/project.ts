@@ -1,10 +1,12 @@
 import type { CharacterAsset, ProjectDocument } from '../types';
+import { characterEntry, characterFingerprint } from './characterLibrary';
+import type { CharacterEntry, SavedCharacter } from './characterLibrary';
 
 const DATABASE = 'still-motion-studio';
 const STORE = 'projects';
 let saveQueue = Promise.resolve();
 export interface ArchiveEntry { id: string; name: string; updatedAt: number }
-export interface SceneEntry extends ArchiveEntry { createdAt: number; duration: number; keyCount: number; kind: CharacterAsset['kind']; thumbnail?: string; revision?: number }
+export interface SceneEntry extends ArchiveEntry { createdAt: number; duration: number; keyCount: number; kind: CharacterAsset['kind']; characterId?: string; thumbnail?: string; revision?: number }
 export interface SceneWriteToken { id: string; revision: number }
 
 function database(): Promise<IDBDatabase> {
@@ -45,29 +47,104 @@ function readValue<T>(key: string): Promise<T> {
 }
 
 function sceneEntry(document: ProjectDocument, id: string, previous?: SceneEntry, thumbnail?: string): SceneEntry {
-  return { id, name: document.name.trim() || 'Untitled', createdAt: previous?.createdAt ?? Date.now(), updatedAt: Date.now(), duration: document.duration, keyCount: document.keys.length, kind: document.character.kind, thumbnail: thumbnail ?? previous?.thumbnail };
+  return { id, name: document.name.trim() || 'Untitled', createdAt: previous?.createdAt ?? Date.now(), updatedAt: Date.now(), duration: document.duration, keyCount: document.keys.length, kind: document.character.kind, characterId: document.characterId, thumbnail: thumbnail ?? previous?.thumbnail };
+}
+
+/** Idempotent migration in one transaction. Original scenes and recovery backups remain portable. */
+export function initializeCharacterLibrary(): Promise<void> {
+  return enqueue(() => withStore<void>('readwrite', (store, done) => {
+    const index = store.get('scene-index'), characters = store.get('character-index'), current = store.get('current-scene-id');
+    current.onsuccess = () => {
+      const entries: SceneEntry[] = index.result ?? [];
+      const saved: CharacterEntry[] = characters.result ?? [];
+      let pending = entries.length;
+      if (!pending) { done(); return; }
+      for (const entry of entries) {
+        const request = store.get(`scene:${entry.id}`);
+        request.onsuccess = () => {
+          const document: ProjectDocument | undefined = request.result;
+          if (document?.boneNames.length && !saved.some(character => character.id === entry.characterId)) {
+            const fingerprint = characterFingerprint(document.character, document.boneNames);
+            let character = saved.find(value => value.fingerprint === fingerprint);
+            if (!character) {
+              const record = characterEntry(document, crypto.randomUUID(), entry.thumbnail);
+              const { model: _model, boneNames: _bones, ...metadata } = record;
+              saved.push(metadata); character = metadata;
+              store.put(record, `character:${record.id}`);
+            }
+            entry.characterId = character.id;
+            document.characterId = character.id;
+            store.put(document, `scene:${entry.id}`);
+            if (current.result === entry.id) store.put(document, 'current');
+          }
+          if (!--pending) { store.put(entries, 'scene-index'); store.put(saved, 'character-index'); done(undefined); }
+        };
+      }
+    };
+  }));
+}
+
+export async function listCharacters(): Promise<CharacterEntry[]> {
+  return await readValue<CharacterEntry[] | undefined>('character-index') ?? [];
+}
+
+export async function readCharacter(id: string): Promise<SavedCharacter> {
+  const character = await readValue<SavedCharacter | undefined>(`character:${id}`);
+  if (!character) throw new Error('This character is no longer in your library.');
+  return character;
+}
+
+/** Renaming changes the label only. The model and rig are immutable. */
+export function renameCharacter(id: string, name: string): Promise<void> {
+  const title = name.trim();
+  if (!title || title.length > 200) return Promise.reject(new Error('Give this character a name of 1–200 characters.'));
+  return enqueue(() => withStore<void>('readwrite', (store, done) => {
+    const index = store.get('character-index'), character = store.get(`character:${id}`);
+    character.onsuccess = () => {
+      if (!character.result) { store.transaction.abort(); return; }
+      store.put({ ...character.result, name: title }, `character:${id}`);
+      store.put((index.result as CharacterEntry[]).map(entry => entry.id === id ? { ...entry, name: title } : entry), 'character-index');
+      done(undefined);
+    };
+  }));
 }
 
 /** Current recovery slot and permanent library entry commit together, or neither does. */
-export function saveLocal(document: ProjectDocument, sceneId?: string, thumbnail?: string, token?: SceneWriteToken): Promise<{ id: string; revision: number; forked: boolean }> {
+export function saveLocal(document: ProjectDocument, sceneId?: string, thumbnail?: string, token?: SceneWriteToken): Promise<{ id: string; revision: number; forked: boolean; characterId?: string }> {
+  const fingerprint = characterFingerprint(document.character, document.boneNames);
   const snapshot = structuredClone(document);
   return enqueue(async () => {
-    const result = await withStore<{ id: string; revision: number; forked: boolean }>('readwrite', (store, done) => {
+    const result = await withStore<{ id: string; revision: number; forked: boolean; characterId?: string }>('readwrite', (store, done) => {
     const current = store.get('current-scene-id');
     current.onsuccess = () => {
       const index = store.get('scene-index');
-      index.onsuccess = () => {
+      const characters = store.get('character-index');
+      characters.onsuccess = () => {
         const entries: SceneEntry[] = index.result ?? [];
         const requestedId = token?.id ?? sceneId ?? current.result ?? crypto.randomUUID();
         const previous = entries.find(entry => entry.id === requestedId);
         const forked = !!token && (previous?.revision ?? 0) !== token.revision;
         const id = forked ? crypto.randomUUID() : requestedId;
         const revision = forked ? 1 : (previous?.revision ?? 0) + 1;
+        const saved: CharacterEntry[] = characters.result ?? [];
+        // Unrigged imports are drafts until binding succeeds; never advertise them as locked characters.
+        if (snapshot.boneNames.length) {
+          let character = saved.find(value => value.id === snapshot.characterId && value.fingerprint === fingerprint)
+            ?? saved.find(value => value.fingerprint === fingerprint);
+          if (!character) {
+            const record = characterEntry(snapshot, crypto.randomUUID(), thumbnail);
+            const { model: _model, boneNames: _bones, ...metadata } = record;
+            character = metadata; saved.push(metadata);
+            store.put(record, `character:${record.id}`);
+          }
+          snapshot.characterId = character.id;
+          store.put(saved, 'character-index');
+        } else delete snapshot.characterId;
         store.put(snapshot, 'current');
         store.put(id, 'current-scene-id');
         store.put(snapshot, `scene:${id}`);
         store.put([{ ...sceneEntry(snapshot, id, forked ? undefined : previous, thumbnail), revision }, ...entries.filter(entry => entry.id !== id)], 'scene-index');
-        done({ id, revision, forked });
+        done({ id, revision, forked, characterId: snapshot.characterId });
       };
     };
     });
@@ -109,10 +186,11 @@ export function editScene(id: string, change: 'rename' | 'duplicate' | 'delete',
     document.onsuccess = () => {
       const entries: SceneEntry[] = index.result ?? [];
       const previous = entries.find(entry => entry.id === id);
-      if (!previous || !document.result || (change === 'delete' && current.result === id)) { store.transaction.abort(); return; }
+      if (!previous || !document.result) { store.transaction.abort(); return; }
       if (change === 'delete') {
         store.delete(`scene:${id}`);
         store.put(entries.filter(entry => entry.id !== id), 'scene-index');
+        if (current.result === id) { store.delete('current'); store.delete('current-scene-id'); }
       } else {
         const nextId = change === 'duplicate' ? crypto.randomUUID() : id;
         const next = { ...document.result, name: title ?? `${previous.name.slice(0, 193)} (copy)` };
