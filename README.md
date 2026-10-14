@@ -2,11 +2,11 @@
 
 A local character animation editor with an installable Windows Electron app and a browser development version. Import rigged FBX/GLB files, drag joints, edit a few poses, generate transitions, correct contacts, and export animation for Unreal.
 
-Release 0.2.18 adds keyboard controls and a dedicated shortcut sheet: S switches Select mode, Esc or V returns to regular mode, R toggles Ripple, and M opens the keyframe move control. Press ? or F1 for the full list. Saved characters and scenes, keyframe copy/paste, exact-frame dragging, clip trimming, animation import and private automatic updates remain available.
+Release 0.2.19 adds a labelled Move model tool in the viewport. Click it or press G, then drag the character across the floor. Shift-drag raises or lowers the whole model. Bone rotations and animation timing stay unchanged; one Undo restores the move. Existing character libraries, keyframe editing and keyboard shortcuts remain available.
 
 ## Install or develop
 
-Download **Still-Motion-Studio-Setup-0.2.18.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
+Download **Still-Motion-Studio-Setup-0.2.19.exe** from the [latest private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest). It includes CPU-capable Python, the validated animal motion model, MuJoCo, Blender, and local fonts. No Node/Python setup or GPU is needed. Editing works offline. For automatic updates, open **Updates → Connect GitHub** once using an account with repository access. See [desktop setup](docs/desktop.md).
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 

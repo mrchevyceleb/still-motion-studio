@@ -47,7 +47,7 @@ import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSetting
 interface Studio { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
 interface KeyDrag { id: string; pointerId: number; startX: number; startTime: number; time: number; beforeTime: number; moved: boolean; ripple: boolean; result?: { keys: PoseKey[]; duration: number; time: number }; studio: Studio; asset: CharacterAsset; fps: number }
 type Dialog = 'import' | 'animation' | 'export' | 'help' | 'shortcuts' | 'rig' | 'new' | 'agent' | 'updates' | 'physics' | 'library' | null;
-const SHORTCUTS = [['S', 'Toggle Select / regular mode'], ['Esc or V', 'Return to regular mode'], ['R', 'Toggle Ripple editing'], ['M', 'Move selected keyframe to a time'], ['Space', 'Play / pause'], ['← / →', 'Step one frame'], ['Home / End', 'Go to clip start / end'], ['K', 'Add or update a pose'], ['Ctrl C / V', 'Copy / paste keyframes'], ['Ctrl D', 'Duplicate current keyframe'], ['Ctrl A', 'Select all keyframes'], ['Delete', 'Delete selected keyframes'], ['Ctrl Z', 'Undo'], ['Ctrl Shift Z / Ctrl Y', 'Redo'], ['Ctrl S', 'Save scene'], ['Ctrl Shift S', 'Export a .still backup'], ['W / E', 'Move / rotate joints'], ['? or F1', 'Show keyboard shortcuts']];
+const SHORTCUTS = [['S', 'Toggle Select / regular mode'], ['Esc or V', 'Return to regular mode'], ['R', 'Toggle Ripple editing'], ['M', 'Move selected keyframe to a time'], ['Space', 'Play / pause'], ['← / →', 'Step one frame'], ['Home / End', 'Go to clip start / end'], ['K', 'Add or update a pose'], ['Ctrl C / V', 'Copy / paste keyframes'], ['Ctrl D', 'Duplicate current keyframe'], ['Ctrl A', 'Select all keyframes'], ['Delete', 'Delete selected keyframes'], ['Ctrl Z', 'Undo'], ['Ctrl Shift Z / Ctrl Y', 'Redo'], ['Ctrl S', 'Save scene'], ['Ctrl Shift S', 'Export a .still backup'], ['G', 'Move the whole model'], ['W / E', 'Move / rotate joints'], ['? or F1', 'Show keyboard shortcuts']];
 const clone = <T,>(value: T): T => structuredClone(value);
 const niceName = (name: string) => name.replace(/^mixamorig[:_]?/i, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_:]/g, ' ');
 const uid = () => crypto.randomUUID();
@@ -92,6 +92,7 @@ export default function App() {
   const [showGhosts, setShowGhosts] = useState(false);
   const [cameraView, setCameraView] = useState<'perspective' | 'front' | 'side'>('perspective');
   const [tool, setTool] = useState<'move' | 'rotate'>('move');
+  const [moveModel, setMoveModel] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [animationImportMode, setAnimationImportMode] = useState<'apply' | 'append'>('apply');
   const [rigKind, setRigKind] = useState<RigKind>('humanoid');
@@ -214,8 +215,11 @@ export default function App() {
     if (drag && timeline.current?.hasPointerCapture(drag.pointerId)) timeline.current.releasePointerCapture(drag.pointerId);
   }
   const setTimelineMode = useCallback((selecting: boolean) => {
-    setSelectionMode(selecting); setSelectedIds(new Set()); setRipple(false); setPlaying(false); setMovingKey(null);
+    setSelectionMode(selecting); setSelectedIds(new Set()); setRipple(false); setPlaying(false); setMovingKey(null); setMoveModel(false);
   }, []);
+  const toggleModelMove = useCallback(() => {
+    setTimelineMode(false); setSelectedBone(null); setMoveModel(!moveModel);
+  }, [moveModel, setTimelineMode]);
   useEffect(() => {
     const drag = keyDrag.current;
     if (drag && (drag.studio !== studio || drag.asset !== asset || drag.fps !== fps || dialog || busy)) cancelKeyDrag();
@@ -599,7 +603,7 @@ export default function App() {
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('input:not([type="range"]), textarea, select, [contenteditable="true"]') || dialog || busy || !hydrated || !hasActiveScene) return;
       if (target?.matches('input[type="range"]') && !mod && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
-      if (!mod && !event.altKey && event.repeat && ['s', 'v', 'r', 'm', 'w', 'e', ' '].includes(key)) { event.preventDefault(); return; }
+      if (!mod && !event.altKey && event.repeat && ['s', 'v', 'r', 'm', 'w', 'e', 'g', ' '].includes(key)) { event.preventDefault(); return; }
       if (mod && key === 'a') { event.preventDefault(); setTimelineMode(true); setSelectedIds(new Set(studio.keys.map(key => key.id))); }
       else if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if (mod && key === 'y') { event.preventDefault(); redo(); }
@@ -610,6 +614,7 @@ export default function App() {
       else if (mod || event.altKey) return;
       else if (key === 's') { event.preventDefault(); setTimelineMode(!selectionMode); }
       else if (key === 'v') { event.preventDefault(); setTimelineMode(false); }
+      else if (key === 'g') { event.preventDefault(); toggleModelMove(); }
       else if (key === 'r') { event.preventDefault(); setSelectionMode(false); setSelectedIds(new Set()); setRipple(value => !value); setPlaying(false); }
       else if (key === 'm' && selectedKey && !selectionMode) { event.preventDefault(); setMovingKey(selectedKey.id); setMoveTime(String(selectedKey.time)); setPlaying(false); }
       else if (key === '?' || event.key === 'F1') { event.preventDefault(); setDialog('shortcuts'); }
@@ -624,7 +629,7 @@ export default function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, studio.keys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode]);
+  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, studio.keys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode, toggleModelMove]);
 
   const handleImport = async (file: File) => {
     if (busy) return;
@@ -1034,8 +1039,8 @@ export default function App() {
       if (patch.cameraView !== undefined) setCameraView(patch.cameraView);
       if (patch.showRig !== undefined) setShowRig(patch.showRig);
       if (patch.showGhosts !== undefined) setShowGhosts(patch.showGhosts);
-      if (patch.tool !== undefined) setTool(patch.tool);
-      if (patch.selectedBone !== undefined) setSelectedBone(patch.selectedBone);
+      if (patch.tool !== undefined) { setTool(patch.tool); setMoveModel(false); }
+      if (patch.selectedBone !== undefined) { setSelectedBone(patch.selectedBone); setMoveModel(false); }
     }),
     viewport: viewportAPI.current,
     undo: () => flushSync(undo), redo: () => flushSync(redo),
@@ -1125,11 +1130,12 @@ export default function App() {
         <div className="scene-heading"><div><span className="scene-dot"/>YOUR PLAYGROUND<span className="scene-separator">/</span><span className="scene-name">{studio.title || 'Untitled'}</span></div><button className="text-button" onClick={() => setDialog('help')}><CircleHelp size={14}/><span>A quick tour</span></button></div>
         <div className="stage-and-assists">
           <section className="viewport-shell" aria-label="Character editor">
-            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore} showRig={showRig} showFingerJoints={showFingerJoints} showGhosts={showGhosts && !viewingBefore} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
+            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore && !busy} moveModel={moveModel && !viewingBefore} showRig={showRig} showFingerJoints={showFingerJoints} showGhosts={showGhosts && !viewingBefore} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} playing={playing}/>
             <div className={`viewport-top ${studio.generation?.kind === 'physics' ? 'has-physics-comparison' : ''}`}><div className="mode-pill"><span className={playing ? 'live-dot' : 'mode-dot'}/>{viewingBefore ? 'Before physics' : playing ? 'In motion' : 'Pose mode'}<span>{selectedKey ? `Pose ${keyIndex + 1}` : 'Between poses'}</span></div>{studio.generated && studio.generation?.kind === 'physics' && <div className="physics-compare-switch viewport-compare-switch" role="group" aria-label="Compare physics motion"><button aria-label="Before physics" aria-pressed={viewingBefore} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('before'); }}>Before</button><button aria-label="Side-by-side physics comparison" aria-pressed={viewingSplit} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('split'); }}>Side by side</button><button aria-label="After physics" aria-pressed={!viewingBefore && !viewingSplit} disabled={!!busy || !!dragPreview} onClick={() => setComparisonView('after')}>After</button></div>}<button className={`icon-button viewport-icon ${showGhosts ? 'active' : ''}`} aria-label="Toggle onion skin" aria-pressed={showGhosts && !viewingBefore} disabled={viewingBefore} title={viewingBefore ? 'Onion skin is available in After physics' : 'Show neighboring poses'} onClick={() => setShowGhosts(v => !v)}><Layers2 size={17}/></button></div>
-            <div className="viewport-tools"><button aria-label="Move joint" title="Move joint · W" className={tool === 'move' ? 'active' : ''} onClick={() => setTool('move')}><Move size={18}/></button><button aria-label="Rotate joint" title="Rotate joint · E" className={tool === 'rotate' ? 'active' : ''} onClick={() => setTool('rotate')}><RotateCw size={18}/></button><div/><button aria-label="Show joints" title="Show joints" aria-pressed={showRig} className={showRig ? 'active secondary' : ''} onClick={() => setShowRig(v => !v)}><Bone size={18}/></button></div>
+            <div className="viewport-tools"><button aria-label="Move joint" title="Move joint · W" className={!moveModel && tool === 'move' ? 'active' : ''} onClick={() => { setTimelineMode(false); setTool('move'); }}><Move size={18}/></button><button aria-label="Rotate joint" title="Rotate joint · E" className={!moveModel && tool === 'rotate' ? 'active' : ''} onClick={() => { setTimelineMode(false); setTool('rotate'); }}><RotateCw size={18}/></button><div/><button aria-label="Show joints" title="Show joints" aria-pressed={showRig} className={showRig ? 'active secondary' : ''} onClick={() => setShowRig(v => !v)}><Bone size={18}/></button></div>
+            <button className="button model-move-toggle" aria-label="Move whole model" aria-pressed={moveModel} aria-keyshortcuts="G" title="Move whole model · G. Drag across the floor; Shift-drag to change height." disabled={!asset.rigged || !!busy || viewingBefore} onClick={toggleModelMove}><Move size={16}/>Move model<kbd>G</kbd></button>
             {!viewingSplit && <div className="viewport-label"><span className="viewport-kicker">LESS LEARNING. MORE MAKING.</span><span className="viewport-big-word">Let’s move.</span></div>}
-            <div className="viewport-bottom"><span className="viewport-instruction"><MousePointer2 size={13}/>{viewingSplit ? 'Shared camera · edit poses on the right' : viewingBefore ? 'Before physics · drag the background to orbit' : selectedBone !== null ? `${niceName(asset.bones[selectedBone]?.name || '')} selected · drag to pose` : 'Drag a joint to pose · drag the background to orbit'}</span><div className="view-picker">{(['perspective', 'front', 'side'] as const).map(view => <button key={view} className={cameraView === view ? 'active' : ''} onClick={() => setCameraView(view)}>{view === 'perspective' ? '3D' : view.charAt(0).toUpperCase() + view.slice(1)}</button>)}</div></div>
+            <div className="viewport-bottom"><span className="viewport-instruction"><MousePointer2 size={13}/>{moveModel && !viewingBefore ? 'Move this pose: drag the character across the floor · Shift-drag for height · Esc to exit' : viewingSplit ? 'Shared camera · edit poses on the right' : viewingBefore ? 'Before physics · drag the background to orbit' : selectedBone !== null ? `${niceName(asset.bones[selectedBone]?.name || '')} selected · drag to pose` : 'Drag a joint to pose · drag the background to orbit'}</span><div className="view-picker">{(['perspective', 'front', 'side'] as const).map(view => <button key={view} className={cameraView === view ? 'active' : ''} onClick={() => setCameraView(view)}>{view === 'perspective' ? '3D' : view.charAt(0).toUpperCase() + view.slice(1)}</button>)}</div></div>
             {!asset.rigged && <div className="rig-overlay"><Bone size={24}/><strong>Let’s give it some joints.</strong><p>Choose a simple skeleton to start posing.</p><button className="button primary" onClick={() => setDialog('rig')}>Add a rig <ArrowRight size={15}/></button></div>}
           </section>
 

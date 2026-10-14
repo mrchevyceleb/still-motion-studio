@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
 import { solveIK } from '../engine/motion';
 import { isFingerBone } from '../engine/handRig';
+import { offsetPose, propertyValues } from '../engine/poseProperties';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
 import type { Theme } from '../theme';
 import './Viewport.css';
@@ -29,6 +30,7 @@ export interface ViewportProps {
   ghostPoses: Pose[];
   cameraView: 'perspective' | 'front' | 'side';
   tool: 'move' | 'rotate';
+  moveModel?: boolean;
   playing: boolean;
   editable?: boolean;
   jointPlacement?: boolean;
@@ -227,7 +229,7 @@ export default function Viewport(props: ViewportProps) {
     const pointer = new THREE.Vector2();
     const plane = new THREE.Plane();
     const intersection = new THREE.Vector3();
-    let drag: { index: number; original: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] } | null = null;
+    let drag: { index: number; original: Pose; pose?: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] | 'model'; right: THREE.Vector3; forward: THREE.Vector3; units: number } | null = null;
 
     function frame(view: ViewportProps['cameraView']) {
       asset.root.updateMatrixWorld(true);
@@ -284,28 +286,36 @@ export default function Viewport(props: ViewportProps) {
     }
 
     function pointerDown(event: PointerEvent) {
-      if (event.button !== 0 || isBeforePane(event) || latest.current.editable === false || !latest.current.showRig || !setPointer(event)) return;
-      const hit = raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
+      const model = !!latest.current.moveModel && !latest.current.jointPlacement;
+      if (event.button !== 0 || isBeforePane(event) || latest.current.editable === false || !model && !latest.current.showRig || !setPointer(event)) return;
+      const hit = model ? raycaster.intersectObject(asset.root, true)[0] : raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
       if (!hit) return;
       event.stopImmediatePropagation();
       event.preventDefault();
-      const index = hit.object.userData.boneIndex as number;
-      latest.current.onSelectBone(index);
+      const index = model ? -1 : hit.object.userData.boneIndex as number;
+      latest.current.onSelectBone(model ? null : index);
       canvas.focus({ preventScroll: true });
       if (latest.current.playing) return;
       orbit.enabled = false;
       canvas.setPointerCapture(event.pointerId);
-      const joint = asset.bones[index].getWorldPosition(new THREE.Vector3());
+      const joint = model ? new THREE.Vector3().fromArray(propertyValues(asset, latest.current.pose, 'position', null)) : asset.bones[index].getWorldPosition(new THREE.Vector3());
       plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), joint);
       raycaster.ray.intersectPlane(plane, intersection);
-      drag = { index, original: capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: latest.current.tool };
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
+      const forward = camera.getWorldDirection(new THREE.Vector3()).setY(0);
+      if (forward.lengthSq() < 1e-6) forward.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)).setY(0);
+      forward.normalize();
+      const units = 2 * camera.position.distanceTo(joint) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / canvas.clientHeight;
+      drag = { index, original: model ? structuredClone(latest.current.pose) : capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: model ? 'model' : latest.current.tool, right, forward, units };
       canvas.style.cursor = 'grabbing';
     }
 
     function pointerMove(event: PointerEvent) {
       if (!setPointer(event)) return;
       if (!drag) {
-        canvas.style.cursor = !isBeforePane(event) && latest.current.editable !== false && latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
+        const model = !!latest.current.moveModel && !latest.current.jointPlacement;
+        const hit = model ? raycaster.intersectObject(asset.root, true).length : latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length;
+        canvas.style.cursor = !isBeforePane(event) && latest.current.editable !== false && hit ? 'grab' : 'default';
         return;
       }
       event.stopImmediatePropagation();
@@ -315,7 +325,11 @@ export default function Viewport(props: ViewportProps) {
       drag.moved = true;
       applyPose(asset, drag.original);
       asset.root.updateMatrixWorld(true);
-      if (drag.tool === 'move') {
+      if (drag.tool === 'model') {
+        const delta = event.shiftKey ? new THREE.Vector3(0, -dy * drag.units, 0) : drag.right.clone().multiplyScalar(dx * drag.units).addScaledVector(drag.forward, -dy * drag.units);
+        drag.pose = offsetPose(asset, drag.original, delta.toArray());
+        applyPose(asset, drag.pose);
+      } else if (drag.tool === 'move') {
         if (raycaster.ray.intersectPlane(plane, intersection)) {
           const target = intersection.add(drag.offset);
           if (latest.current.jointPlacement) {
@@ -352,14 +366,29 @@ export default function Viewport(props: ViewportProps) {
       if (event.type === 'pointercancel') {
         applyPose(asset, completed.original);
       } else if (completed.moved) {
-        latest.current.onPoseChange(capturePose(asset));
+        latest.current.onPoseChange(completed.pose ?? capturePose(asset));
       }
+    }
+
+    function cancelDrag() {
+      if (!drag) return;
+      const cancelled = drag;
+      drag = null;
+      applyPose(asset, cancelled.original);
+      orbit.enabled = true;
+      canvas.style.cursor = 'default';
+      if (canvas.hasPointerCapture(cancelled.pointerId)) canvas.releasePointerCapture(cancelled.pointerId);
+    }
+    function keyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') cancelDrag();
     }
 
     canvas.addEventListener('pointerdown', pointerDown, true);
     canvas.addEventListener('pointermove', pointerMove, true);
     canvas.addEventListener('pointerup', endDrag, true);
     canvas.addEventListener('pointercancel', endDrag, true);
+    canvas.addEventListener('keydown', keyDown);
+    window.addEventListener('blur', cancelDrag);
     let width = 0;
     let height = 0;
     let initialFrame = false;
@@ -393,7 +422,7 @@ export default function Viewport(props: ViewportProps) {
       asset.root.updateMatrixWorld(true);
       const current = latest.current;
       ghosts.visible = current.showGhosts && !before;
-      rigLines.visible = current.showRig;
+      rigLines.visible = current.showRig && !current.moveModel;
       for (let i = 0; i < asset.bones.length; i++) {
         asset.bones[i].getWorldPosition(positions[i]);
         handles[i].position.copy(positions[i]);
@@ -403,7 +432,7 @@ export default function Viewport(props: ViewportProps) {
         const distance = camera.position.distanceTo(positions[i]);
         const worldPixel = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / height;
         handles[i].scale.setScalar(worldPixel * (selected ? 25 : 18));
-        handles[i].visible = current.showRig && (!current.jointFilter || current.jointFilter.includes(asset.bones[i].name)) && (!detailedJoints[i] || selected || !!current.jointPlacement || !!current.showFingerJoints && isFingerBone(asset.bones[i].name));
+        handles[i].visible = !current.moveModel && current.showRig && (!current.jointFilter || current.jointFilter.includes(asset.bones[i].name)) && (!detailedJoints[i] || selected || !!current.jointPlacement || !!current.showFingerJoints && isFingerBone(asset.bones[i].name));
         handles[i].renderOrder = selected ? 30 : 20;
       }
       connections.forEach(([parent, child], i) => {
@@ -427,6 +456,7 @@ export default function Viewport(props: ViewportProps) {
       if (latest.current.asset !== asset) return;
       orbit.update();
       const current = latest.current;
+      if (drag?.tool === 'model' && (!current.moveModel || current.editable === false || current.playing)) cancelDrag();
       // Draw both versions with one camera and playhead, then leave the live
       // skeleton in its editable After pose for picking, scripts and exports.
       const afterPose = drag ? capturePose(asset) : current.pose;
@@ -510,6 +540,8 @@ export default function Viewport(props: ViewportProps) {
       canvas.removeEventListener('pointermove', pointerMove, true);
       canvas.removeEventListener('pointerup', endDrag, true);
       canvas.removeEventListener('pointercancel', endDrag, true);
+      canvas.removeEventListener('keydown', keyDown);
+      window.removeEventListener('blur', cancelDrag);
       orbit.dispose();
       scene.remove(asset.root);
       floorGeometry.dispose();
@@ -550,8 +582,9 @@ export default function Viewport(props: ViewportProps) {
     canvas?.setAttribute('aria-label', props.comparisonPose
       ? 'Side-by-side physics comparison. Before on the left, After on the right. Drag either background to orbit both views. Edit joints on the right.'
       : props.editable === false ? 'Before physics preview. Drag the background to orbit.'
+      : props.moveModel ? 'Move whole model. Drag the character across the floor. Shift-drag to raise or lower it. Escape cancels a drag.'
       : 'Interactive character pose editor. Drag a joint to pose it, or drag the background to orbit.');
-  }, [!!props.comparisonPose, props.editable, props.asset]);
+  }, [!!props.comparisonPose, props.editable, props.asset, props.moveModel]);
 
   return <div ref={container} className="motion-viewport" data-testid="viewport">
     {props.comparisonPose && <div className="viewport-split-labels" aria-label="Side-by-side physics comparison"><span><span className="viewport-split-label"><strong>Before</strong>Original motion</span></span><span><span className="viewport-split-label"><strong>After</strong>Physics correction</span></span></div>}
