@@ -28,6 +28,10 @@
 .clip-length-tools input { width: 76px; padding: 7px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 5px; }
 .clip-length-tools .button { padding: 7px 10px; font-size: 10px; }
 .clip-length-tools > span { font-size: 10px; color: var(--muted); }
+.timeline-view-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; font-size: 10px; color: var(--muted); }
+.timeline-view-tools .button { padding: 4px 9px; }
+.timeline-scroll { overflow-x: auto; margin: 10px 2px 0; padding: 0 6px 7px; scrollbar-color: var(--muted) var(--paper); }
+.timeline-scroll .scrubber { margin: 0; min-width: 100%; }
 .timeline-edit-tools kbd, .editor-footer kbd { margin-left: 4px; font-size: 9px; opacity: .75; }
 .keyboard-shortcuts { margin: 20px 0; }
 .keyboard-shortcuts > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
