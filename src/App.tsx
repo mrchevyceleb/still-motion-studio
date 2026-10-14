@@ -5,7 +5,7 @@ import { useTheme } from './theme';
 import './unreal-export.css';
 import './agent-scripting.css';
 import './timeline.css';
-import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, Shirt, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { Euler, MathUtils, Quaternion, Vector3 } from 'three';
 import Viewport from './components/Viewport';
 import type { ViewportAPI } from './components/Viewport';
@@ -26,7 +26,7 @@ import type { AnatomicalFit } from './engine/anatomicalRig';
 import { assertMatchingRig, composeMotion, editMotion } from './engine/clipEditing';
 import type { ClipEdit, MotionSequence } from './engine/clipEditing';
 import UpdatesDialog, { useUpdates } from './components/UpdatesDialog';
-import { applyPose, autoRigCharacter, createDemoCharacter, createRigPreview, disposeCharacter, estimateAutoRig, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter } from './engine/character';
+import { applyPose, autoRigCharacter, createDemoCharacter, createRigPreview, disposeCharacter, estimateAutoRig, exportCharacterGLB, getAutoRigDiagnostics, importCharacter, restoreCharacter, swapCharacterLook } from './engine/character';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './engine/motion';
 import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames, recoverNativeEngine } from './engine/assistance';
 import type { EngineProvider, EngineStatus } from './engine/assistance';
@@ -138,6 +138,7 @@ export default function App() {
   const [sparks, setSparks] = useState<{ id: number; x: number; y: number }[]>([]);
   const history = useRef<{ past: Studio[]; future: Studio[] }>({ past: [], future: [] });
   const importInput = useRef<HTMLInputElement>(null);
+  const lookInput = useRef<HTMLInputElement>(null);
   const timeline = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const assetRef = useRef(asset);
@@ -566,6 +567,20 @@ export default function App() {
     finally { setBusy(null); if (importInput.current) importInput.current.value = ''; }
   };
 
+  const swapLook = async (file: File) => {
+    if (busy || !hydrated || keyDrag.current || selectionDrag.current) return;
+    setBusy(`Dressing the rig in ${file.name}…`); setError(null); setPlaying(false);
+    let source: CharacterAsset | undefined;
+    try {
+      if (file.size > 200 * 1024 * 1024) throw new Error('Use a file smaller than 200 MB for a responsive editing session.');
+      source = await importCharacter(file);
+      const next = swapCharacterLook(asset, source);
+      setAsset(next); dirty.current = true;
+      notify(`${file.name.replace(/\.[^.]+$/, '')} now wears this skeleton. Every pose and key is unchanged.`);
+    } catch (e) { setError(e instanceof Error ? e.message : 'That look could not be fitted to this skeleton.'); }
+    finally { if (source) disposeCharacter(source); setBusy(null); if (lookInput.current) lookInput.current.value = ''; }
+  };
+
   const switchClip = (index: number) => {
     try {
       const clip = asset.clips[index]; const keys = sampleClip(asset, clip);
@@ -934,7 +949,7 @@ export default function App() {
         <div className="sidebar-section character-section"><div className="section-heading"><h2>Your character</h2><button className="icon-button" title="Start a new scene" aria-label="New scene" onClick={() => setDialog('new')}><Plus size={17}/></button></div>
           <div className="character-card"><div className="character-art"><div className="orbit-ring one"/><div className="orbit-ring two"/><PoseSketch index={1} quadruped={asset.kind === 'quadruped'}/><span className="character-spark">✳</span></div><div className="character-details"><strong title={asset.name}>{asset.name}</strong><span>{asset.source === 'demo' ? 'Your practice partner' : 'Original character'}</span></div><span className="ready-dot" title="Loaded"/></div>
           <div className="rig-status"><ShieldCheck size={14}/>{asset.rigged ? getAutoRigDiagnostics(asset) ? getAutoRigDiagnostics(asset)?.hands ? 'Body and finger rig fitted' : 'Body rig fitted' : asset.source === 'import' ? 'Original rig preserved' : `${asset.kind === 'humanoid' ? 'Human' : 'Quadruped'} rig, ready to move` : 'Ready for a simple rig'}<span>{asset.bones.length} joints</span></div>
-          <div className="character-import-actions"><button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button><button className="import-button animation-import-button" aria-label="Import animation" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={17}/><span>Import animation</span><span className="plus-small" aria-hidden="true">+</span></button></div>
+          <div className="character-import-actions"><button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button><button className="import-button animation-import-button" aria-label="Import animation" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={17}/><span>Import animation</span><span className="plus-small" aria-hidden="true">+</span></button><button className="import-button animation-import-button" aria-label="Swap look" title="Put a new mesh and paint on this skeleton. Bones and keys stay exactly the same." disabled={!asset.rigged || !!busy || !hydrated} onClick={() => lookInput.current?.click()}><Shirt size={17}/><span>Swap look</span><span className="plus-small" aria-hidden="true">+</span></button></div>
           <div className="format-note">FBX, GLB, or a saved Still project</div>
         </div>
 
@@ -1008,6 +1023,7 @@ export default function App() {
       </main>
     </div>
 
+    <input ref={lookInput} type="file" className="hidden" accept=".fbx,.glb,.gltf" aria-label="Swap look file" onChange={e => { if (e.target.files?.[0]) void swapLook(e.target.files[0]); }}/>
     <input ref={importInput} type="file" className="hidden" accept=".fbx,.glb,.gltf,.still,.json" aria-label="Import file" onChange={e => { if (e.target.files?.[0]) void handleImport(e.target.files[0]); }}/>
     {dragOver && <div className="drop-overlay"><Upload size={38}/><h2>Drop it like it’s a character.</h2><p>FBX, GLB, or a Still project</p></div>}
     {(!hydrated || busy) && <div className="busy-overlay" role="status"><LoaderCircle size={24} className="spin"/><strong>{busy || 'Setting the stage…'}</strong>{agentActivity?.status === 'running' && <>{progress !== null && <progress className="engine-progress" aria-label="Agent command progress" max="1" value={progress}/>}<button className="button secondary" onClick={() => agentController.current?.abort()}>Stop agent command</button></>}{progress !== null && !exportRunning && agentActivity?.status !== 'running' && <><progress className="engine-progress" aria-label="Motion generation progress" max="1" value={progress}/><button className="button secondary" onClick={() => engineOperation.current?.abort()}>Cancel generation</button></>}</div>}

@@ -12,6 +12,9 @@ const DISPLAY_HEIGHT = 2.4;
 const WHITE_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
 const UP = new THREE.Vector3(0, 1, 0);
 
+// FBX/GLB exporters spell the same Mixamo joint with different namespaces.
+export const jointName = (name: string) => name.replace(/^.*[|:]/, '').replace(/^mixamorig\d*[_:]?/i, '').toLowerCase();
+
 type JointSpec = { name: string; parent?: string; position: Vec3 };
 type AssetMetadata = { version: number; restPose: Pose; restMorphs?: MorphValues; warnings: string[]; height: number };
 
@@ -618,6 +621,264 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: 
     disposeCharacter({ ...asset, root });
     throw error;
   }
+}
+
+/**
+ * Dress the current skeleton in another file's meshes. The bones, their rest
+ * pose and every key stay exactly as they are; only the surface changes.
+ */
+export function swapCharacterLook(target: CharacterAsset, source: CharacterAsset): CharacterAsset {
+  if (!target.rigged || !target.bones.length) throw new Error('Add a rig to this character before swapping its look.');
+  const root = cloneSkeleton(target.root) as THREE.Group;
+  const bones: THREE.Bone[] = [];
+  root.traverse(node => { if (node instanceof THREE.Bone) bones.push(node); });
+  bones.forEach((bone, index) => {
+    const rest = target.restPose[index];
+    bone.position.fromArray(rest.position); bone.quaternion.fromArray(rest.quaternion); bone.scale.fromArray(rest.scale);
+  });
+  root.updateMatrixWorld(true);
+  // The clone shares the old meshes' geometry with the live character. Detach
+  // them before anything can fail, so cleanup only ever touches new data.
+  const old: THREE.Mesh[] = [];
+  root.traverse(node => { if (node instanceof THREE.Mesh) old.push(node); });
+  const bound = old.find((mesh): mesh is THREE.SkinnedMesh => mesh instanceof THREE.SkinnedMesh && !(mesh.parent instanceof THREE.Mesh));
+  const holder = bound?.parent ?? root.getObjectByName('Still_display_scale') ?? root;
+  for (const mesh of old) {
+    for (const child of [...mesh.children]) mesh.parent!.attach(child);
+    mesh.removeFromParent();
+  }
+  try {
+    if (!source.rigged) throw new Error('The new look has no skeleton. Use an FBX or GLB rigged on this same skeleton.');
+    root.updateMatrixWorld(true);
+    source.root.updateMatrixWorld(true);
+    updateSkeletons(source.root);
+    const byName = new Map<string, number>();
+    const repeated = new Set<string>();
+    bones.forEach((bone, index) => { const name = jointName(bone.name); if (byName.has(name)) repeated.add(name); byName.set(name, index); });
+    repeated.forEach(name => byName.delete(name));
+    const partner = new Map<THREE.Bone, number>();
+    for (const bone of source.bones) { const index = byName.get(jointName(bone.name)); if (index !== undefined) partner.set(bone, index); }
+    if (partner.size < 4) throw new Error(`Only ${partner.size} of the new look's bones match this skeleton. Use a look rigged on this same skeleton.`);
+    // Extra joints (a jaw, a prop bone) ride on their nearest matching parent.
+    const folded = new Set<string>();
+    const anchorFor = (node: THREE.Object3D): THREE.Bone | null => {
+      for (let item: THREE.Object3D | null = node; item; item = item.parent) {
+        if (item instanceof THREE.Bone && partner.has(item)) { if (item !== node && node instanceof THREE.Bone) folded.add(node.name); return item; }
+      }
+      return null;
+    };
+    const meshes: THREE.Mesh[] = [];
+    source.root.traverse(node => { if (node instanceof THREE.Mesh) meshes.push(node); });
+    if (!meshes.length) throw new Error('The new look has no mesh.');
+
+    // Same bind pose as the old surface (the usual case: the same rig,
+    // re-dressed in Blender): reuse its binding exactly, so the new look
+    // deforms precisely as the old one did. Only scale and units differ.
+    let bindInverses: THREE.Matrix4[] | null = null;
+    if (bound) {
+      const known = new Map(bound.skeleton.bones.map((bone, index) => [bone, bound.skeleton.boneInverses[index].clone().invert()]));
+      const bindWorld = (bone: THREE.Bone): THREE.Matrix4 => {
+        const world = known.get(bone) ?? (bone.parent instanceof THREE.Bone ? bindWorld(bone.parent).clone().multiply(bone.matrix) : bone.matrixWorld.clone());
+        known.set(bone, world);
+        return world;
+      };
+      bindInverses = bones.map(bone => bindWorld(bone).clone().invert());
+    }
+    const bindFit = (skin: THREE.SkinnedMesh): THREE.Matrix4 | null => {
+      if (!bound || !bindInverses) return null;
+      const pairs = skin.skeleton.bones.flatMap((bone, index) => {
+        const partnerIndex = partner.get(bone);
+        return partnerIndex === undefined ? [] : [[new THREE.Vector3().setFromMatrixPosition(skin.skeleton.boneInverses[index].clone().invert()), new THREE.Vector3().setFromMatrixPosition(bindInverses![partnerIndex].clone().invert())] as const];
+      });
+      if (pairs.length < 4) return null;
+      const from = pairs.reduce((sum, [a]) => sum.add(a), new THREE.Vector3()).divideScalar(pairs.length);
+      const to = pairs.reduce((sum, [, b]) => sum.add(b), new THREE.Vector3()).divideScalar(pairs.length);
+      let numerator = 0, denominator = 0;
+      for (const [a, b] of pairs) { numerator += a.clone().sub(from).dot(b.clone().sub(to)); denominator += a.clone().sub(from).lengthSq(); }
+      const scale = numerator / denominator;
+      if (!(scale > 0) || !Number.isFinite(scale)) return null;
+      const offset = to.clone().sub(from.clone().multiplyScalar(scale));
+      const extent = new THREE.Box3().setFromPoints(pairs.map(([, b]) => b)).getSize(new THREE.Vector3()).length();
+      const worst = Math.max(...pairs.map(([a, b]) => a.clone().multiplyScalar(scale).add(offset).distanceTo(b)));
+      if (worst > extent * 1e-3) return null;
+      return bound.bindMatrix.clone().invert().multiply(new THREE.Matrix4().makeScale(scale, scale, scale).setPosition(offset)).multiply(skin.bindMatrix);
+    };
+    const fits = meshes.map(mesh => mesh instanceof THREE.SkinnedMesh ? bindFit(mesh) : null);
+    const exact = fits.every(Boolean);
+
+    // Otherwise re-pose the new look into this rest pose with its own skin
+    // weights. Each file normalizes its own display size, and an FBX's bind
+    // pose can differ from its node pose (Mixamo arms droop in one, sit level
+    // in the other): one scale from bone lengths, one turn per joint from
+    // where its children point.
+    const size = Math.max(target.height, 1e-6);
+    const carry = new Map<THREE.Bone, THREE.Matrix4>();
+    if (!exact) {
+      const rootInverse = root.matrixWorld.clone().invert();
+      const sourceInverse = source.root.matrixWorld.clone().invert();
+      const from = new Map([...partner.keys()].map(bone => [bone, bone.getWorldPosition(new THREE.Vector3()).applyMatrix4(sourceInverse)]));
+      const to = new Map([...partner].map(([bone, index]) => [bone, bones[index].getWorldPosition(new THREE.Vector3()).applyMatrix4(rootInverse)]));
+      const matchedParent = (node: THREE.Object3D): THREE.Bone | null => {
+        for (let item = node.parent; item; item = item.parent) if (item instanceof THREE.Bone && partner.has(item)) return item;
+        return null;
+      };
+      const links = [...partner.keys()].flatMap(bone => { const parent = matchedParent(bone); return parent ? [[parent, bone] as const] : []; });
+      let sourceLength = 0, targetLength = 0;
+      for (const [parent, child] of links) { sourceLength += from.get(child)!.distanceTo(from.get(parent)!); targetLength += to.get(child)!.distanceTo(to.get(parent)!); }
+      const scale = targetLength / sourceLength;
+      if (!(scale > 0) || !Number.isFinite(scale)) throw new Error('The new look’s skeleton could not be lined up with this one.');
+      const frame = (a: THREE.Vector3, b: THREE.Vector3) => {
+        const x = a.clone().normalize(), z = a.clone().cross(b).normalize();
+        return new THREE.Matrix4().makeBasis(x, z.clone().cross(x), z);
+      };
+      const turn = new Map<THREE.Bone, THREE.Quaternion>();
+      for (const bone of source.bones) {
+        if (!partner.has(bone)) continue;
+        const parent = matchedParent(bone);
+        const inherited = parent ? turn.get(parent)! : new THREE.Quaternion();
+        const kids = links.filter(([item]) => item === bone)
+          .map(([, child]) => [from.get(child)!.clone().sub(from.get(bone)!), to.get(child)!.clone().sub(to.get(bone)!)] as const)
+          .filter(([a, b]) => a.lengthSq() > 1e-12 && b.lengthSq() > 1e-12)
+          .sort((x, y) => y[0].lengthSq() - x[0].lengthSq());
+        const sine = (pair: readonly [THREE.Vector3, THREE.Vector3]) => pair[0].clone().normalize().cross(kids[0][0].clone().normalize()).length();
+        const side = kids.slice(1).sort((x, y) => sine(y) - sine(x))[0];
+        let rotation = inherited.clone();
+        // Two spread-out children pin the whole joint; one child pins its aim.
+        if (side && sine(side) > .1) rotation.setFromRotationMatrix(frame(kids[0][1], side[1]).multiply(frame(kids[0][0], side[0]).transpose()));
+        else if (kids.length) rotation = new THREE.Quaternion().setFromUnitVectors(kids[0][0].clone().applyQuaternion(inherited).normalize(), kids[0][1].clone().normalize()).multiply(inherited);
+        turn.set(bone, rotation);
+      }
+      let worst = 0;
+      for (const [parent, child] of links) {
+        const predicted = from.get(child)!.clone().sub(from.get(parent)!).multiplyScalar(scale).applyQuaternion(turn.get(parent)!).add(to.get(parent)!);
+        worst = Math.max(worst, predicted.distanceTo(to.get(child)!));
+      }
+      if (worst > size * .02) throw new Error(`The new look’s skeleton has different proportions from this one (off by ${(worst / size * 100).toFixed(1)}%). Use a look rigged on this same skeleton.`);
+      const toHolder = new THREE.Matrix4().copy(holder.matrixWorld).invert().multiply(root.matrixWorld);
+      for (const bone of partner.keys()) carry.set(bone, toHolder.clone()
+        .multiply(new THREE.Matrix4().compose(to.get(bone)!, turn.get(bone)!, new THREE.Vector3(scale, scale, scale)))
+        .multiply(new THREE.Matrix4().makeTranslation(from.get(bone)!.clone().negate()))
+        .multiply(sourceInverse));
+    }
+
+    const materials = new Map<THREE.Material, THREE.Material>();
+    const cloneMaterial = (original: THREE.Material): THREE.Material => {
+      let copied = materials.get(original);
+      if (!copied) {
+        copied = original.clone();
+        for (const [key, value] of Object.entries(copied)) if (value instanceof THREE.Texture) (copied as unknown as Record<string, unknown>)[key] = value.clone();
+        materials.set(original, copied);
+      }
+      return copied;
+    };
+    const dressed: THREE.SkinnedMesh[] = [];
+    const point = new THREE.Vector3(), normalMatrix = new THREE.Matrix3(), linear = new THREE.Matrix3(), blend = new THREE.Matrix4();
+    meshes.forEach((mesh, meshIndex) => {
+      const geometry = new THREE.BufferGeometry().copy(mesh.geometry);
+      geometry.deleteAttribute('tangent');
+      const count = geometry.getAttribute('position').count;
+      const indices = new Uint16Array(count * 4);
+      const weights = new Float32Array(count * 4);
+      let pieces: THREE.Matrix4[], slots: number[];
+      const skin = mesh instanceof THREE.SkinnedMesh ? mesh : null;
+      if (skin) {
+        const anchors = skin.skeleton.bones.map(bone => anchorFor(bone));
+        slots = anchors.map(anchor => anchor ? partner.get(anchor)! : -1);
+        // Exact: stay in the shared bind pose. Re-pose: skin the new look in
+        // its own rest pose, then carry each part onto its partner joint.
+        const { bindMatrixInverse, bindMatrix, matrixWorld } = skin;
+        pieces = exact ? skin.skeleton.bones.map(() => fits[meshIndex]!)
+          : skin.skeleton.bones.map((bone, index) => anchors[index] ? carry.get(anchors[index])!.clone().multiply(matrixWorld).multiply(bindMatrixInverse).multiply(bone.matrixWorld).multiply(skin.skeleton.boneInverses[index]).multiply(bindMatrix) : new THREE.Matrix4());
+      } else {
+        const anchor = anchorFor(mesh);
+        if (!anchor) throw new Error(`${mesh.name || 'A mesh'} in the new look is not attached to the skeleton.`);
+        pieces = [carry.get(anchor)!.clone().multiply(mesh.matrixWorld)];
+        slots = [partner.get(anchor)!];
+      }
+      const sourceIndex = skin ? geometry.getAttribute('skinIndex') : null;
+      const sourceWeight = skin ? geometry.getAttribute('skinWeight') : null;
+      const vertexMatrices: THREE.Matrix4[] = [];
+      for (let vertex = 0; vertex < count; vertex++) {
+        const totals = new Map<number, number>();
+        blend.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        if (sourceIndex && sourceWeight) {
+          for (let slot = 0; slot < sourceIndex.itemSize; slot++) {
+            const weight = sourceWeight.getComponent(vertex, slot);
+            if (!(weight > 0)) continue;
+            const bone = sourceIndex.getComponent(vertex, slot);
+            if (slots[bone] < 0) throw new Error(`The new look’s ${skin!.skeleton.bones[bone]?.name ?? 'bone'} has no match in this skeleton.`);
+            totals.set(slots[bone], (totals.get(slots[bone]) ?? 0) + weight);
+            const piece = pieces[bone].elements;
+            for (let e = 0; e < 16; e++) blend.elements[e] += piece[e] * weight;
+          }
+        } else { totals.set(slots[0], 1); blend.copy(pieces[0]); }
+        const ranked = [...totals].sort((a, b) => b[1] - a[1]).slice(0, 4);
+        const sum = ranked.reduce((total, [, weight]) => total + weight, 0);
+        if (!(sum > 0)) throw new Error('The new look has a vertex with no skin weight.');
+        ranked.forEach(([index, weight], slot) => { indices[vertex * 4 + slot] = index; weights[vertex * 4 + slot] = weight / sum; });
+        if (sourceWeight) {
+          const raw = [...totals.values()].reduce((a, b) => a + b, 0);
+          for (let e = 0; e < 16; e++) blend.elements[e] /= raw;
+        }
+        vertexMatrices.push(blend.clone());
+      }
+      const transform = (attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, kind: 'point' | 'normal' | 'delta' | 'normalDelta') => {
+        const values = new Float32Array(attribute.count * 3);
+        for (let vertex = 0; vertex < attribute.count; vertex++) {
+          point.fromBufferAttribute(attribute, vertex);
+          const matrix = vertexMatrices[vertex];
+          if (kind === 'point') point.applyMatrix4(matrix);
+          else if (kind === 'delta') point.applyMatrix3(linear.setFromMatrix4(matrix));
+          else { point.applyMatrix3(normalMatrix.getNormalMatrix(matrix)); if (kind === 'normal') point.normalize(); }
+          values.set([point.x, point.y, point.z], vertex * 3);
+        }
+        return new THREE.Float32BufferAttribute(values, 3);
+      };
+      geometry.setAttribute('position', transform(geometry.getAttribute('position'), 'point'));
+      if (geometry.getAttribute('normal')) geometry.setAttribute('normal', transform(geometry.getAttribute('normal'), 'normal'));
+      const morphs = geometry.morphAttributes as Record<string, (THREE.BufferAttribute | THREE.InterleavedBufferAttribute)[]>;
+      for (const [name, list] of Object.entries(morphs)) {
+        if (name !== 'position' && name !== 'normal') { delete morphs[name]; continue; }
+        morphs[name] = list.map(attribute => transform(attribute, name === 'normal' ? 'normalDelta' : geometry.morphTargetsRelative ? 'delta' : 'point'));
+      }
+      geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(indices, 4));
+      geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4));
+      geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+      const material = Array.isArray(mesh.material) ? mesh.material.map(cloneMaterial) : cloneMaterial(mesh.material);
+      const next = new THREE.SkinnedMesh(geometry, material);
+      next.name = mesh.name;
+      next.visible = mesh.visible;
+      if (mesh.morphTargetInfluences) next.morphTargetInfluences = [...mesh.morphTargetInfluences];
+      if (mesh.morphTargetDictionary) next.morphTargetDictionary = { ...mesh.morphTargetDictionary };
+      if (exact) { next.position.copy(bound!.position); next.quaternion.copy(bound!.quaternion); next.scale.copy(bound!.scale); }
+      holder.add(next);
+      dressed.push(next);
+    });
+    root.updateMatrixWorld(true);
+    const skeleton = exact ? new THREE.Skeleton(bones, bindInverses!) : new THREE.Skeleton(bones);
+    let bindError = 0;
+    const original = new THREE.Vector3();
+    for (const mesh of dressed) {
+      mesh.bind(skeleton, exact ? bound!.bindMatrix.clone() : mesh.matrixWorld);
+      if (exact) continue;
+      const positions = mesh.geometry.getAttribute('position');
+      for (let vertex = 0; vertex < positions.count; vertex += Math.max(1, Math.floor(positions.count / 2048))) {
+        original.fromBufferAttribute(positions, vertex);
+        bindError = Math.max(bindError, mesh.applyBoneTransform(vertex, point.copy(original)).distanceTo(original));
+      }
+    }
+    if (!(bindError < size * 1e-4)) throw new Error('The new look moved in its rest pose while binding. Its original look has been kept.');
+    const warnings = target.warnings.filter(warning => !/texture/i.test(warning));
+    warnings.push(...source.warnings.filter(warning => /texture/i.test(warning)));
+    if (!exact) warnings.push('The new look was re-posed into this skeleton’s rest pose. Check elbows, knees and fingers in a few poses.');
+    if (folded.size) warnings.push(`${folded.size} extra bone${folded.size === 1 ? '' : 's'} in the new look (${[...folded].slice(0, 4).join(', ')}${folded.size > 4 ? '…' : ''}) now follow their nearest matching parent.`);
+    const asset = makeAsset(root, target.kind, source.name, 'import', target.clips, [...new Set(warnings)]);
+    // Same skeleton, same motion scale: physics and framing must not shift
+    // because a hat raised the bounding box.
+    asset.height = target.height;
+    saveMetadata(asset);
+    return asset;
+  } catch (error) { disposeCharacter({ ...target, root }); throw error; }
 }
 
 export async function exportCharacterGLB(asset: CharacterAsset, clip?: THREE.AnimationClip): Promise<ArrayBuffer> {

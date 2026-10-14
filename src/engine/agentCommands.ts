@@ -1,4 +1,4 @@
-import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
+import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter, swapCharacterLook } from './character';
 import { morphKeyData } from './morphs';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
 import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
@@ -127,6 +127,21 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         adopted = true;
         return { ...editor.snapshot(), warnings: next.warnings };
       } finally { if (!adopted) disposeCharacter(next); }
+    }
+    case 'character.swapLook': {
+      requireRig();
+      const file = await downloadAgentFile(String(params.fileId), signal);
+      const source = await importCharacter(file);
+      let next: CharacterAsset | undefined, adopted = false;
+      try {
+        signal.throwIfAborted();
+        next = swapCharacterLook(asset, source);
+        // The dressed take is a new scene; the original stays in the library untouched.
+        await editor.archive(); signal.throwIfAborted();
+        editor.replace(next, { ...studio, title: nameOf(params.name, studio.title) }, editor.time);
+        adopted = true;
+        return { ...editor.snapshot(), warnings: next.warnings };
+      } finally { disposeCharacter(source); if (next && !adopted) disposeCharacter(next); }
     }
     case 'skeleton.inspect': return { ...inspectSkeleton(asset, poseAt(editor.time)) };
     case 'skeleton.kind': commit({ ...studio, rigKind: kindOf(params.kind), generated: undefined, generation: undefined }); return editor.snapshot();
