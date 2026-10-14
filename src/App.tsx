@@ -5,7 +5,7 @@ import { useTheme } from './theme';
 import './unreal-export.css';
 import './agent-scripting.css';
 import './timeline.css';
-import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, Shirt, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
+import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpRight, Bone, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download, Expand, Footprints, Hand, Keyboard, Layers2, Leaf, LoaderCircle, Maximize2, MousePointer2, Move, Move3d, Pause, Play, Plus, Redo2, RotateCcw, RotateCw, Save, Settings2, Shirt, ShieldCheck, SkipBack, SkipForward, SlidersHorizontal, Sparkles, Trash2, Undo2, Upload, X } from 'lucide-react';
 import { Euler, MathUtils, Quaternion, Vector3 } from 'three';
 import Viewport from './components/Viewport';
 import type { ViewportAPI } from './components/Viewport';
@@ -21,6 +21,7 @@ import FaceShapes from './components/FaceShapes';
 import ClipTools from './components/ClipTools';
 import AnimationImport from './components/AnimationImport';
 import HandRigSetup from './components/HandRigSetup';
+import PartFit from './components/PartFit';
 import { isFingerBone } from './engine/handRig';
 import type { AnatomicalFit } from './engine/anatomicalRig';
 import { assertMatchingRig, composeMotion, editMotion, rangeSpeedTime } from './engine/clipEditing';
@@ -137,6 +138,8 @@ export default function App() {
   activeSceneId.current = sceneId;
   const sceneTokens = useRef(new Map<string, SceneWriteToken>());
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [fitOpen, setFitOpen] = useState(false);
+  const [lookRevision, setLookRevision] = useState(0);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [agentConnection, setAgentConnection] = useState<AgentConnection>({ connected: false });
   const [agentActivity, setAgentActivity] = useState<{ method: string; status: 'running' | 'done' | 'error' | 'cancelled'; message?: string } | null>(null);
@@ -160,7 +163,8 @@ export default function App() {
   const operation = useRef(0);
   const dirty = useRef(false);
   const saveGeneration = useRef(0);
-  const embedded = useMemo(() => embedCharacter(asset), [asset]);
+  // lookRevision: Fit a part reshapes the meshes in place, so the saved character must be re-read.
+  const embedded = useMemo(() => embedCharacter(asset), [asset, lookRevision]);
   const poseKeys = dragPreview?.keys ?? studio.keys;
   const timelineDuration = dragPreview?.duration ?? studio.duration;
   const motionKeys = dragPreview ? poseKeys : studio.generated ?? poseKeys;
@@ -1097,7 +1101,8 @@ export default function App() {
         <div className="sidebar-section character-section"><div className="section-heading"><h2>Your character</h2><button className="icon-button" title="Browse saved characters" aria-label="Browse characters" onClick={() => void openLibrary()}><Plus size={17}/></button></div>
           <div className="character-card"><div className="character-art"><div className="orbit-ring one"/><div className="orbit-ring two"/><PoseSketch index={1} quadruped={asset.kind === 'quadruped'}/><span className="character-spark">✳</span></div><div className="character-details"><strong title={currentCharacter?.name ?? asset.name}>{currentCharacter?.name ?? asset.name}</strong><span>{asset.rigged ? 'Saved model · locked rig' : 'Add a rig to save this character'}</span></div><span className="ready-dot" title="Loaded"/></div>
           <div className="rig-status"><ShieldCheck size={14}/>{asset.rigged ? getAutoRigDiagnostics(asset) ? getAutoRigDiagnostics(asset)?.hands ? 'Body and finger rig fitted' : 'Body rig fitted' : asset.source === 'import' ? 'Original rig preserved' : `${asset.kind === 'humanoid' ? 'Human' : 'Quadruped'} rig, ready to move` : 'Ready for a simple rig'}<span>{asset.bones.length} joints</span></div>
-          <div className="character-import-actions"><button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button><button className="import-button animation-import-button" aria-label="Import animation" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={17}/><span>Import animation</span><span className="plus-small" aria-hidden="true">+</span></button><button className="import-button animation-import-button" aria-label="Swap look" title="Put a new mesh and paint on this skeleton. Bones and keys stay exactly the same." disabled={!asset.rigged || !!busy || !hydrated} onClick={() => lookInput.current?.click()}><Shirt size={17}/><span>Swap look</span><span className="plus-small" aria-hidden="true">+</span></button></div>
+          <div className="character-import-actions"><button className="import-button" onClick={() => setDialog('import')}><Upload size={17}/><span>Import a character</span><span className="plus-small">+</span></button><button className="import-button animation-import-button" aria-label="Import animation" disabled={!asset.rigged || !!busy || !hydrated} onClick={() => openAnimationImport()}><Activity size={17}/><span>Import animation</span><span className="plus-small" aria-hidden="true">+</span></button><button className="import-button animation-import-button" aria-label="Swap look" title="Put a new mesh and paint on this skeleton. Bones and keys stay exactly the same." disabled={!asset.rigged || !!busy || !hydrated} onClick={() => lookInput.current?.click()}><Shirt size={17}/><span>Swap look</span><span className="plus-small" aria-hidden="true">+</span></button><button className="import-button animation-import-button" aria-label="Fit a part" aria-expanded={fitOpen} title="Move, turn or resize one piece of the look, like a hat, on its bones." disabled={asset.source === 'demo' || !!busy || !hydrated} onClick={() => setFitOpen(open => !open)}><Move3d size={17}/><span>Fit a part</span><ChevronDown size={13} className="plus-small" aria-hidden="true"/></button></div>
+          {fitOpen && asset.source !== 'demo' && <PartFit key={asset.root.uuid} asset={asset} disabled={!!busy || !hydrated} onApply={message => { setLookRevision(value => value + 1); dirty.current = true; notify(message); }} onClose={() => setFitOpen(false)}/>}
           <button className="button secondary character-new-scene" aria-label="New scene with this character" disabled={!asset.rigged || !!busy || !hydrated || !characterId} onClick={() => characterId && void createCharacterScene(characterId)}><Plus size={15}/>New scene with this character</button><button className="text-button" disabled={!!busy || !characterId} onClick={() => void openLibrary(characterId)}><Layers2 size={13}/>All scenes for this character</button><div className="format-note">FBX, GLB, or a saved .still scene</div>
         </div>
 
