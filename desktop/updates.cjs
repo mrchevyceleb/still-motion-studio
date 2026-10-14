@@ -111,9 +111,10 @@ function createUpdates({ app, safeStorage, runtime, runtimeId, send, install, Up
       if (error instanceof Stalled) {
         cancellation?.cancel();
         updater = null;
-        // Let the cancelled request settle first so two downloads never share the pending cache.
-        await Promise.race([work?.catch(() => {}), new Promise(resolve => setTimeout(resolve, 15000))]);
-        if (stalls < STALL_RETRIES && !closing) {
+        // A stalled check never reaches the cache. A stalled download retries only once it has
+        // settled, so two downloads never share the pending cache.
+        const settled = !cancellation || await Promise.race([work.then(() => true, () => true), new Promise(resolve => setTimeout(resolve, 15000, false))]);
+        if (settled && stalls < STALL_RETRIES && !closing) {
           publish({ status: 'error', progress: undefined, message: 'The download stopped responding. Retrying automatically…' });
           retry = setTimeout(() => void attempt(stalls + 1), 5000);
           retry.unref();

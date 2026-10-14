@@ -17,9 +17,27 @@ const win = (output, overrides = {}) => build({ projectDir: root, win: ['nsis'],
 // The update installer refuses to run unless this exact runtime is already installed,
 // so running it by hand on an older or fresh PC can't leave Still without its runtime.
 const guard = path.join(root, '.local/update-installer.nsh');
+const installed = `$LOCALAPPDATA\\Still Motion Studio\\runtime\\${runtimeId}`;
 await writeFile(guard, `!include "${path.join(root, 'desktop', 'installer.nsh')}"
 !macro customInit
-  \${IfNot} \${FileExists} "$LOCALAPPDATA\\Still Motion Studio\\runtime\\${runtimeId}\\.complete"
+  StrCpy $R7 "ok"
+  StrCpy $R9 ""
+  ClearErrors
+  FileOpen $R8 "${installed}\\.complete" r
+  \${IfNot} \${Errors}
+    FileRead $R8 $R9
+    FileClose $R8
+  \${EndIf}
+  \${If} $R9 != "${runtimeId}"
+    StrCpy $R7 ""
+  \${EndIf}
+  \${IfNot} \${FileExists} "${installed}\\python\\python.exe"
+    StrCpy $R7 ""
+  \${EndIf}
+  \${IfNot} \${FileExists} "${installed}\\blender\\blender.exe"
+    StrCpy $R7 ""
+  \${EndIf}
+  \${If} $R7 == ""
     MessageBox MB_OK|MB_ICONSTOP "This is the quick update for an existing Still install. Run Still-Motion-Studio-Setup from github.com/mrchevyceleb/still-motion-studio/releases/latest instead." /SD IDOK
     SetErrorLevel 2
     Quit
