@@ -1,10 +1,14 @@
 # Windows desktop
 
-Download **Still-Motion-Studio-Setup-0.2.5.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+Download **Still-Motion-Studio-Setup-0.2.21.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+
+The runtime (Python, Blender, models and the GitHub CLI) lives in `%LOCALAPPDATA%\Still Motion Studio\runtime\<id>`, outside the install folder. The first launch after a full install moves it there. Each release ships two installers: **Still-Motion-Studio-Setup** (full, for new installs and for releases that change the runtime) and **Still-Motion-Studio-Update** (app only). Automatic updates take the app-only installer when the runtime id matches, so they finish in under a minute. Uninstalling removes the runtime folder; updating never touches it.
 
 Closing the editor hides it to the tray. Agent commands, rendering, and generation continue in that workspace. Double-click the tray icon to reopen; **Quit Still** stops the engine and performs native cleanup. The app must remain running for scripting to work.
 
 Desktop uses port **17175** on loopback. Keeping the origin fixed preserves projects across restarts. If another program owns that port, Still reports the conflict rather than opening an empty workspace elsewhere. Development stays on 5173/5175.
+
+Open **Scenes** beside the project name for the permanent scene library. Each entry saves independently without a five-scene limit. Switching saves the outgoing scene first; concurrent-window conflicts are preserved as separate copies. Recent backups remain accessible for recovery. Saved physics comparisons travel with the scene and `.still` export. **Ctrl S** saves to the library; **Ctrl Shift S** downloads a portable project file.
 
 Data is under `%APPDATA%/Still Motion Studio`. The **Still** menu opens its data and agent-tools directories. The private token lives in `.local/agent/connection.json`; never share it. Configure an external Node-capable agent with `agent-tools/still-mcp.mjs`, or use `still-agent.mjs` beside it. The installed app itself does not require Node.
 
@@ -28,6 +32,6 @@ No CondMDI checkpoint, user FBX, training mesh, Epic target character, or Cascad
 
 The current installer omits the standalone humanoid model because it failed the corrected quality gate. Use curve interpolation or the licensed Cascadeur adapter for human motion. Old development weights remain backed up locally for research.
 
-On launch, 0.2.5 resolves the current bundled Python and physics paths, verifies model hashes, provenance and held-out quality, and retains valid user-trained versions. Invalid runtime manifests are backed up as `runtime.rejected-<id>.json`; checkpoint data is preserved. A rejected model omitted from the catalog stays unavailable. Pending native cleanup records are durably rebased to the current Python before replay; a failed rebase retains the cleanup obligation.
+On launch, the app resolves the current bundled Python and physics paths, verifies model hashes, provenance and held-out quality, and retains valid user-trained versions. Invalid runtime manifests are backed up as `runtime.rejected-<id>.json`; checkpoint data is preserved. A rejected model omitted from the catalog stays unavailable. Pending native cleanup records are durably rebased to the current Python before replay; a failed rebase retains the cleanup obligation.
 
-Timeline duration editing supports 0.1–600 seconds. Duplicating a final moment at the 10-minute limit reports that room is needed, without moving the copy backwards. See the historical [0.2 validation and review findings](../reports/Release-0.2-validation.md).
+Timeline duration editing supports 0.1–600 seconds. Enable **Ripple**, or hold **Shift** while dragging a diamond, to move that moment and every later pose together. The clip length adjusts while later spacing stays intact; **Ctrl Z** undoes the entire edit. **Alt Shift ← / →** ripples by one frame with a diamond focused. Timeline gestures do not activate the file-drop overlay. Duplicating a final moment at the 10-minute limit reports that room is needed, without moving the copy backwards. See the historical [0.2 validation and review findings](../reports/Release-0.2-validation.md).

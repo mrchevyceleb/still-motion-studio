@@ -1,0 +1,27 @@
+.keyframe-properties { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.keyframe-properties > summary { display: flex; align-items: center; gap: 8px; padding: 11px 13px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.keyframe-properties > summary::before { content: '›'; font-size: 16px; transition: transform .15s; }
+.keyframe-properties[open] > summary::before { transform: rotate(90deg); }
+.keyframe-properties > summary > span { margin-left: auto; font-size: 10px; color: var(--muted); font-weight: 400; }
+.keyframe-properties fieldset { border: 0; padding: 4px 13px 13px; margin: 0; min-width: 0; }
+.keyframe-properties strong { font-size: 11px; }
+.keyframe-properties p { font-size: 10px; color: var(--muted); line-height: 1.6; }
+.keyframe-properties .property-error { padding: 0 13px 13px; color: var(--ink); }
+.property-current, .property-clip { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.property-current > div:first-child, .property-clip > div:first-child { flex: 1 1 220px; }
+.property-numbers { display: flex; gap: 8px; flex: 1 1 310px; }
+.property-numbers label { flex: 1; min-width: 0; }
+.property-numbers label > span, .property-controls > label { display: block; font-size: 10px; color: var(--muted); }
+.property-numbers input, .property-controls select { width: 100%; margin-top: 5px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); font-size: 11px; }
+.property-controls { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; padding: 14px 0; }
+.property-controls > label { flex: 1 1 170px; }
+.property-axes { display: flex; align-items: center; gap: 9px; min-height: 32px; font-size: 11px; }
+.property-axes label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.property-axes input { accent-color: var(--green); }
+.property-reference { display: flex; flex-wrap: wrap; gap: 6px 15px; padding: 10px; border-radius: 5px; background: color-mix(in srgb, var(--green) 7%, var(--paper)); font-size: 10px; font-variant-numeric: tabular-nums; }
+.property-reference strong { font-size: 10px; }
+.property-apply { display: flex; align-items: center; gap: 10px; padding: 12px 0; flex-wrap: wrap; }
+.property-apply p { flex: 1 1 250px; }
+.property-clip { border-top: 1px solid var(--line); padding-top: 13px; }
+.keyframe-properties .button { padding: 8px 10px; font-size: 10px; }
+@media (max-width: 720px) { .keyframe-properties > summary > span { display: none; } .property-numbers { flex-basis: 100%; } }

@@ -4,6 +4,7 @@ const { mkdir, writeFile, cp, access } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
+const { resolveRuntime } = require('./runtime-store.cjs');
 const { createUpdates } = require('./updates.cjs');
 const { NsisUpdater } = require('electron-updater');
 // An inherited CI/repository token must not override the user's stored login.
@@ -30,8 +31,8 @@ function icon() {
   return nativeImage.createFromBuffer(readFileSync(path.join(__dirname, '../public/still-icon.png')));
 }
 
-async function prepare(bundle, dataRoot) {
-  await prepareRuntimes(bundle, dataRoot);
+async function prepare(bundle, runtime, dataRoot) {
+  await prepareRuntimes(bundle, dataRoot, runtime);
   const native = process.env.CASCADEUR_HOME || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cascadeur');
   try {
     await access(path.join(native, 'cascadeur.exe'));
@@ -40,7 +41,7 @@ async function prepare(bundle, dataRoot) {
       const id = physics ? 'cascadeur_physics' : 'cascadeur';
       const directory = path.join(dataRoot, '.local', physics ? 'cascadeur-physics' : 'cascadeur-proof');
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(bundle, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
+      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(runtime, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
     }
   } catch { /* Optional licensed native installation is absent. */ }
   await mkdir(path.join(dataRoot, 'agent-tools'), { recursive: true });
@@ -91,6 +92,11 @@ ipcMain.on('still:theme', (event, theme) => {
   nativeTheme.themeSource = theme;
   window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
 });
+ipcMain.handle('still:pick-folder', async event => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
 for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
   if (!updates) throw new Error('Updates are not ready.');
@@ -100,9 +106,11 @@ for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`s
 if (acquired) app.whenReady().then(async () => {
   const bundle = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../.local/desktop-bundle');
   const dataRoot = app.getPath('userData');
-  await prepare(bundle, dataRoot);
+  const store = process.env.STILL_TEST_USER_DATA ? path.join(dataRoot, 'runtime') : path.join(process.env.LOCALAPPDATA || dataRoot, 'Still Motion Studio', 'runtime');
+  const runtime = app.isPackaged ? await resolveRuntime(bundle, store) : path.join(bundle, 'deps');
+  await prepare(bundle, runtime, dataRoot);
   const port = await unusedPort();
-  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(bundle, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(bundle, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
+  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(runtime, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(runtime, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   engine = utilityProcess.fork(path.join(bundle, 'app', 'server', 'engine.mjs'), [], { env, cwd: path.join(bundle, 'app'), stdio: 'pipe', serviceName: 'Still motion engine' });
   let log = '';
@@ -132,7 +140,7 @@ if (acquired) app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
   tray = new Tray(icon().resize({ width: 24, height: 24 })); tray.setToolTip('Still — agent scripting remains available');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Still', click: show }, { label: 'Quit Still', click: () => void shutdown() }])); tray.on('double-click', show);
-  updates = createUpdates({ app, safeStorage, bundle, Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
+  updates = createUpdates({ app, safeStorage, runtime, runtimeId: path.basename(runtime), Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
   await window.loadURL(url);
   updates.start();
   if (process.env.STILL_BACKGROUND !== '1') show();

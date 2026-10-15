@@ -2,12 +2,12 @@
   "appId": "studio.still.motion",
   "productName": "Still Motion Studio",
   "directories": { "output": ".local/installers" },
-  "files": ["desktop/**/*", "public/still-icon.png", "package.json"],
+  "files": ["desktop/**/*", "!desktop/installer.nsh", "public/still-icon.png", "package.json"],
   "artifactName": "Still-Motion-Studio-Setup-${version}.${ext}",
   "publish": { "provider": "github", "owner": "mrchevyceleb", "repo": "still-motion-studio", "private": true, "releaseType": "release" },
   "extraResources": [{ "from": ".local/desktop-bundle", "to": "runtime" }],
   "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "desktop/still.ico", "signExecutable": false },
-  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false, "createDesktopShortcut": true },
+  "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "perMachine": false, "createDesktopShortcut": true, "include": "desktop/installer.nsh" },
   "compression": "normal",
   "asar": true
 }

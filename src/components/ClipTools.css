@@ -1,0 +1,16 @@
+.clip-tools > summary { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; cursor: pointer; list-style: none; }
+.clip-tools > summary > svg:last-child { margin-left: auto; }
+.clip-tools[open] > summary > svg:last-child { transform: rotate(180deg); }
+.clip-tools fieldset { margin: 12px 0 0; padding: 0; border: 0; min-width: 0; }
+.clip-tools p { font-size: 10px; line-height: 1.6; color: var(--muted); margin: 9px 0 13px; }
+.clip-tool-fields { display: flex; gap: 8px; align-items: flex-end; margin: 13px 0 9px; }
+.clip-tools label { flex: 1; min-width: 0; display: block; color: var(--muted); font-size: 10px; }
+.clip-tools input:not([type=file]), .clip-tools select { width: 100%; margin-top: 5px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); font-size: 11px; }
+.clip-tools .button { font-size: 10px; padding: 8px 9px; min-height: 32px; justify-content: center; white-space: normal; }
+.clip-tool-fields > .button { flex: 1; }
+.clip-tool-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.clip-tool-actions > .button { flex: 1 1 80px; }
+.clip-compose { border-top: 1px solid var(--line); margin-top: 13px; padding-top: 13px; }
+.clip-compose > strong { display: block; font-size: 11px; margin-bottom: 12px; }
+.clip-compose > .button { width: 100%; margin-top: 8px; }
+@media (max-width: 1000px) { .clip-tools[open] { grid-column: 1 / -1; } }

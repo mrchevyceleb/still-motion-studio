@@ -29,6 +29,7 @@ const tools = [
   tool('still_export_file', 'Export the selected scene to a local file. Refuses an existing path unless overwrite=true. Unreal produces a ZIP; png captures the viewport.', {
     format: { type: 'string', enum: ['glb', 'still', 'unreal', 'png'] }, path: string,
     name: string, fps: { type: 'integer', enum: [24, 30, 60] }, overwrite: { type: 'boolean', default: false }, ...shared,
+    rootMotion: { type: 'string', enum: ['preserve', 'extract', 'in-place'] }, retarget: { type: 'string', enum: ['none', 'manny', 'metahuman', 'skeleton'] }, targetMesh: string, targetSkeleton: string,
   }, ['format', 'path']),
 ];
 const config = {};
