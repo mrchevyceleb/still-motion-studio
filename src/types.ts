@@ -5,14 +5,16 @@ export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
 export interface BonePose { position: Vec3; quaternion: Quat; scale: Vec3 }
 export type Pose = BonePose[];
-export interface PoseKey { id: string; time: number; pose: Pose; label?: string }
-export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[] }
+export type MorphValues = Record<string, number>;
+export interface PoseKey { id: string; time: number; pose: Pose; label?: string; morphs?: MorphValues }
+export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[]; comparison?: { before: PoseKey[]; interpolation: InterpolationMode } }
 export type InterpolationMode = 'smooth' | 'linear' | 'stepped';
 export interface MotionSettings { interpolation: InterpolationMode; floorContact: boolean; gravity: number; strength: number }
 export interface CharacterAsset {
   root: THREE.Group;
   bones: THREE.Bone[];
   restPose: Pose;
+  restMorphs?: MorphValues;
   clips: THREE.AnimationClip[];
   kind: RigKind;
   name: string;
@@ -20,9 +22,12 @@ export interface CharacterAsset {
   rigged: boolean;
   height: number;
   warnings: string[];
+  referenceFbx?: ArrayBuffer;
+  referenceFbxName?: string;
 }
 export interface ProjectDocument {
   version: 1;
+  characterId?: string;
   name: string;
   duration: number;
   fps: number;

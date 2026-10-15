@@ -1,12 +1,13 @@
-const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
 const { readFileSync } = require('node:fs');
 const { mkdir, writeFile, cp, access } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
+const { resolveRuntime } = require('./runtime-store.cjs');
 const { createUpdates } = require('./updates.cjs');
 const { NsisUpdater } = require('electron-updater');
-// An inherited CI/repository token must not override the user's stored login.
+// Public updates and the local engine do not need inherited publisher credentials.
 for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
 
 app.setName('Still Motion Studio');
@@ -30,8 +31,8 @@ function icon() {
   return nativeImage.createFromBuffer(readFileSync(path.join(__dirname, '../public/still-icon.png')));
 }
 
-async function prepare(bundle, dataRoot) {
-  await prepareRuntimes(bundle, dataRoot);
+async function prepare(bundle, runtime, dataRoot) {
+  await prepareRuntimes(bundle, dataRoot, runtime);
   const native = process.env.CASCADEUR_HOME || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cascadeur');
   try {
     await access(path.join(native, 'cascadeur.exe'));
@@ -40,7 +41,7 @@ async function prepare(bundle, dataRoot) {
       const id = physics ? 'cascadeur_physics' : 'cascadeur';
       const directory = path.join(dataRoot, '.local', physics ? 'cascadeur-physics' : 'cascadeur-proof');
       await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(bundle, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
+      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(runtime, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
     }
   } catch { /* Optional licensed native installation is absent. */ }
   await mkdir(path.join(dataRoot, 'agent-tools'), { recursive: true });
@@ -89,9 +90,14 @@ app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void s
 ipcMain.on('still:theme', (event, theme) => {
   if (event.sender !== window?.webContents || (theme !== 'light' && theme !== 'dark')) return;
   nativeTheme.themeSource = theme;
-  window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
+  window.setBackgroundColor(theme === 'dark' ? '#191c22' : '#f1f2f4');
 });
-for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
+ipcMain.handle('still:pick-folder', async event => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
+for (const method of ['state', 'check', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
   if (!updates) throw new Error('Updates are not ready.');
   return method === 'state' ? updates.getState() : method === 'install' ? updates.apply() : updates[method]();
@@ -100,9 +106,11 @@ for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`s
 if (acquired) app.whenReady().then(async () => {
   const bundle = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../.local/desktop-bundle');
   const dataRoot = app.getPath('userData');
-  await prepare(bundle, dataRoot);
+  const store = process.env.STILL_TEST_USER_DATA ? path.join(dataRoot, 'runtime') : path.join(process.env.LOCALAPPDATA || dataRoot, 'Still Motion Studio', 'runtime');
+  const runtime = app.isPackaged ? await resolveRuntime(bundle, store) : path.join(bundle, 'deps');
+  await prepare(bundle, runtime, dataRoot);
   const port = await unusedPort();
-  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(bundle, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(bundle, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
+  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(runtime, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(runtime, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   engine = utilityProcess.fork(path.join(bundle, 'app', 'server', 'engine.mjs'), [], { env, cwd: path.join(bundle, 'app'), stdio: 'pipe', serviceName: 'Still motion engine' });
   let log = '';
@@ -119,7 +127,7 @@ if (acquired) app.whenReady().then(async () => {
     engine.once('message', message => { if (message.type === 'ready') { clearTimeout(timer); resolve(); } });
     engine.once('exit', () => { clearTimeout(timer); reject(new Error(log || 'The local engine stopped during startup.')); });
   });
-  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141d19' : '#f4f3ee', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
+  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c22' : '#f1f2f4', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   const url = `http://127.0.0.1:${port}`;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -132,7 +140,7 @@ if (acquired) app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
   tray = new Tray(icon().resize({ width: 24, height: 24 })); tray.setToolTip('Still — agent scripting remains available');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Still', click: show }, { label: 'Quit Still', click: () => void shutdown() }])); tray.on('double-click', show);
-  updates = createUpdates({ app, safeStorage, bundle, Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
+  updates = createUpdates({ app, runtimeId: path.basename(runtime), Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
   await window.loadURL(url);
   updates.start();
   if (process.env.STILL_BACKGROUND !== '1') show();

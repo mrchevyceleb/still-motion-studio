@@ -15,10 +15,10 @@ async function atomicJSON(file, value) {
 
 // Resolve executable paths on every launch. Checkpoints remain in user data;
 // valid user-trained versions survive upgrades, including catalog omissions.
-async function prepareRuntimes(bundle, dataRoot) {
+async function prepareRuntimes(bundle, dataRoot, runtimeRoot) {
   const catalog = JSON.parse(await readFile(path.join(bundle, 'catalog.json'), 'utf8'));
   if (catalog.version !== 1 || catalog.complete !== true) throw new Error('The installed runtime bundle is incomplete.');
-  const python = path.join(bundle, 'python', 'python.exe');
+  const python = path.join(runtimeRoot, 'python', 'python.exe');
   await access(python);
   await mkdir(dataRoot, { recursive: true });
   const localRoot = path.resolve(dataRoot, '.local');
@@ -39,7 +39,7 @@ async function prepareRuntimes(bundle, dataRoot) {
     }
   }
   await checkedDirectory(localRoot, true);
-  const expanded = new Map(catalog.runtimes.map(entry => [entry.file, JSON.parse(JSON.stringify(entry.runtime).replaceAll('$DATA', dataRoot.replaceAll('\\', '/')).replaceAll('$APP', bundle.replaceAll('\\', '/')))]));
+  const expanded = new Map(catalog.runtimes.map(entry => [entry.file, JSON.parse(JSON.stringify(entry.runtime).replaceAll('$DATA', dataRoot.replaceAll('\\', '/')).replaceAll('$RUNTIME', runtimeRoot.replaceAll('\\', '/')).replaceAll('$APP', bundle.replaceAll('\\', '/')))]));
   const readExisting = async file => {
     try {
       const value = JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
@@ -90,7 +90,7 @@ async function prepareRuntimes(bundle, dataRoot) {
     await checkedDirectory(path.dirname(directory), true);
     await mkdir(directory);
     try {
-      await cp(path.join(bundle, 'local', relative), directory, { recursive: true, force: false, errorOnExist: false });
+      await cp(path.join(runtimeRoot, 'local', relative), directory, { recursive: true, force: false, errorOnExist: false });
       return { directory, runtime: { ...runtime, config: { ...runtime.config, checkpointPath: directory }, requiredFiles: runtime.requiredFiles.map(file => path.join(directory, path.relative(oldDirectory, file))) } };
     } catch (error) { await discardRepair(directory); throw error; }
   };

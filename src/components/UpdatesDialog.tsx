@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Download, Github, LoaderCircle, RotateCcw } from 'lucide-react';
+import { Download, LoaderCircle, RotateCcw } from 'lucide-react';
 import type { UpdateState } from '../desktop';
 import '../updates.css';
 
@@ -18,10 +18,10 @@ export function useUpdates() {
 
 export default function UpdatesDialog({ state, canInstall, onInstall }: { state: UpdateState | null; canInstall: boolean; onInstall: () => void }) {
   const [error, setError] = useState('');
-  const waiting = !state || ['checking', 'signing-in', 'downloading', 'installing'].includes(state.status);
-  const invoke = (method: 'check' | 'connect') => {
+  const waiting = !state || ['checking', 'downloading', 'installing'].includes(state.status);
+  const check = () => {
     setError('');
-    void window.stillDesktop?.updates[method]().catch(() => setError('The update service is unavailable. Reopen Still and try again.'));
+    void window.stillDesktop?.updates.check().catch(() => setError('The update service is unavailable. Reopen Still and try again.'));
   };
   return <>
     <span className="modal-icon"><Download size={25}/></span>
@@ -32,13 +32,11 @@ export default function UpdatesDialog({ state, canInstall, onInstall }: { state:
       <strong>{state?.status === 'ready' ? `Version ${state.version} is ready` : `Installed version ${state?.currentVersion ?? '…'}`}</strong>
       <p>{error || state?.message || 'Connecting to the update service…'}</p>
       {state?.status === 'downloading' && <><progress aria-label="Update download" max="100" value={state.progress ?? 0}/><span>{state.progress ?? 0}%</span></>}
-      {state?.deviceCode && <div className="update-device-code"><span>Your GitHub sign-in code</span><code>{state.deviceCode}</code><span>Use the GitHub browser window opened by sign-in.</span></div>}
     </div>
     <div className="update-actions">
-      {state?.status === 'ready' ? <button className="button primary" disabled={!canInstall} onClick={onInstall}><RotateCcw size={16}/>Restart and update</button> : <button className="button primary" disabled={waiting} onClick={() => invoke('check')}>{waiting ? <LoaderCircle size={16} className="spin"/> : <Download size={16}/>}Check for updates</button>}
-      <button className="button secondary" disabled={waiting || state?.status === 'ready'} onClick={() => invoke('connect')}><Github size={16}/>Connect GitHub</button>
+      {state?.status === 'ready' ? <button className="button primary" disabled={!canInstall} onClick={onInstall}><RotateCcw size={16}/>Restart and update</button> : <button className="button primary" disabled={waiting} onClick={check}>{waiting ? <LoaderCircle size={16} className="spin"/> : <Download size={16}/>}Check for updates</button>}
     </div>
     {state?.status === 'ready' && !canInstall && <p>Finish active work and resolve native cleanup before restarting.</p>}
-    <p className="update-note">This is a private repository. Connect once using a GitHub account with access. Your sign-in is encrypted on this computer.</p>
+    <p className="update-note">Updates come from the public Still GitHub releases. No account or sign-in is needed.</p>
   </>;
 }

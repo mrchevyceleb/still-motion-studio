@@ -1,33 +1,50 @@
 # Windows desktop
 
-Download **Still-Motion-Studio-Setup-0.2.5.exe** from the [private GitHub release](https://github.com/mrchevyceleb/still-motion-studio/releases/latest), then run it and choose a per-user install location. The app works offline on Windows x64 without separate Python, Node, Blender, or CUDA installations. The validated animal model, a CPU runtime, MuJoCo, Blender, and fonts are included.
+## Install and use
 
-Closing the editor hides it to the tray. Agent commands, rendering, and generation continue in that workspace. Double-click the tray icon to reopen; **Quit Still** stops the engine and performs native cleanup. The app must remain running for scripting to work.
+Download the full **Still-Motion-Studio-Setup** installer from [Releases](https://github.com/mrchevyceleb/still-motion-studio/releases). It targets Windows x64 and includes CPU Python, MuJoCo and Blender; no separate Node installation or GPU is needed. Learned models are included only when locally available and approved at build time. A source-only build can omit them.
 
-Desktop uses port **17175** on loopback. Keeping the origin fixed preserves projects across restarts. If another program owns that port, Still reports the conflict rather than opening an empty workspace elsewhere. Development stays on 5173/5175.
+The 0.2.22 source prepares public updates without sign-in. Until its installer is published, earlier installers retain the old private-repository sign-in flow. Windows installers are unsigned; verify their origin and the published `SHA256SUMS.txt`.
 
-Data is under `%APPDATA%/Still Motion Studio`. The **Still** menu opens its data and agent-tools directories. The private token lives in `.local/agent/connection.json`; never share it. Configure an external Node-capable agent with `agent-tools/still-mcp.mjs`, or use `still-agent.mjs` beside it. The installed app itself does not require Node.
+The runtime is stored under `%LOCALAPPDATA%/Still Motion Studio/runtime/<id>`. **Setup** includes it; the smaller **Update** installer only works when that exact runtime is already installed. Automatic updates choose the smaller installer when possible. Updating preserves local scenes and valid user-trained models. Uninstalling removes the runtime.
 
-Cascadeur is optional. If installed in its normal user folder, Still registers the adapter automatically. Its scripting bridge must run at `127.0.0.1:8765`. [Native setup](cascadeur-integration.md). Failed cleanup is retained on disk and retried at startup; further native work stays blocked until cleanup succeeds.
+Closing the editor hides it to the tray, allowing agent jobs to continue. Double-click the tray icon to reopen it; **Quit Still** stops the service and completes native cleanup. The installed app uses loopback port **17175** and stores data under `%APPDATA%/Still Motion Studio`. An occupied port is reported rather than silently switching to an empty project origin.
 
-## Automatic updates
+The **Still** menu opens data and agent-tool directories. Keep `.local/agent/connection.json` private: it authorizes local scripting. Export `.still` files for portable backups. Cascadeur remains optional and requires your own licensed installation; see [setup](cascadeur-integration.md).
 
-Open **Updates** in the header or **Still → Updates…**. On another computer, choose **Connect GitHub** once and complete the browser sign-in with an account that can access `mrchevyceleb/still-motion-studio`. GitHub CLI is bundled; an existing CLI login is reused. New sign-ins are protected by Electron `safeStorage` (Windows DPAPI). Tokens never enter the renderer, repository, installer, or release metadata. Temporary sign-in configuration is removed even if GitHub CLI falls back to a plaintext file. Network access is needed for sign-in and updates; editing remains offline.
+## Public updates
 
-Still checks at startup and every six hours while running, downloads stable releases with SHA-512 verification, and shows **Update ready**. Choose **Restart and update** when ready. The app commits the current scene to local storage before requesting a graceful engine shutdown. Generation, export, agent commands, uploads, or unresolved Cascadeur cleanup block the restart. Updates do not install implicitly during Quit, so an active job is never interrupted by a downloaded update. Local scenes, dark-mode preference, and validated custom model snapshots stay in user data.
+Open **Updates** in the header or **Still → Updates…**. Version 0.2.22 checks public GitHub releases at startup and every six hours. No GitHub account, CLI or access token is needed. Network access is required for checks/downloads; editing remains local.
 
-For future releases, bump the package version, add `docs/releases/v<version>.md`, commit the source, and run `npm run desktop:release` on the development machine with its approved models installed. The command builds and validates the offline installer, creates a private draft release, uploads the installer, blockmap, `latest.yml`, hashes, and source identity, checks uploaded sizes/hashes, then publishes the complete release. Failed uploads leave a draft that the same command can resume. Clients only consume the latest published stable release. No publisher token is bundled. Do not upload `latest.yml` before its matching installer.
+Downloads are verified against the release's SHA-512 metadata. Choose **Restart and update** to apply one. Still saves the current scene and waits for a graceful engine shutdown. Active generation, exports, agent commands, uploads or unresolved native cleanup block restart. Quitting does not implicitly install an update.
 
-## Building from source
+## Build from a fresh clone
 
-Install Node, uv, managed Python 3.10, and Blender on the development machine. Run `npm install`, `uv python install 3.10`, then `npm run desktop:dist`. Builds go to ignored `.local/installers`.
+Install Node.js 24 LTS, [uv](https://docs.astral.sh/uv/getting-started/installation/) and an official Windows Blender build (the default path is Blender 5.2). In PowerShell:
 
-`desktop:prepare` compiles the UI, constructs a portable CPU runtime using pinned requirements, copies approved models and provenance into a fresh staging folder, validates the copied bundles, and publishes the complete folder with rollback, and includes Blender from `STILL_BLENDER_DIRECTORY` or the local 5.2 installation. `desktop:pack` builds an unpacked executable; `npm run desktop` opens the prepared bundle.
+```powershell
+npm ci
+uv python install 3.10
+# Set this if Blender is installed elsewhere:
+$env:STILL_BLENDER_DIRECTORY = 'C:/Program Files/Blender Foundation/Blender 5.2'
+npm run desktop:dist
+```
 
-No CondMDI checkpoint, user FBX, training mesh, Epic target character, or Cascadeur binary is packaged. Dependency license files accompany their binaries. The installer is unsigned, so Windows may show a publisher warning. Signing remains release-operations work. GitHub releases now supply automatic updates.
+This downloads the pinned CPU Python dependencies, builds the UI, retains third-party notices and copies Blender into a fresh staging directory. Output is in ignored `.local/installers/`. `npm run desktop:pack` creates an unpacked executable; after preparation, `npm run desktop` opens it.
 
-The current installer omits the standalone humanoid model because it failed the corrected quality gate. Use curve interpolation or the licensed Cascadeur adapter for human motion. Old development weights remain backed up locally for research.
+There is no requirement for the maintainer's `.local` folder. Physics configuration is generated from defaults. Missing learned models are listed as omitted in `catalog.json`; installed models must pass existing rights, provenance, hash and quality gates. Invalid installed models cause a build failure, not a silent bypass. Models are never downloaded from a private location.
 
-On launch, 0.2.5 resolves the current bundled Python and physics paths, verifies model hashes, provenance and held-out quality, and retains valid user-trained versions. Invalid runtime manifests are backed up as `runtime.rejected-<id>.json`; checkpoint data is preserved. A rejected model omitted from the catalog stays unavailable. Pending native cleanup records are durably rebased to the current Python before replay; a failed rebase retains the cleanup obligation.
+Runtime preparation swaps staging into place only after validation, preserving the previous bundle on failure. On launch it revalidates models, preserves valid user-trained snapshots and quarantines invalid manifests without deleting their checkpoint data.
 
-Timeline duration editing supports 0.1–600 seconds. Duplicating a final moment at the 10-minute limit reports that room is needed, without moving the copy backwards. See the historical [0.2 validation and review findings](../reports/Release-0.2-validation.md).
+## Publish a desktop release
+
+Maintainer access to the GitHub repository and the `gh` CLI are needed only for publishing. They are not part of the installed application.
+
+1. Run the build/tests and verify installation, import, save/reopen, export and updates on Windows. Check included model provenance. Audit the complete runtime and its source/license obligations using [third-party notices](../THIRD_PARTY_NOTICES.md).
+2. Bump `package.json` and `package-lock.json` together, add `docs/releases/v<version>.md`, and commit/push that exact source.
+3. Download the official source archive matching the installed Blender version from [Blender's source index](https://download.blender.org/source/). Retain its dependencies' source information and build instructions too. Modified/custom Blender builds require their actual corresponding source, not a stock archive.
+4. Set `STILL_BLENDER_SOURCE_ARCHIVE` to that local archive, for example `C:/Downloads/blender-5.2.1.tar.xz`, then run `npm run desktop:release`.
+
+The command builds both installers, checks their metadata and hashes, requires the matching Blender version header, then uploads installers, blockmaps, the update feed, Blender source archive, notices, checksums and source-commit metadata to a draft release. It publishes only after GitHub confirms every uploaded size and hash. A failed upload remains a draft and can be resumed. Source/archive version checks do not replace auditing a custom binary or its dependencies.
+
+Never upload `latest.yml` without its matching installer. Preserve published corresponding source for as long as binaries are offered. The public GitHub feed must be reachable before announcing public automatic updates. Code signing is not configured by this project.

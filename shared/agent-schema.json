@@ -314,6 +314,26 @@
       },
       "resultDescription": "Updated compact scene state."
     },
+    "character.swapLook": {
+      "description": "Dress the current skeleton in another uploaded FBX or GLB's meshes and materials. Bones, rest pose and every key stay unchanged; bones are matched by name and extra joints follow their nearest matching parent. Creates a new scene and archives the current one.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fileId"
+        ],
+        "properties": {
+          "fileId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "name": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state with warnings."
+    },
     "scene.project": {
       "description": "Read the complete editable project document.",
       "mutating": false,
@@ -860,13 +880,20 @@
             "enum": [
               "none",
               "manny",
-              "metahuman"
+              "metahuman",
+              "skeleton"
             ]
           },
           "targetMesh": {
             "type": "string",
             "maxLength": 512,
             "pattern": "^/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\\.[A-Za-z0-9_]+)?$"
+          },
+          "targetSkeleton": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^/(?:Game|Engine|[A-Za-z][A-Za-z0-9_]*)/[A-Za-z0-9_/]+(?:\\.[A-Za-z0-9_]+)?$",
+            "description": "Existing Unreal Skeleton for retarget=skeleton. Requires the original FBX to be imported in this session."
           }
         }
       },

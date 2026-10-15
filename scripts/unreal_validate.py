@@ -15,7 +15,7 @@ import traceback
 import unreal
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from unreal_import import import_fbx
+from unreal_import import animation_curve_names, import_fbx
 
 
 def vector(value):
@@ -32,6 +32,10 @@ def distance(a, b):
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
+class SkinVertexMismatch(RuntimeError):
+    pass
+
+
 def skin_bounds(mesh, modifier, names, vertex_weights, poses):
     """Evaluate all imported vertices using imported bind poses and weights."""
     dynamic, outcome = unreal.GeometryScript_AssetUtils.copy_mesh_from_skeletal_mesh(
@@ -41,7 +45,7 @@ def skin_bounds(mesh, modifier, names, vertex_weights, poses):
     _, values, gaps = dynamic.get_all_vertex_positions(False)
     positions = [vector(value) for value in values.convert_vector_list_to_array()]
     if gaps or len(positions) != len(vertex_weights):
-        raise RuntimeError("Unreal's mesh geometry and skin-weight vertex indices do not align.")
+        raise SkinVertexMismatch("Unreal's mesh geometry and skin-weight vertex indices do not align.")
     indices = {name: index for index, name in enumerate(names)}
     influences = [[(indices[name], weight) for name, weight in values] for values in vertex_weights]
     rest = [modifier.get_bone_transform(name, True) for name in names]
@@ -64,6 +68,54 @@ def skin_bounds(mesh, modifier, names, vertex_weights, poses):
                 low[axis], high[axis] = min(low[axis], position[axis]), max(high[axis], position[axis])
         result.append({"min": low, "max": high, "vertices": len(positions)})
     return result
+
+
+def validate_morphs(mesh, animation, expected, report, checks):
+    if "morphTargets" in expected:
+        if not hasattr(mesh, "get_all_morph_target_names"):
+            raise RuntimeError("UE 5.8 SkeletalMesh.get_all_morph_target_names is required for morph validation.")
+        targets = [str(name) for name in mesh.get_all_morph_target_names()]
+        report["morphTargets"] = targets
+        checks["morphTargetCountMatches"] = len(targets) == len(expected["morphTargets"])
+        checks["morphTargetNamesMatch"] = sorted(targets) == sorted(expected["morphTargets"])
+    if "morphCurves" not in expected:
+        return
+    library = unreal.AnimationLibrary
+    if not all(hasattr(library, method) for method in ("get_float_keys", "get_float_value_at_time")):
+        raise RuntimeError("UE 5.8 AnimationLibrary.get_float_keys and get_float_value_at_time are required for morph validation.")
+    names = animation_curve_names(animation)
+    checks["morphCurveNamesMatch"] = set(expected["morphCurves"]).issubset(names)
+    report["morphCurves"], errors = {}, []
+    for name, reference in expected["morphCurves"].items():
+        if name not in names:
+            report["morphCurves"][name] = {"error": "Missing animation curve"}
+            continue
+        times, values = library.get_float_keys(animation, name)
+        if not times or len(times) != len(values) or not all(math.isfinite(float(v)) for v in list(times) + list(values)):
+            raise RuntimeError("Morph curve has empty or invalid imported keys: " + name)
+        measured = []
+        for index, sample in enumerate(reference):
+            if isinstance(sample, dict):
+                at, value = float(sample["time"]), float(sample["value"])
+            elif len(reference) == expected.get("frameCount"):
+                at, value = index / float(expected["fps"]), float(sample)
+            elif len(reference) == len(expected.get("sampleTimes", [])):
+                at, value = float(expected["sampleTimes"][index]), float(sample)
+            else:
+                raise ValueError("Morph samples need {time, value} objects, sampleTimes, or full frameCount/fps arrays: " + name)
+            if not math.isfinite(at) or not math.isfinite(value) or at < 0 or at > animation.get_play_length() + 1e-5:
+                raise ValueError("Morph sample is outside the animation or nonfinite: " + name)
+            actual = float(library.get_float_value_at_time(animation, name, min(at, animation.get_play_length())))
+            if not math.isfinite(actual):
+                raise RuntimeError("Morph curve evaluated to a nonfinite value: " + name)
+            error = abs(actual - value)
+            measured.append({"time": at, "expected": value, "value": actual, "error": error})
+            errors.append(error)
+        if not measured:
+            raise ValueError("Expected morph curve has no samples: " + name)
+        report["morphCurves"][name] = {"keyCount": len(times), "samples": measured}
+    report["morphCurveMaxError"] = max(errors, default=0.)
+    checks["morphCurveValuesMatch"] = checks["morphCurveNamesMatch"] and all(error <= 1e-3 for error in errors)
 
 
 def validate_case(case, destination):
@@ -122,7 +174,14 @@ def validate_case(case, destination):
         pose = unreal.AnimPoseExtensions.get_anim_pose_at_time(animation, min(float(at), duration), options)
         poses.append(pose)
         samples.append({"time": float(at), "world": {name: transform(pose.get_bone_pose(name, unreal.AnimPoseSpaces.WORLD)) for name in names}})
-    deformed_bounds = skin_bounds(mesh, modifier, names, vertex_weights, poses)
+    skin_note = None
+    try:
+        deformed_bounds = skin_bounds(mesh, modifier, names, vertex_weights, poses)
+    except SkinVertexMismatch as error:
+        # An existing game character can split render vertices away from its weights; only Still's own meshes compare bounds.
+        if any(sample.get("meshBoundsCm") for sample in expected.get("samples", [])):
+            raise
+        deformed_bounds, skin_note = [], str(error)
     for sample, bounds_at_time in zip(samples, deformed_bounds):
         sample["meshBoundsCm"] = bounds_at_time
     root = roots[0] if len(roots) == 1 else None
@@ -160,6 +219,8 @@ def validate_case(case, destination):
                        "lockedRootDriftCm": max((distance(position, locked_positions[0]) for position in locked_positions), default=0.)},
         "checks": {},
     }
+    if skin_note:
+        report["deformedMeshBoundsSkipped"] = skin_note
     checks = report["checks"]
     checks["oneRoot"] = len(roots) == 1
     checks["weightedMesh"] = vertex_count > 0 and not invalid and all(abs(total - 1) < .0001 for total in sums)
@@ -167,7 +228,8 @@ def validate_case(case, destination):
     checks["unitBoneScale"] = all(max(abs(value - 1) for value in bone["scale"]) < .001 for sample in samples for bone in sample["world"].values())
     checks["rootMotionLockWorks"] = bool(locked_positions) and report["rootMotion"]["lockedRootDriftCm"] < .01
     by_name = {re.sub(r"[^a-z0-9]", "", name.lower()).replace("mixamorig", ""): bone["position"] for name, bone in zip(names, rest)}
-    if all(name in by_name for name in ("leftfoot", "rightfoot", "lefttoebase", "righttoebase", "head", "hips")):
+    # An existing game character keeps its own facing, so its case can turn these Still-character checks off.
+    if expected.get("checkOrientation", True) and all(name in by_name for name in ("leftfoot", "rightfoot", "lefttoebase", "righttoebase", "head", "hips")):
         forward = [(by_name["lefttoebase"][axis] + by_name["righttoebase"][axis] - by_name["leftfoot"][axis] - by_name["rightfoot"][axis]) * .5 for axis in range(3)]
         up = [by_name["head"][axis] - by_name["hips"][axis] for axis in range(3)]
         report["orientation"] = {"footToToeVectorCm": forward, "hipsToHeadVectorCm": up,
@@ -207,6 +269,7 @@ def validate_case(case, destination):
     if expected.get("heightCm") is not None:
         report["heightErrorCm"] = abs(size[2] - expected["heightCm"])
         checks["heightMatches"] = report["heightErrorCm"] < .1
+    validate_morphs(mesh, animation, expected, report, checks)
     report["passed"] = all(checks.values())
     return report
 

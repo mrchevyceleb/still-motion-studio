@@ -3,9 +3,92 @@ import * as THREE from 'three';
 import { applyPose, capturePose, createDemoCharacter } from './character';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys, solveIK } from './motion';
 import { DEFAULT_SETTINGS, type Pose, type PoseKey } from '../types';
+import { assertMatchingRig, composeMotion, editMotion } from './clipEditing';
 
 const poseAt = (x: number, angle = 0): Pose => [{ position: [x, 0, 0], quaternion: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle).toArray(), scale: [1, 1, 1] }];
 const key = (time: number, pose: Pose): PoseKey => ({ id: String(time), time, pose });
+
+describe('whole-clip tools', () => {
+  const fixture = () => {
+    const asset = createDemoCharacter('humanoid');
+    const poses = [0, 1, 2].map((time) => {
+      const pose = structuredClone(asset.restPose);
+      pose[0].position[0] += time;
+      pose[0].position[1] += time === 1 ? .3 : 0;
+      pose[asset.bones.findIndex(b => b.name === 'RightArm')].quaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), time * .2).toArray();
+      return key(time, pose);
+    });
+    return { asset, sequence: { keys: poses, duration: 2, interpolation: 'smooth' as const } };
+  };
+
+  it('preserves trim boundaries, speed timing and reversed holds without changing the source', () => {
+    const { asset, sequence } = fixture(), original = structuredClone(sequence);
+    const trimmed = editMotion(asset, sequence, { kind: 'trim', start: .3, end: 1.6 }, 30);
+    expect(trimmed.duration).toBeCloseTo(1.3);
+    expect(trimmed.keys[0].pose).toEqual(samplePose(sequence.keys, .3, 'smooth'));
+    expect(trimmed.keys.at(-1)!.pose).toEqual(samplePose(sequence.keys, 1.6, 'smooth'));
+    const fast = editMotion(asset, sequence, { kind: 'speed', factor: 2 }, 30);
+    expect(samplePose(fast.keys, .4, fast.interpolation)).toEqual(samplePose(sequence.keys, .8, 'smooth'));
+    const reverse = editMotion(asset, { ...sequence, interpolation: 'stepped' }, { kind: 'reverse' }, 30);
+    expect(reverse.interpolation).toBe('stepped');
+    expect(samplePose(reverse.keys, .5, reverse.interpolation)).toEqual(sequence.keys[1].pose);
+    expect(samplePose(reverse.keys, .001, reverse.interpolation)).toEqual(sequence.keys[1].pose);
+    expect(samplePose(reverse.keys, 1.001, reverse.interpolation)).toEqual(sequence.keys[0].pose);
+    expect(reverse.keys.at(-1)!.pose).toEqual(sequence.keys[0].pose);
+    expect(editMotion(asset, { ...sequence, interpolation: 'stepped' }, { kind: 'trim', start: .3, end: 1.6 }, 30).interpolation).toBe('stepped');
+    expect(sequence).toEqual(original);
+    expect(() => editMotion(asset, sequence, { kind: 'trim', start: 1, end: 0 }, 30)).toThrow();
+    expect(() => editMotion(asset, sequence, { kind: 'speed', factor: NaN }, 30)).toThrow();
+  });
+
+  it('locks planar hips travel beneath a stationary root and a scaled, rotated import parent', () => {
+    const { asset, sequence } = fixture();
+    const carrier = new THREE.Bone(); carrier.name = 'Root';
+    asset.root.add(carrier); carrier.add(asset.bones[0]);
+    asset.bones.unshift(carrier); asset.restPose.unshift({ position: [0, 0, 0], quaternion: [0, 0, 0, 1], scale: [1, 1, 1] });
+    sequence.keys.forEach(k => k.pose.unshift(structuredClone(asset.restPose[0])));
+    asset.root.scale.setScalar(.01); asset.root.rotation.y = .6; asset.root.position.set(3, 0, -2);
+    const result = editMotion(asset, sequence, { kind: 'in-place' }, 30);
+    const positions = result.keys.map(k => { applyPose(asset, k.pose); return asset.bones[1].getWorldPosition(new THREE.Vector3()); });
+    expect(positions.every(p => Math.abs(p.x - positions[0].x) < 1e-7 && Math.abs(p.z - positions[0].z) < 1e-7)).toBe(true);
+    expect(positions[30].y - positions[0].y).toBeCloseTo(.003);
+    // Hip sway must not rotate an otherwise stationary motion root.
+    sequence.keys.at(-1)!.pose[1].quaternion = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), .6).toArray();
+    const appended = composeMotion(asset, sequence, sequence, 0, 30);
+    expect(new THREE.Quaternion().fromArray(appended.keys.at(-1)!.pose[0].quaternion).angleTo(new THREE.Quaternion())).toBeCloseTo(0);
+  });
+
+  it('closes limb seams and repeats root travel with unique times and identities', () => {
+    const { asset, sequence } = fixture();
+    const result = editMotion(asset, sequence, { kind: 'repeat', count: 3, blend: .2 }, 30);
+    expect(result.duration).toBe(6);
+    expect(result.keys.at(-1)!.pose[0].position[0]).toBeCloseTo(6);
+    expect(result.keys.at(-1)!.pose.slice(1)).toEqual(sequence.keys[0].pose.slice(1));
+    expect(new Set(result.keys.map(k => k.id)).size).toBe(result.keys.length);
+    expect(new Set(result.keys.map(k => Math.fround(k.time))).size).toBe(result.keys.length);
+    expect(() => editMotion(asset, sequence, { kind: 'repeat', count: 400, blend: .2 }, 30)).toThrow();
+  });
+
+  it('appends at the previous trajectory and blends both endpoints exactly', () => {
+    const { asset, sequence } = fixture();
+    const combined = composeMotion(asset, sequence, sequence, .2, 30);
+    expect(combined.duration).toBeCloseTo(3.8);
+    expect(samplePose(combined.keys, 1.8, 'linear')).toEqual(samplePose(sequence.keys, 1.8, 'smooth'));
+    const endPosition = samplePose(sequence.keys, 1.8, 'smooth')[0].position[0] + 2;
+    expect(combined.keys.at(-1)!.pose[0].position[0]).toBeCloseTo(endPosition);
+    const exported = buildAnimationClip(asset, combined.keys, combined.duration, { ...DEFAULT_SETTINGS, interpolation: 'linear' });
+    expect(sampleClip(asset, exported).at(-1)!.pose[0].position[0]).toBeCloseTo(endPosition, 5);
+    const held = { ...sequence, interpolation: 'stepped' as const };
+    const heldComposite = composeMotion(asset, held, held, .2, 30);
+    expect(samplePose(heldComposite.keys, .999, 'linear')).toEqual(sequence.keys[0].pose);
+    const incompatible = createDemoCharacter('quadruped');
+    expect(() => assertMatchingRig(asset, incompatible)).toThrow(/different rig/);
+    const same = createDemoCharacter('humanoid');
+    expect(() => assertMatchingRig(asset, same)).not.toThrow();
+    same.restPose[2].position[1] += .1;
+    expect(() => assertMatchingRig(asset, same)).toThrow(/rig differs/);
+  });
+});
 
 describe('motion edits preserve authored skeleton data', () => {
   it('keeps exact poses, holds steps, and interpolates the shortest rotation without mutating keys', () => {

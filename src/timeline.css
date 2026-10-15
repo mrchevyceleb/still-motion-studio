@@ -1,7 +1,57 @@
 .duplicate-pose-button { padding: 7px 10px; font-size: 10px; gap: 6px; }
 .scrubber { touch-action: none; }
+.timeline-section { user-select: none; -webkit-user-select: none; }
+.timeline-edit-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -3px 0 12px; }
+.timeline-edit-tools > span, .timeline-edit-tools output { font-size: 10px; color: var(--muted, #7c8e67); }
+.timeline-edit-tools output { margin-left: auto; font-variant-numeric: tabular-nums; }
+.ripple-button { padding: 6px 9px; font-size: 10px; gap: 5px; }
+.ripple-button > span { font-size: 9px; opacity: .8; }
+.ripple-button[aria-pressed='true'] { background: var(--green); color: var(--paper); border-color: var(--green); }
+.ripple-button[aria-pressed='true']:hover { color: var(--paper); }
+.timeline-key.ripple-moving { box-shadow: 0 0 0 3px #8ea86650; }
 .timeline-key.dragging { z-index: 4; cursor: grabbing; box-shadow: 0 0 0 4px #8ea86640; }
 .scrubber[data-dragging='true'] { cursor: grabbing; }
+.scrubber[data-selecting='true'], .scrubber[data-selecting='true'] .timeline-key { cursor: crosshair; }
+.timeline-selection-range { position: absolute; top: -11px; bottom: -11px; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.timeline-key.multi-selected { background: var(--accent); border-color: var(--paper); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent); z-index: 3; }
+.selection-delete { font-size: 10px; padding: 6px 9px; }
+.keyframe-clipboard { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 5px 0 14px; }
+.keyframe-clipboard .button { padding: 7px 10px; font-size: 11px; gap: 6px; }
+.keyframe-clipboard > span { font-size: 10px; color: var(--muted); }
+.keyframe-move { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; margin: 0 0 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); font-size: 11px; }
+.keyframe-move label { display: flex; align-items: center; gap: 7px; }
+.keyframe-move input { width: 85px; padding: 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); }
+.keyframe-move .button { padding: 7px 10px; font-size: 11px; }
+.keyframe-move small { flex-basis: 100%; color: var(--muted); }
+.clip-length-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 0 14px; font-size: 11px; }
+.clip-length-tools label { display: flex; align-items: center; gap: 7px; }
+.clip-length-tools input { width: 76px; padding: 7px; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 5px; }
+.clip-length-tools .button { padding: 7px 10px; font-size: 10px; }
+.clip-length-tools > span { font-size: 10px; color: var(--muted); }
+.timeline-view-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; font-size: 10px; color: var(--muted); }
+.timeline-view-tools .button { padding: 4px 9px; }
+.timeline-scroll { overflow-x: auto; margin: 10px 2px 0; padding: 0 6px 7px; scrollbar-color: var(--muted) var(--paper); }
+.timeline-scroll .scrubber { margin: 0; min-width: 100%; }
+.compact-timeline { margin-top: 12px; padding: 10px 14px 0; }
+.compact-timeline .timeline-heading { margin-bottom: 8px; }
+.timeline-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
+.timeline-toolbar .keyframe-clipboard, .timeline-toolbar .timeline-edit-tools, .timeline-toolbar .timeline-view-tools { margin: 0; gap: 6px; }
+.timeline-toolbar .button { padding: 5px 8px; font-size: 10px; }
+.timeline-toolbar .editing-hint { display: none; }
+.timeline-toolbar .timeline-view-tools { margin-left: auto; }
+.timeline-details { max-height: min(34vh, 320px); overflow-y: auto; padding: 8px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.timeline-details .clip-length-tools { padding: 0 0 8px; }
+.timeline-details .keyframe-properties { margin-bottom: 0; }
+.compact-timeline .pose-cards { height: 56px; }
+.compact-timeline .pose-card { padding: 4px 6px; }
+.compact-timeline .pose-card .pose-sketch { height: 42px; width: 42px; top: 3px; }
+.compact-timeline .transport { height: 38px; }
+.compact-timeline .timeline-scroll { margin-top: 6px; padding-bottom: 4px; }
+.timeline-edit-tools kbd, .editor-footer kbd { margin-left: 4px; font-size: 9px; opacity: .75; }
+.keyboard-shortcuts { margin: 20px 0; }
+.keyboard-shortcuts > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.keyboard-shortcuts dd { margin: 0; flex-shrink: 0; }
+.keyboard-shortcuts kbd { padding: 4px 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); font-size: 11px; }
 @media (max-width: 720px) {
   .duplicate-pose-button { padding: 7px; }
   .duplicate-pose-button span { display: none; }

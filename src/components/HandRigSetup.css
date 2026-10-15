@@ -1,0 +1,19 @@
+.modal.hand-rig-modal { width: 880px; }
+.hand-rig-setup fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.hand-rig-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 14px 0; }
+.hand-rig-toolbar label { flex: 1; min-width: 90px; font-size: 11px; color: var(--muted); }
+.hand-rig-toolbar select, .hand-rig-toolbar input { width: 100%; display: block; padding: 9px; margin-top: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--paper); color: var(--ink); }
+.hand-rig-toolbar .button { padding: 10px; font-size: 11px; }
+.hand-fit-note { padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; font-size: 11px; line-height: 1.6; background: var(--surface, var(--paper)); }
+.hand-fit-note.estimated { border-color: #b3975a; }
+.hand-rig-viewport { position: relative; height: 370px; margin-top: 13px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.hand-rig-coordinates { display: flex; flex: 2; gap: 10px; min-width: 220px; }
+.hand-rig-coordinates label { min-width: 0; }
+.hand-rig-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+.hand-rig-actions .button { font-size: 11px; }
+.finger-display-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 17px; font-size: 11px; }
+.finger-focus-button { margin-top: 11px; }
+.rig-finger-option { display: flex; align-items: center; gap: 9px; font-size: 12px; margin: 17px 0 8px; }
+.rig-finger-option input { accent-color: var(--green); }
+.modal .rig-fit-error { padding: 12px; border: 1px solid #b3975a; border-radius: 6px; color: var(--ink); }
+@media (max-width: 720px) { .hand-rig-modal .modal-inner { padding: 25px 17px; } .hand-rig-viewport { height: 300px; } .hand-rig-actions .button { flex: 1 1 120px; } }
