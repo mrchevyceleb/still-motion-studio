@@ -1,4 +1,4 @@
-/** Assemble and publish a fresh offline Windows runtime. */
+/** Assemble a fresh offline Windows runtime. No repository credentials are bundled. */
 import { cp, mkdir, readFile, writeFile, access, lstat, rename, rm, realpath, unlink, rmdir, readdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
@@ -77,6 +77,8 @@ try {
     await cp(path.join(root, name), path.join(bundle, 'app', name), { recursive: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
   }
   await cp(path.join(root, 'package.json'), path.join(bundle, 'app/package.json'));
+  for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) await cp(path.join(root, name), path.join(bundle, name));
+  await cp(path.join(root, 'dist/THIRD-PARTY-LICENSES.txt'), path.join(bundle, 'THIRD-PARTY-LICENSES.txt'));
   await mkdir(path.join(bundle, 'app/scripts'), { recursive: true });
   for (const name of ['still-agent.mjs', 'still-mcp.mjs', 'unreal_import.py', 'unreal_retarget.py']) {
     await cp(path.join(root, 'scripts', name), path.join(bundle, 'app/scripts', name));
@@ -93,11 +95,14 @@ try {
     return rel;
   };
   for (const [provider, file] of [['owned_humanoid', 'owned-humanoid/runtime.json'], ['quadruped', 'quadruped/runtime.json'], ['physics', 'physics-proof/runtime.json']]) {
-    if (provider === 'owned_humanoid' && !await exists(path.join(root, '.local', file))) {
-      omitted.push({ provider, reason: 'No humanoid model has passed the current quality gate. Use curve interpolation or installed licensed Cascadeur.' });
+    if (provider !== 'physics' && !await exists(path.join(root, '.local', file))) {
+      omitted.push({ provider, reason: 'No locally installed, release-approved model. Use curve interpolation or install an approved model.' });
       continue;
     }
-    const runtime = JSON.parse(await readFile(path.join(root, '.local', file), 'utf8'));
+    const runtime = provider === 'physics' ? {
+      config: { maxSeconds: 35, maxIterations: 40, maxSolveFrames: 241 },
+      provider: { id: 'mujoco', name: 'MuJoCo dynamics', learned: false, description: 'Articulated dynamics correction with frictional floor contacts. Body inertia and joint cones are approximate.' },
+    } : JSON.parse(await readFile(path.join(root, '.local', file), 'utf8'));
     if (provider !== 'physics') {
       execFileSync(python, ['-m', 'backend.model_rights', provider, '--assert-release', '--runtime', path.join(root, '.local', file)], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true });
       const model = runtime.config.checkpointPath;
@@ -127,26 +132,18 @@ try {
   }
   const blender = process.env.STILL_BLENDER_DIRECTORY || 'C:/Program Files/Blender Foundation/Blender 5.2';
   await cp(blender, path.join(deps, 'blender'), { recursive: true, filter: filename => !filename.endsWith('.pdb') && !filename.endsWith('__pycache__') });
-  const cliPin = JSON.parse(await readFile(path.join(root, 'desktop/github-cli.json'), 'utf8'));
-  const cliCache = path.join(localRoot, 'desktop-cache', `github-${cliPin.version}`);
-  const gh = path.join(cliCache, 'bin/gh.exe');
-  const digest = async filename => createHash('sha256').update(await readFile(filename)).digest('hex');
-  if (!await exists(gh) || await digest(gh) !== cliPin.executableSha256) {
-    await mkdir(cliCache, { recursive: true });
-    const response = await fetch(cliPin.url, { signal: AbortSignal.timeout(120000) });
-    if (!response.ok) throw new Error('The pinned official GitHub CLI could not be downloaded.');
-    const archive = Buffer.from(await response.arrayBuffer());
-    if (createHash('sha256').update(archive).digest('hex') !== cliPin.archiveSha256) throw new Error('Official GitHub CLI archive hash mismatch.');
-    const zip = path.join(cliCache, 'gh.zip');
-    await writeFile(zip, archive);
-    execFileSync(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/tar.exe'), ['-xf', zip, '-C', cliCache], { windowsHide: true });
-  }
-  if (await digest(gh) !== cliPin.executableSha256) throw new Error('Official Windows x64 GitHub CLI executable hash mismatch.');
-  await mkdir(path.join(deps, 'github'));
-  await cp(gh, path.join(deps, 'github/gh.exe'));
-  await cp(path.join(cliCache, 'LICENSE'), path.join(deps, 'github/LICENSE.txt'));
-  await writeFile(path.join(bundle, 'THIRD-PARTY-NOTICE.txt'), 'Still includes Python, PyTorch CPU, NumPy, SciPy, safetensors, MuJoCo, and unmodified Blender. Their license files are included in the runtime folders. Blender source: https://projects.blender.org/blender/blender (5.2). Motion training sources: Quaternius CC0 Universal Animation Library and Ultimate Animated Animals. No CondMDI weights or Epic/Cascadeur assets are included.\n');
-  for (const required of ['deps/python/python.exe', 'deps/blender/blender.exe', 'deps/github/gh.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
+  const blenderVersionOutput = execFileSync(path.join(blender, 'blender.exe'), ['--version'], { encoding: 'utf8', windowsHide: true });
+  const blenderVersion = /^Blender (\d+\.\d+\.\d+)/m.exec(blenderVersionOutput)?.[1];
+  const blenderCommit = /build hash: ([a-f0-9]+)/.exec(blenderVersionOutput)?.[1];
+  if (!blenderVersion || !blenderCommit) throw new Error('Cannot identify the bundled Blender version and source commit.');
+  await writeFile(path.join(bundle, 'blender-source.json'), JSON.stringify({
+    version: blenderVersion, commit: blenderCommit,
+    archive: `blender-${blenderVersion}.tar.xz`,
+    upstream: `https://download.blender.org/source/blender-${blenderVersion}.tar.xz`,
+    dependencies: 'https://download.blender.org/source/',
+    buildInstructions: 'https://developer.blender.org/docs/handbook/building_blender/',
+  }, null, 2) + '\n');
+  for (const required of ['deps/python/python.exe', 'deps/blender/blender.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
   await writeFile(path.join(bundle, 'runtime.json'), JSON.stringify({ id: await contentHash(deps) }) + '\n');
   // This completion marker is written only after every dependency and model
   // validates. Publishing replaces the whole release, including removed files.

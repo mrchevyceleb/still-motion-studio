@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
 const { readFileSync } = require('node:fs');
 const { mkdir, writeFile, cp, access } = require('node:fs/promises');
 const path = require('node:path');
@@ -7,7 +7,7 @@ const { prepareRuntimes } = require('./runtime.cjs');
 const { resolveRuntime } = require('./runtime-store.cjs');
 const { createUpdates } = require('./updates.cjs');
 const { NsisUpdater } = require('electron-updater');
-// An inherited CI/repository token must not override the user's stored login.
+// Public updates and the local engine do not need inherited publisher credentials.
 for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
 
 app.setName('Still Motion Studio');
@@ -90,14 +90,14 @@ app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void s
 ipcMain.on('still:theme', (event, theme) => {
   if (event.sender !== window?.webContents || (theme !== 'light' && theme !== 'dark')) return;
   nativeTheme.themeSource = theme;
-  window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
+  window.setBackgroundColor(theme === 'dark' ? '#191c22' : '#f1f2f4');
 });
 ipcMain.handle('still:pick-folder', async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
   const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
   return result.canceled ? null : result.filePaths[0] || null;
 });
-for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
+for (const method of ['state', 'check', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
   if (!updates) throw new Error('Updates are not ready.');
   return method === 'state' ? updates.getState() : method === 'install' ? updates.apply() : updates[method]();
@@ -127,7 +127,7 @@ if (acquired) app.whenReady().then(async () => {
     engine.once('message', message => { if (message.type === 'ready') { clearTimeout(timer); resolve(); } });
     engine.once('exit', () => { clearTimeout(timer); reject(new Error(log || 'The local engine stopped during startup.')); });
   });
-  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141d19' : '#f4f3ee', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
+  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c22' : '#f1f2f4', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   const url = `http://127.0.0.1:${port}`;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -140,7 +140,7 @@ if (acquired) app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
   tray = new Tray(icon().resize({ width: 24, height: 24 })); tray.setToolTip('Still — agent scripting remains available');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Still', click: show }, { label: 'Quit Still', click: () => void shutdown() }])); tray.on('double-click', show);
-  updates = createUpdates({ app, safeStorage, runtime, runtimeId: path.basename(runtime), Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
+  updates = createUpdates({ app, runtimeId: path.basename(runtime), Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
   await window.loadURL(url);
   updates.start();
   if (process.env.STILL_BACKGROUND !== '1') show();

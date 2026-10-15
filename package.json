@@ -1,14 +1,14 @@
 {
   "name": "still-motion-studio",
   "private": true,
-  "version": "0.2.21",
+  "version": "0.2.22",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "engine": "node server/engine.mjs",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/dependency-notices.mjs",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "vitest run",
+    "test": "vitest run && node --test desktop/updates.node-test.cjs",
     "desktop": "electron .",
     "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
     "desktop:pack": "npm run desktop:prepare && electron-builder --dir",
@@ -34,5 +34,19 @@
     "vite": "^8.3.4",
     "vitest": "^5.0.3"
   },
-  "main": "desktop/main.cjs"
+  "main": "desktop/main.cjs",
+  "description": "A local character animation editor with posing, motion tools, physics, Unreal export, and agent scripting.",
+  "license": "MIT",
+  "author": "Matt Johnston",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrchevyceleb/still-motion-studio.git"
+  },
+  "homepage": "https://github.com/mrchevyceleb/still-motion-studio#readme",
+  "bugs": {
+    "url": "https://github.com/mrchevyceleb/still-motion-studio/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

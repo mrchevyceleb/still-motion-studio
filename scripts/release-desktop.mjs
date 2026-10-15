@@ -1,5 +1,5 @@
 /** Publish a complete, tested Windows build; a draft never becomes the feed. */
-import { readFile, writeFile, stat } from 'node:fs/promises';
+import { readFile, writeFile, stat, copyFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -40,7 +40,21 @@ for (const info of metadata.files) {
   await stat(path.join(directory, info.url + '.blockmap'));
 }
 if (metadata.sha512 !== sha512) throw new Error('Installer hash differs from latest.yml.');
-const assets = [installer, installer + '.blockmap', updateInstaller, updateInstaller + '.blockmap', 'latest.yml'];
+// A full installer redistributes Blender; publish its matching source beside it.
+const blenderSource = JSON.parse(await readFile(path.join(directory, 'win-unpacked/resources/runtime/blender-source.json'), 'utf8'));
+if (!/^\d+\.\d+\.\d+$/.test(blenderSource.version) || blenderSource.archive !== `blender-${blenderSource.version}.tar.xz`) throw new Error('Invalid Blender source metadata.');
+const archive = process.env.STILL_BLENDER_SOURCE_ARCHIVE;
+if (!archive || path.basename(archive) !== blenderSource.archive) throw new Error(`Set STILL_BLENDER_SOURCE_ARCHIVE to the matching ${blenderSource.archive} from ${blenderSource.upstream}.`);
+// Read only the version header from the archive; do not extract into the workspace.
+const header = run('tar', ['-xOf', path.resolve(archive), `blender-${blenderSource.version}/source/blender/blenkernel/BKE_blender_version.h`]);
+const [major, minor, patch] = blenderSource.version.split('.').map(Number);
+if (Number(/#define BLENDER_VERSION\s+(\d+)/.exec(header)?.[1]) !== major * 100 + minor || Number(/#define BLENDER_VERSION_PATCH\s+(\d+)/.exec(header)?.[1]) !== patch) throw new Error('Blender source archive does not match the bundled version.');
+const sourceDestination = path.join(directory, blenderSource.archive);
+if (path.resolve(archive) !== sourceDestination) await copyFile(archive, sourceDestination);
+blenderSource.sha256 = createHash('sha256').update(await readFile(sourceDestination)).digest('hex');
+await writeFile(path.join(directory, 'blender-source.json'), JSON.stringify(blenderSource, null, 2) + '\n');
+await copyFile(path.join(root, 'THIRD_PARTY_NOTICES.md'), path.join(directory, 'THIRD_PARTY_NOTICES.md'));
+const assets = [installer, installer + '.blockmap', updateInstaller, updateInstaller + '.blockmap', 'latest.yml', blenderSource.archive, 'blender-source.json', 'THIRD_PARTY_NOTICES.md'];
 const sums = [];
 for (const file of assets) sums.push(`${createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex')}  ${file}`);
 await writeFile(path.join(directory, 'SHA256SUMS.txt'), sums.join('\n') + '\n');
@@ -80,7 +94,7 @@ if (!release) {
   release = findRelease();
 }
 if (!release?.draft || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
-// Publish last: private clients must never observe a partially uploaded feed.
+// Publish last: clients must never observe a partially uploaded feed.
 gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
 const uploaded = api([`repos/${repo}/releases/${release.id}`]);
 for (const file of assets) {

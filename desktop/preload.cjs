@@ -8,7 +8,6 @@ contextBridge.exposeInMainWorld('stillDesktop', {
   updates: {
     state: () => ipcRenderer.invoke('still:updates:state'),
     check: () => ipcRenderer.invoke('still:updates:check'),
-    connect: () => ipcRenderer.invoke('still:updates:connect'),
     install: () => ipcRenderer.invoke('still:updates:install'),
     onState: callback => {
       const listener = (_event, state) => callback(state);
