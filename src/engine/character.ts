@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { BVHLoader } from 'three/addons/loaders/BVHLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 import type { CharacterAsset, MorphValues, Pose, RigKind, Vec3 } from '../types';
 import { applyMorphs, captureMorphs, restoreMorphNames, saveMorphNames } from './morphs';
 import { fitAnatomicalRig, influenceFamily, type AnatomicalFit, type AutoRigDiagnostics } from './anatomicalRig';
 import { fitHandRig, validateRigFit } from './handRig';
+import { fitCreatureRig, type CreatureRigOptions } from './creatureRig';
 
 const DISPLAY_HEIGHT = 2.4;
 const WHITE_PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -159,6 +161,7 @@ function capsule(bone: THREE.Bone, destination: THREE.Vector3, radius: number, m
 }
 
 export function createDemoCharacter(kind: RigKind): CharacterAsset {
+  if (kind === 'creature') throw new Error('Import a creature mesh to create a custom rig.');
   const root = new THREE.Group();
   root.name = 'Still_character';
   const bones = createSkeleton(root, kind === 'humanoid' ? humanoidJoints() : quadrupedJoints());
@@ -279,7 +282,7 @@ function restoreExportedJointTypes(root: THREE.Object3D): void {
 
 export async function importCharacter(file: File): Promise<CharacterAsset> {
   const extension = file.name.split('.').pop()?.toLowerCase();
-  if (!['fbx', 'glb', 'gltf'].includes(extension ?? '')) throw new Error('Choose an FBX or GLB character. Self-contained glTF files also work.');
+  if (!['fbx', 'glb', 'gltf', 'bvh'].includes(extension ?? '')) throw new Error('Choose FBX, GLB, self-contained glTF, or BVH motion.');
   if (file.size > 150 * 1024 * 1024) throw new Error('This file is over 150 MB. Export a lighter character to keep editing responsive.');
   const warnings: string[] = [];
   const manager = new THREE.LoadingManager();
@@ -298,7 +301,21 @@ export async function importCharacter(file: File): Promise<CharacterAsset> {
   let object: THREE.Object3D;
   let clips: THREE.AnimationClip[];
   const bytes = await file.arrayBuffer();
-  if (extension === 'fbx') {
+  if (extension === 'bvh') {
+    if (file.size > 20 * 1024 * 1024) throw new Error('Choose a BVH smaller than 20 MB.');
+    const text = new TextDecoder().decode(bytes);
+    const frames = Number(text.match(/Frames:\s*(\d+)/i)?.[1]);
+    const step = Number(text.match(/Frame\s+Time:\s*([\d.e+-]+)/i)?.[1]);
+    if (!Number.isInteger(frames) || frames < 2 || frames > 72001 || !Number.isFinite(step) || step <= 0 || frames * step > 600) throw new Error('Use a BVH with 2–72,001 frames and up to ten minutes of motion.');
+    const parsed = new BVHLoader().parse(text);
+    if (!parsed.clip.tracks.length || parsed.clip.tracks.some(track => !Array.from(track.values).every(Number.isFinite) || !Array.from(track.times).every(Number.isFinite))) throw new Error('This BVH contains missing or invalid motion values. Re-export it before importing.');
+    const animatedNames = parsed.skeleton.bones.filter(bone => bone.name !== 'ENDSITE').map(bone => bone.name);
+    if (new Set(animatedNames).size !== animatedNames.length) throw new Error('This BVH contains duplicate joint names. Export unique joint names so motion can be mapped safely.');
+    object = new THREE.Group(); object.add(parsed.skeleton.bones[0]);
+    // BVH endpoints share the name ENDSITE; give unanimated endpoints unique names.
+    parsed.skeleton.bones.forEach((bone, index) => { if (bone.name === 'ENDSITE') bone.name = `EndSite_${index}`; });
+    clips = [parsed.clip];
+  } else if (extension === 'fbx') {
     object = new FBXLoader(manager).parse(bytes, '');
     clips = object.animations;
     if (loading) await imagesLoaded;
@@ -321,11 +338,12 @@ export async function importCharacter(file: File): Promise<CharacterAsset> {
     if (node instanceof THREE.Bone) boneCount += 1;
   });
   if (!meshes && !boneCount) throw new Error('This file has no character mesh or skeleton.');
-  if (!meshes) warnings.push('This is an animation-only skeleton. Export from Mixamo with “With Skin” to include the character.');
+  if (!meshes) warnings.push('This is an animation-only skeleton. Import a character with skin to show its surface, or apply this motion with Import animation.');
   if (!boneCount) warnings.push('No rig found. Choose a body type and add a starter rig.');
   const boneNames: string[] = [];
   object.traverse(node => { if (node instanceof THREE.Bone) boneNames.push(node.name.toLowerCase().replace(/[^a-z]/g, '')); });
-  const kind: RigKind = boneNames.some(name => /front.*(leg|foot)/.test(name)) && boneNames.some(name => /(hind|back).*(leg|foot)/.test(name)) ? 'quadruped' : 'humanoid';
+  const kind: RigKind = !boneCount ? 'humanoid' : boneNames.some(name => /front.*(leg|foot)/.test(name)) && boneNames.some(name => /(hind|back).*(leg|foot)/.test(name)) ? 'quadruped'
+    : boneNames.some(name => /(?:left|right|[lr])(?:up|upper|lower)?leg|thigh|calf|knee/.test(name)) && boneNames.some(name => /arm|hand/.test(name)) ? 'humanoid' : 'creature';
   const asset = makeAsset(normalizeImported(object), kind, file.name.replace(/\.[^.]+$/, ''), 'import', clips, [...new Set(warnings)]);
   // Keep the source FBX on the asset, outside serialized scene metadata.
   if (extension === 'fbx') { asset.referenceFbx = bytes; asset.referenceFbxName = file.name; }
@@ -360,7 +378,7 @@ function cloneMaterials(root: THREE.Object3D): void {
 
 export function getAutoRigDiagnostics(asset: CharacterAsset): AutoRigDiagnostics | null {
   const value = asset.root.userData.stillAutoRig as AutoRigDiagnostics | undefined;
-  return value?.version === 1 && value.method === 'geometry-sections' ? structuredClone(value) : null;
+  return value?.version === 1 && ['geometry-sections', 'creature-chains'].includes(value.method) ? structuredClone(value) : null;
 }
 
 function smoothSkinWeights(geometry: THREE.BufferGeometry, bones: THREE.Bone[], indices: Uint16Array, weights: Float32Array): void {
@@ -455,10 +473,10 @@ function collectRigGeometry(root: THREE.Group) {
   return { meshes, bounds, vertices };
 }
 
-export function estimateAutoRig(asset: CharacterAsset, kind: RigKind, fingers = true): AnatomicalFit {
+export function estimateAutoRig(asset: CharacterAsset, kind: RigKind, fingers = true, creature?: CreatureRigOptions): AnatomicalFit {
   if (asset.bones.length) throw new Error('This character already has a rig. Its existing bones are preserved.');
   const { vertices, bounds } = collectRigGeometry(asset.root);
-  const fitted = fitAnatomicalRig(kind, vertices, bounds);
+  const fitted = kind === 'creature' ? fitCreatureRig(vertices, bounds, creature) : fitAnatomicalRig(kind, vertices, bounds);
   return kind === 'humanoid' && fingers ? fitHandRig(fitted, vertices, bounds) : fitted;
 }
 
@@ -471,7 +489,7 @@ export function createRigPreview(asset: CharacterAsset, fit: AnatomicalFit): Cha
   } catch (error) { disposeCharacter({ ...asset, root }); throw error; }
 }
 
-export interface AutoRigOptions { fingers?: boolean; fit?: AnatomicalFit }
+export interface AutoRigOptions { fingers?: boolean; fit?: AnatomicalFit; creature?: CreatureRigOptions }
 
 export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: AutoRigOptions = {}): CharacterAsset {
   if (asset.bones.length) {
@@ -487,7 +505,7 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: 
   const rootInverse = root.matrixWorld.clone().invert();
   const { meshes, bounds, vertices } = collectRigGeometry(root);
   const point = new THREE.Vector3();
-  const body = options.fit ? structuredClone(options.fit) : fitAnatomicalRig(kind, vertices, bounds);
+  const body = options.fit ? structuredClone(options.fit) : kind === 'creature' ? fitCreatureRig(vertices, bounds, options.creature) : fitAnatomicalRig(kind, vertices, bounds);
   const fitted = !options.fit && kind === 'humanoid' && options.fingers !== false ? fitHandRig(body, vertices, bounds) : body;
   validateRigFit(fitted, bounds, kind);
   createSkeleton(root, fitted.joints);
@@ -582,7 +600,8 @@ export function autoRigCharacter(asset: CharacterAsset, kind: RigKind, options: 
   if (maxBindError > height * 1e-4) throw new Error('The new rig would move the mesh in its rest pose. Apply its transforms and re-export before rigging.');
   const savedQuaternions = bones.map(bone => bone.quaternion.clone());
   bones.forEach(bone => {
-    if (/Hand(?:Thumb|Index|Middle|Ring|Pinky)[123]$/.test(bone.name)) bone.rotateZ(.12);
+    if (/^Chain\d+_Joint2$/.test(bone.name)) bone.rotateZ(.12);
+    else if (/Hand(?:Thumb|Index|Middle|Ring|Pinky)[123]$/.test(bone.name)) bone.rotateZ(.12);
     else if (/ForeArm$/.test(bone.name)) bone.rotateZ(.2);
     else if (/^(Left|Right)Leg$|LowerLeg$/.test(bone.name)) bone.rotateX(.2);
   });

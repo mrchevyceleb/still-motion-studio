@@ -204,7 +204,7 @@ export function validateProject(input: unknown): ProjectDocument {
       (data.sourceClip != null && (!Number.isInteger(data.sourceClip) || data.sourceClip < 0)) ||
       !Array.isArray(data.keys) || !data.keys.length || data.keys.length > 72001 ||
       !data.character || !['demo', 'embedded'].includes(data.character.type) ||
-      !['humanoid', 'quadruped'].includes(data.character.kind) || !data.settings ||
+      !['humanoid', 'quadruped', 'creature'].includes(data.character.kind) || (data.character.type === 'demo' && data.character.kind === 'creature') || !data.settings ||
       !['smooth', 'linear', 'stepped'].includes(data.settings.interpolation) ||
       typeof data.settings.floorContact !== 'boolean' ||
       !Number.isFinite(data.settings.gravity) || data.settings.gravity < 0 || data.settings.gravity > 30 ||

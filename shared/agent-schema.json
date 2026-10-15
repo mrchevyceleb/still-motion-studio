@@ -437,14 +437,15 @@
         ],
         "properties": {
           "kind": {
-            "$ref": "#/$defs/kind"
+            "type": "string",
+            "enum": ["humanoid", "quadruped", "creature"]
           }
         }
       },
       "resultDescription": "Updated compact scene state including rig warnings."
     },
     "skeleton.kind": {
-      "description": "Set the humanoid/quadruped classification without replacing the existing skeleton.",
+      "description": "Set the humanoid/quadruped/creature classification without replacing the existing skeleton.",
       "mutating": true,
       "paramsSchema": {
         "type": "object",
@@ -454,7 +455,8 @@
         ],
         "properties": {
           "kind": {
-            "$ref": "#/$defs/kind"
+            "type": "string",
+            "enum": ["humanoid", "quadruped", "creature"]
           }
         }
       },

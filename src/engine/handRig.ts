@@ -139,7 +139,7 @@ export function fitHandRig(fit: AnatomicalFit, vertices: Vector3[], bounds: Box3
 }
 
 /** Validate all edited landmarks before any skin data is replaced. */
-export function validateRigFit(fit: AnatomicalFit, bounds: Box3, kind: 'humanoid' | 'quadruped') {
+export function validateRigFit(fit: AnatomicalFit, bounds: Box3, kind: 'humanoid' | 'quadruped' | 'creature') {
   if (!fit || fit.diagnostics.bodyType !== kind || !Array.isArray(fit.joints) || fit.joints.length < 1 || fit.joints.length > 150) throw new Error('The rig preview does not match this character. Detect it again.');
   const names = new Map<string, RigJointSpec>();
   const height = bounds.getSize(new Vector3()).y;
