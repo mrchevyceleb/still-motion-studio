@@ -5,7 +5,7 @@ import type { HandFitInfo } from './handRig';
 export interface RigJointSpec { name: string; parent?: string; position: Vec3 }
 export interface AutoRigDiagnostics {
   version: 1;
-  method: 'geometry-sections';
+  method: 'geometry-sections' | 'creature-chains';
   bodyType: RigKind;
   evidence: 'clear' | 'limited';
   reviewRequired: true;
@@ -180,6 +180,8 @@ export function fitAnatomicalRig(kind: RigKind, vertices: THREE.Vector3[], bound
 /** Restrict nearby-but-unconnected limbs from pulling each other's skin. The
  * nearest branch owns the vertex; its parent torso joints can blend at a seam. */
 export function influenceFamily(name: string): string {
+  const branch = name.match(/^Chain\d+_/);
+  if (branch) return branch[0];
   const finger = name.match(/^(Left|Right)Hand(Thumb|Index|Middle|Ring|Pinky)/);
   if (finger) return `${finger[1]}Hand${finger[2]}`;
   const quad = name.match(/^(Front|Hind)(Left|Right)/);

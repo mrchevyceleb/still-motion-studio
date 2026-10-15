@@ -27,6 +27,6 @@ For every newly published full installer, the release process requires a matchin
 
 - The owned quadruped prior is trained from scratch on the documented Quaternius CC0 corpus. Its model and provenance must pass `backend/model-rights.json` before packaging. Weights and training assets are not in Git; source-only builds omit unavailable models.
 - No CondMDI checkpoint is distributed. Code licensing does not resolve checkpoint, dataset or output rights. The research provider is disabled unless deliberately enabled by a developer. See [model rights](docs/motion-model-rights.md).
-- Cascadeur is installed and licensed separately. No Cascadeur binary, vendor weights, Epic Manny or MetaHuman asset is included.
+- The Cascadeur integration was removed in 0.2.23. No Cascadeur binary, vendor weights, Epic Manny or MetaHuman asset is included.
 - Imported FBX/GLB files, Mixamo animations and exported user projects retain their own rights. Obtain permission for the assets you share. A repository license does not grant rights to those assets.
 - Manrope/DM Sans font names, Blender, Unreal Engine, Cascadeur and other product names belong to their respective owners. This project is independent of those vendors.

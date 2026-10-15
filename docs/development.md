@@ -21,7 +21,6 @@ Projects and the character library live in browser storage for this origin. Expo
 | --- | --- |
 | MuJoCo physics | Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then in Windows PowerShell run `./scripts/setup-physics.ps1`. The script provisions Python 3.12 and verifies the solver. |
 | Unreal FBX export | Install Blender and set `STILL_BLENDER_EXECUTABLE` to its executable before starting development. See [export documentation](unreal-export.md). GLB export works without Blender. |
-| Cascadeur | Bring your own licensed installation and enable its bridge. Follow [Cascadeur setup](cascadeur-integration.md). |
 | Learned animal motion | Follow [quadruped training](learned-quadruped.md). The training scripts require the documented CUDA environment and a provenance-checked corpus; a fresh clone has no trained model. |
 | Humanoid research | See [humanoid model status](owned-humanoid.md). No candidate currently passes the release quality gate. |
 

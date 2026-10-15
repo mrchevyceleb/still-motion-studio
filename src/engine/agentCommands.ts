@@ -1,7 +1,7 @@
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter, swapCharacterLook } from './character';
 import { morphKeyData } from './morphs';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
-import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
+import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
@@ -47,7 +47,7 @@ const number = (value: unknown, label: string, min: number, max: number): number
   return value;
 };
 const kindOf = (value: unknown): RigKind => {
-  if (value !== 'humanoid' && value !== 'quadruped') throw new Error('Choose humanoid or quadruped.');
+  if (value !== 'humanoid' && value !== 'quadruped' && value !== 'creature') throw new Error('Choose humanoid, quadruped or creature.');
   return value;
 };
 const nameOf = (value: unknown, fallback: string): string => {
@@ -244,7 +244,6 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       finally { applyPose(asset, editor.pose); }
       return editor.snapshot();
     }
-    case 'motion.recover': await recoverNativeEngine(); return { engine: await getEngineStatus() };
     case 'motion.run': {
       requireRig();
       const engine = await getEngineStatus(); signal.throwIfAborted();

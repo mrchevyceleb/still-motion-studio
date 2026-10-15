@@ -1,6 +1,6 @@
 import type * as THREE from 'three';
 
-export type RigKind = 'humanoid' | 'quadruped';
+export type RigKind = 'humanoid' | 'quadruped' | 'creature';
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
 export interface BonePose { position: Vec3; quaternion: Quat; scale: Vec3 }

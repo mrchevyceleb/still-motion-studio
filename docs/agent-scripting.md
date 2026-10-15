@@ -55,7 +55,7 @@ Every command result includes `revision`. Pass the last observed revision as `ex
 | `downloadFile(fileId, path, options)` | Save a staged file locally. |
 | `exportFile(format, path, options)` | Export `glb`, `still`, `unreal` ZIP, or viewport `png`, then save it. |
 
-`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Native cleanup may finish afterward, so inspect the job until terminal before assuming cancellation completed.
+`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Inspect the job until terminal before assuming cancellation completed.
 
 The client never automatically retries a mutation. An uncertain network outcome includes `error.details.jobId`; inspect that job. If resubmission is appropriate, reuse its **same UUID, session, method, and parameters**, including revision. A new UUID means a new command. Application failures use `StillError` with `code` and `details`.
 

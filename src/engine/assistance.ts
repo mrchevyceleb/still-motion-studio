@@ -5,14 +5,14 @@ import { createMorphKeySampler } from './morphs';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey } from '../types';
 
 export interface EngineProvider {
-  id: 'inbetween' | 'physics' | 'cascadeur' | 'cascadeur_physics' | 'owned_humanoid' | 'quadruped';
+  id: 'inbetween' | 'physics' | 'owned_humanoid' | 'quadruped';
   kind: 'inbetween' | 'physics';
   name: string;
   learned: boolean;
   description: string;
   limits?: { maxDuration?: number; humanoidOnly?: boolean; quadrupedOnly?: boolean; earthGravityOnly?: boolean; requiresFloorContact?: boolean };
 }
-export interface EngineStatus { application: string; providers: EngineProvider[]; busy: boolean; recovery?: { message: string; canRetry: boolean } }
+export interface EngineStatus { application: string; providers: EngineProvider[]; busy: boolean }
 export interface MotionFrame { time: number; pose: Pose }
 export interface EngineResult { frames: MotionFrame[]; metrics?: Record<string, unknown>; warnings?: string[]; provider?: { id: string; name: string; learned: boolean } }
 export interface MotionRequest {
@@ -56,10 +56,11 @@ function normalizedPose(asset: CharacterAsset, parents: number[]): Pose {
 }
 
 export function makeMotionRequest(asset: CharacterAsset, source: PoseKey[], anchors: PoseKey[], duration: number, settings: MotionSettings, provider: EngineProvider['id'], seed: number): MotionRequest {
+  if (asset.kind === 'creature') throw new Error('Creature anatomy is not supported by the installed human / quadruped engines. Use imported motion or pose interpolation.');
   const saved = capturePose(asset);
   const parents = hierarchy(asset);
   const fps = 30;
-  const kind = provider === 'physics' || provider === 'cascadeur_physics' ? 'physics' : 'inbetween';
+  const kind = provider === 'physics' ? 'physics' : 'inbetween';
   const times = new Map<number, number>();
   for (let frame = 0; frame < Math.ceil(duration * fps); frame++) times.set(Math.fround(frame / fps), frame / fps);
   for (const key of anchors) times.set(Math.fround(key.time), key.time);
@@ -134,9 +135,6 @@ export async function getEngineStatus(): Promise<EngineStatus | null> {
   } catch { return null; }
 }
 
-export async function recoverNativeEngine(): Promise<void> {
-  await jsonResponse(await fetch('/api/engine/recover', { method: 'POST', signal: AbortSignal.timeout(100000) }));
-}
 
 export async function generateMotion(request: MotionRequest, onProgress: (message: string, progress: number) => void, signal: AbortSignal): Promise<EngineResult> {
   let jobId: string | null = null;

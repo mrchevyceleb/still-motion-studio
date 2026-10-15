@@ -457,14 +457,15 @@
         ],
         "properties": {
           "kind": {
-            "$ref": "#/$defs/kind"
+            "type": "string",
+            "enum": ["humanoid", "quadruped", "creature"]
           }
         }
       },
       "resultDescription": "Updated compact scene state including rig warnings."
     },
     "skeleton.kind": {
-      "description": "Set the humanoid/quadruped classification without replacing the existing skeleton.",
+      "description": "Set the humanoid/quadruped/creature classification without replacing the existing skeleton.",
       "mutating": true,
       "paramsSchema": {
         "type": "object",
@@ -474,7 +475,8 @@
         ],
         "properties": {
           "kind": {
-            "$ref": "#/$defs/kind"
+            "type": "string",
+            "enum": ["humanoid", "quadruped", "creature"]
           }
         }
       },
@@ -807,9 +809,7 @@
               "owned_humanoid",
               "quadruped",
               "inbetween",
-              "physics",
-              "cascadeur",
-              "cascadeur_physics"
+              "physics"
             ]
           },
           "seed": {
@@ -833,14 +833,6 @@
         "$ref": "#/$defs/empty"
       },
       "resultDescription": "Updated compact scene state."
-    },
-    "motion.recover": {
-      "description": "Request cleanup/recovery of a interrupted native motion-engine session.",
-      "mutating": true,
-      "paramsSchema": {
-        "$ref": "#/$defs/empty"
-      },
-      "resultDescription": "Recovery status."
     },
     "export": {
       "description": "Export the scene as GLB, editable project, Unreal package, or viewport PNG to local staging.",
