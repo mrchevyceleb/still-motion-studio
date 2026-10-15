@@ -14,4 +14,15 @@
 .animation-import .animation-import-file { overflow-wrap: anywhere; font-size: 12px; }
 .animation-import .animation-import-error { border: 1px solid var(--line); border-radius: 6px; padding: 10px; color: var(--ink); font-size: 12px; }
 .animation-import .animation-import-footnote { font-size: 11px; margin-bottom: 0; }
+.animation-sources { margin: 16px 0; font-size: 12px; }
+.animation-sources summary, .animation-mapping summary { cursor: pointer; font-weight: 600; }
+.animation-sources > div { display: grid; gap: 8px; }
+.animation-sources > div > a { display: block; padding: 11px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); text-decoration: none; }
+.animation-sources strong { display: flex; justify-content: space-between; }
+.animation-sources small, .animation-sources span { display: block; margin-top: 5px; line-height: 1.5; }
+.animation-sources small { color: var(--muted); }
+.animation-mapping { margin: 14px 0; font-size: 12px; }
+.animation-mapping-list { max-height: 260px; overflow: auto; margin-top: 10px; }
+.animation-mapping-list label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.animation-mapping-list select { min-width: 0; }
 @media (max-width: 720px) { .character-import-actions { flex-shrink: 0; } .character-import-actions .import-button { width: 100%; } }

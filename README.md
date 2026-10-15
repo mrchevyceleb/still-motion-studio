@@ -10,6 +10,10 @@ Download **Still-Motion-Studio-Setup-0.2.21.exe** from the [latest private GitHu
 
 For development, use Node 22.12+ and run `npm install` then `npm run dev`. Open [localhost:5173](http://127.0.0.1:5173). Development uses service port 5175; desktop uses stable origin `http://127.0.0.1:17175` so projects survive restarts. Character processing stays on this computer.
 
+## Creature rigs and other libraries
+
+The working version adds creature-chain rig fitting (hydra heads/jaws, serpent and tentacles), a Creature body category, BVH import, and explicit joint mapping for rotation/root-motion retargeting. Both import dialogs link to Mesh2Motion, Quaternius, ActorCore, Fab and Mixamo. Existing rigs stay intact. This is assisted geometry fitting and basic retargeting, not a bundled neural auto-rigger or universal animation compatibility. See [creature workflow and limits](docs/creature-animation.md).
+
 ## Animate
 
 1. Import a rigged Mixamo FBX with skin, or try a built-in character. Existing joints, bindings, and skin weights are preserved.

@@ -56,6 +56,7 @@ function normalizedPose(asset: CharacterAsset, parents: number[]): Pose {
 }
 
 export function makeMotionRequest(asset: CharacterAsset, source: PoseKey[], anchors: PoseKey[], duration: number, settings: MotionSettings, provider: EngineProvider['id'], seed: number): MotionRequest {
+  if (asset.kind === 'creature') throw new Error('Creature anatomy is not supported by the installed human / quadruped engines. Use imported motion or pose interpolation.');
   const saved = capturePose(asset);
   const parents = hierarchy(asset);
   const fps = 30;

@@ -4,7 +4,7 @@ import type { CharacterAsset, PoseKey } from '../types';
 import { jointName } from './character';
 import { sampleClip } from './motion';
 
-const incompatible = (name: string) => new Error(`The animation's skeleton does not match ${name}. Download the animation for the same Mixamo character, or retarget it to this character's rig first.`);
+const incompatible = (name: string) => new Error(`The animation's skeleton does not match ${name}. Use an animation exported for this rig, or choose Retarget with joint mapping.`);
 
 function parentBone(bone: Bone, asset: CharacterAsset): Bone | null {
   let parent = bone.parent;
@@ -35,7 +35,7 @@ function fixedParentFrame(bone: Bone, asset: CharacterAsset): Matrix4 {
 
 /** Transfer compatible bone channels without replacing the target mesh or bind rig. */
 export function importAnimationOnRig(target: CharacterAsset, source: CharacterAsset, clip: AnimationClip): PoseKey[] {
-  if (!target.rigged || !source.rigged || target.kind !== source.kind) throw incompatible(target.name);
+  if (!target.rigged || !source.rigged) throw incompatible(target.name);
   const targets = new Map<string, number[]>();
   target.bones.forEach((bone, index) => {
     const name = jointName(bone.name);
@@ -59,7 +59,7 @@ export function importAnimationOnRig(target: CharacterAsset, source: CharacterAs
     const index = source.bones.indexOf(node as Bone);
     if (index >= 0) animated.add(index);
   }
-  if (!animated.size) throw new Error('This file has no skeletal animation. Choose an animated FBX or GLB from Mixamo.');
+  if (!animated.size) throw new Error('This file has no skeletal animation. Choose an animated FBX, GLB, or BVH.');
   const required = new Set(animated);
   for (const index of animated) {
     let parent = parentBone(source.bones[index], source);
@@ -76,7 +76,7 @@ export function importAnimationOnRig(target: CharacterAsset, source: CharacterAs
     const a = target.restPose[targetIndex], b = source.restPose[index];
     if (a.position.some((v, axis) => Math.abs(v - b.position[axis]) > 1e-4 * Math.max(1, Math.abs(v), Math.abs(b.position[axis]))) ||
         a.scale.some((v, axis) => Math.abs(v - b.scale[axis]) > 1e-4) ||
-        new Quaternion().fromArray(a.quaternion).angleTo(new Quaternion().fromArray(b.quaternion)) > 1e-4) throw incompatible(bone.name);
+        new Quaternion().fromArray(a.quaternion).normalize().angleTo(new Quaternion().fromArray(b.quaternion).normalize()) > 1e-4) throw incompatible(bone.name);
     const from = fixedParentFrame(bone, source), to = fixedParentFrame(other, target);
     if (from.elements.some((value, axis) => Math.abs(value - to.elements[axis]) > 1e-4 * Math.max(1, Math.abs(value), Math.abs(to.elements[axis])))) throw incompatible(bone.name);
   }
