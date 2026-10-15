@@ -4,19 +4,19 @@
 
 Download the full **Still-Motion-Studio-Setup** installer from [Releases](https://github.com/mrchevyceleb/still-motion-studio/releases). It targets Windows x64 and includes CPU Python, MuJoCo and Blender; no separate Node installation or GPU is needed. Learned models are included only when locally available and approved at build time. A source-only build can omit them.
 
-The 0.2.22 source prepares public updates without sign-in. Until its installer is published, earlier installers retain the old private-repository sign-in flow. Windows installers are unsigned; verify their origin and the published `SHA256SUMS.txt`.
+Install the full **0.2.23 Setup** once to move from the old private-repository updater to public updates without sign-in. Windows installers are unsigned; verify their origin and the published `SHA256SUMS.txt`.
 
 The runtime is stored under `%LOCALAPPDATA%/Still Motion Studio/runtime/<id>`. **Setup** includes it; the smaller **Update** installer only works when that exact runtime is already installed. Automatic updates choose the smaller installer when possible. Updating preserves local scenes and valid user-trained models. Uninstalling removes the runtime.
 
-Closing the editor hides it to the tray, allowing agent jobs to continue. Double-click the tray icon to reopen it; **Quit Still** stops the service and completes native cleanup. The installed app uses loopback port **17175** and stores data under `%APPDATA%/Still Motion Studio`. An occupied port is reported rather than silently switching to an empty project origin.
+Closing the editor hides it to the tray, allowing agent jobs to continue. Double-click the tray icon to reopen it; **Quit Still** stops the service. The installed app uses loopback port **17175** and stores data under `%APPDATA%/Still Motion Studio`. An occupied port is reported rather than silently switching to an empty project origin.
 
-The **Still** menu opens data and agent-tool directories. Keep `.local/agent/connection.json` private: it authorizes local scripting. Export `.still` files for portable backups. Cascadeur remains optional and requires your own licensed installation; see [setup](cascadeur-integration.md).
+The **Still** menu opens data and agent-tool directories. Keep `.local/agent/connection.json` private: it authorizes local scripting. Export `.still` files for portable backups.
 
 ## Public updates
 
-Open **Updates** in the header or **Still → Updates…**. Version 0.2.22 checks public GitHub releases at startup and every six hours. No GitHub account, CLI or access token is needed. Network access is required for checks/downloads; editing remains local.
+Open **Updates** in the header or **Still → Updates…**. Version 0.2.23 checks public GitHub releases at startup and every six hours. No GitHub account, CLI or access token is needed. Network access is required for checks/downloads; editing remains local.
 
-Downloads are verified against the release's SHA-512 metadata. Choose **Restart and update** to apply one. Still saves the current scene and waits for a graceful engine shutdown. Active generation, exports, agent commands, uploads or unresolved native cleanup block restart. Quitting does not implicitly install an update.
+Downloads are verified against the release's SHA-512 metadata. Choose **Restart and update** to apply one. Still saves the current scene and waits for a graceful engine shutdown. Active generation, exports, agent commands, or uploads block restart. Quitting does not implicitly install an update.
 
 ## Build from a fresh clone
 

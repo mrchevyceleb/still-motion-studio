@@ -103,8 +103,8 @@ export default function Viewport(props: ViewportProps) {
 
     const { asset } = props;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#e9ece5');
-    scene.fog = new THREE.Fog('#e9ece5', 14, 38);
+    scene.background = new THREE.Color('#e9ecf1');
+    scene.fog = new THREE.Fog('#e9ecf1', 14, 38);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -129,9 +129,9 @@ export default function Viewport(props: ViewportProps) {
     orbit.screenSpacePanning = true;
     orbit.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
 
-    const hemisphere = new THREE.HemisphereLight('#ffffff', '#a5ae9b', 2.7);
+    const hemisphere = new THREE.HemisphereLight('#ffffff', '#a4adbc', 2.7);
     scene.add(hemisphere);
-    const keyLight = new THREE.DirectionalLight('#fff5df', 3.6);
+    const keyLight = new THREE.DirectionalLight('#fffaf2', 3.6);
     keyLight.position.set(-3, 7, 5);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
@@ -145,18 +145,18 @@ export default function Viewport(props: ViewportProps) {
     keyLight.shadow.bias = -0.0001;
     keyLight.shadow.radius = 5;
     scene.add(keyLight);
-    const rim = new THREE.DirectionalLight('#f9fff0', 1.7);
+    const rim = new THREE.DirectionalLight('#f4f7ff', 1.7);
     rim.position.set(3, 4, -4);
     scene.add(rim);
 
     const floorGeometry = new THREE.PlaneGeometry(100, 100);
-    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#e9ece4', roughness: 1, metalness: 0 });
+    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#e5e9ef', roughness: 1, metalness: 0 });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -0.025;
     floor.receiveShadow = true;
     scene.add(floor);
-    const grid = new THREE.GridHelper(40, 80, '#cbd1c3', '#d4dacd');
+    const grid = new THREE.GridHelper(40, 80, '#bcc5d2', '#cdd4df');
     grid.position.y = -0.019;
     const gridMaterial = grid.material as THREE.Material;
     gridMaterial.transparent = true;
@@ -184,18 +184,18 @@ export default function Viewport(props: ViewportProps) {
     const lineMaterial = new THREE.LineBasicMaterial({ color: '#4d6947', transparent: true, opacity: 0.25, depthTest: false });
     const gridColors = grid.geometry.getAttribute('color') as THREE.BufferAttribute;
     const lightGridColors = new Float32Array(gridColors.array);
-    const darkGridColor = new THREE.Color('#597663');
+    const darkGridColor = new THREE.Color('#66758a');
     function setTheme(theme: Theme) {
       const dark = theme === 'dark';
-      (scene.background as THREE.Color).set(dark ? '#202c26' : '#e9ece5');
-      (scene.fog as THREE.Fog).color.set(dark ? '#202c26' : '#e9ece5');
-      floorMaterial.color.set(dark ? '#25362b' : '#e9ece4');
+      (scene.background as THREE.Color).set(dark ? '#242a35' : '#e9ecf1');
+      (scene.fog as THREE.Fog).color.set(dark ? '#242a35' : '#e9ecf1');
+      floorMaterial.color.set(dark ? '#2d3542' : '#e5e9ef');
       for (let i = 0; i < gridColors.count; i++) {
         if (dark) gridColors.setXYZ(i, darkGridColor.r, darkGridColor.g, darkGridColor.b);
         else gridColors.setXYZ(i, lightGridColors[i * 3], lightGridColors[i * 3 + 1], lightGridColors[i * 3 + 2]);
       }
       gridColors.needsUpdate = true;
-      hemisphere.groundColor.set(dark ? '#25362d' : '#a5ae9b');
+      hemisphere.groundColor.set(dark ? '#293241' : '#a4adbc');
       hemisphere.intensity = dark ? 1.8 : 2.7;
       keyLight.intensity = dark ? 3.0 : 3.6;
       rim.intensity = dark ? 1.5 : 1.7;

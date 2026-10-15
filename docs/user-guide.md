@@ -5,7 +5,7 @@
 1. Import a rigged Mixamo FBX with skin, or try a built-in character. Existing joints, bindings, and skin weights are preserved.
 2. For unrigged neutral-pose characters, choose **Add a rig**. Humanoids include hands and five fingers per hand by default. **Detect body & finger joints** opens a hand preview: inspect both hands, drag joints or enter coordinates, then **Bind hands & body**. Each finger has three bend joints and a tip; skin weights keep neighboring digits separate. Open, separated fingers improve detection. Estimated fingertips are flagged for correction; gloves or fused geometry need manual placement. Turn off the finger option for body-only fitting. Existing imported rigs stay intact. Inspect a small limb and finger bend before animating.
 3. Simplify a dense clip to six poses if desired. Drag joints or type rotations. **W/E** switches move/rotate; **Space** plays; **K** saves a pose. Enable **Ripple** or **Shift-drag** a timeline diamond to move it and all later poses together; the clip length adjusts and one undo restores the entire edit.
-4. Generate animal motion with the owned learned prior, or human motion with installed licensed Cascadeur, then apply MuJoCo contact correction or installed licensed Cascadeur engines. Authored poses stay exact during learned generation; physics can adjust them. Editing a pose clears an outdated generated take.
+4. Generate supported animal motion with the shipped local prior, then apply MuJoCo contact correction. Authored poses stay exact during learned generation; physics can adjust them. Editing a pose clears an outdated generated take.
 5. Export an editable `.still`, animated GLB, or **Unreal FBX package**. Unreal options include export onto your existing Unreal character, face morph curves, planar gameplay root motion, in-place movement, saving into a folder, and automatic Manny/MetaHuman body retargeting. [Import and validation](unreal-export.md).
 
 Open **Characters** to manage the permanent library on this device. Each character holds its own scenes. Use the character name in the header or **All scenes for this character** to return to its collection. Each scene autosaves independently; recent backups remain available for recovery. Use timeline **Select** to drag across multiple keyframes and delete them together. Physics passes offer a saved **Before/After** preview and a measurements report. Export a `.still` file for a portable backup before clearing local app data.
@@ -22,13 +22,13 @@ Keyboard shortcuts: **S** toggles Select mode; **Esc** or **V** returns to regul
 
 The desktop app keeps scripting alive when closed to its tray; no browser tab is required. **Quit Still** stops the service. The browser development version still needs its tab open. Use **Still → Agent tools** for the local SDK and MCP server. Development commands: `node scripts/still-agent.mjs sessions` and `node scripts/still-agent.mjs schema`.
 
-There are 35 authenticated commands for inspection, posing, generation, history, camera control, imports, and exports. Explicit sessions, revision checks, cancellation, and persisted command identities prevent accidental replay. See [agent scripting](agent-scripting.md).
+Authenticated commands are available for inspection, posing, generation, history, camera control, imports, and exports. Explicit sessions, revision checks, cancellation, and persisted command identities prevent accidental replay. See [agent scripting](agent-scripting.md).
 
 ## Quality and rights
 
 The shipped quadruped prior is a small learned curvature model trained from scratch on documented Quaternius CC0 motion. It is **not a deep generative model or a Cascadeur equivalent**. The revised benchmark predicts every interior frame across 13 held-out clips (520 source frames, 494 predicted frames), using overlapping windows and two six-key layouts. Its normalized-position RMS improves **1.86%** over interpolation; authored poses remain exact.
 
-**The standalone humanoid AI gap remains open.** The previous 1.30% claim did not measure every interior frame. On the corrected benchmark the original candidate achieved only 0.94%, below the unchanged 1% release gate. Calibration and six-pose retraining did not pass either. Those candidates were rejected and the old runtime was backed up and disabled; no humanoid checkpoint ships in this release. Human animation still supports curve editing, physics correction and the installed licensed Cascadeur adapter.
+**The standalone humanoid AI gap remains open.** The previous 1.30% claim did not measure every interior frame. On the corrected benchmark the original candidate achieved only 0.94%, below the unchanged 1% release gate. Calibration and six-pose retraining did not pass either. Those candidates were rejected and the old runtime was backed up and disabled; no humanoid checkpoint ships in this release. Human animation still supports curve editing, imported animation and MuJoCo physics correction.
 
 CondMDI's unresolved weight/output rights have not been cleared. Its checkpoint is excluded from desktop builds and disabled by default. Only deliberate development opt-in (`STILL_ALLOW_UNCLEARED_MODELS=1`) exposes that research provider. Build-time checks verify owned model hashes and CC0 provenance; new training activates only complete, validated immutable bundles.
 
@@ -36,10 +36,10 @@ Contacts use time-based stance/liftoff handling and preserve airborne motion. Re
 
 Manny retargeting and root-motion assets were executed and reopened in Unreal 5.8. MetaHuman uses the same automated body-retarget pipeline but requires a body asset in the destination project; no MetaHuman asset was available for equivalent execution validation. Materials, facial rigs, cloth, collisions, and gameplay/network behavior need project-specific setup.
 
-Cascadeur integration uses its installed licensed app and public scripting bridge. No vendor weights or Epic character assets are redistributed. [Native setup](cascadeur-integration.md).
+Cascadeur integration was removed in 0.2.23. Still does not detect, launch or communicate with Cascadeur.
 
 ## Reliability and verification
 
-Model training writes immutable candidates, validates full held-out coverage and provenance, then atomically switches one runtime manifest. Interrupted/rejected training preserves the active model. Native operations journal cleanup before starting; failed cleanup survives service restarts and is retried. Camera schema and runtime limits agree.
+Model training writes immutable candidates, validates full held-out coverage and provenance, then atomically switches one runtime manifest. Interrupted/rejected training preserves the active model. Camera schema and runtime limits agree.
 
 Run `npm run build` and `npm test`. See [the 0.2 validation report](../reports/Release-0.2-validation.md). Development proofs are ignored local files, not a sprawling permanent test suite.

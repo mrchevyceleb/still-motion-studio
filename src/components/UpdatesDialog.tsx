@@ -36,7 +36,7 @@ export default function UpdatesDialog({ state, canInstall, onInstall }: { state:
     <div className="update-actions">
       {state?.status === 'ready' ? <button className="button primary" disabled={!canInstall} onClick={onInstall}><RotateCcw size={16}/>Restart and update</button> : <button className="button primary" disabled={waiting} onClick={check}>{waiting ? <LoaderCircle size={16} className="spin"/> : <Download size={16}/>}Check for updates</button>}
     </div>
-    {state?.status === 'ready' && !canInstall && <p>Finish active work and resolve native cleanup before restarting.</p>}
+    {state?.status === 'ready' && !canInstall && <p>Finish active work before restarting.</p>}
     <p className="update-note">Updates come from the public Still GitHub releases. No account or sign-in is needed.</p>
   </>;
 }

@@ -68,7 +68,7 @@ def progress(message, fraction=0):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--provider', required=True, choices=['inbetween', 'physics', 'cascadeur', 'cascadeur_physics', 'owned_humanoid', 'quadruped'])
+    parser.add_argument('--provider', required=True, choices=['inbetween', 'physics', 'owned_humanoid', 'quadruped'])
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
@@ -76,7 +76,7 @@ def main():
         request = validate_request(json.loads(pathlib.Path(args.input).read_text(encoding='utf-8')))
         progress('Starting the local motion engine…', 0.02)
         module = importlib.import_module(f'backend.{args.provider}')
-        function = module.correct_motion if args.provider in ('physics', 'cascadeur_physics') else module.generate_motion
+        function = module.correct_motion if args.provider == 'physics' else module.generate_motion
         result = function(request, progress)
         if not isinstance(result, dict) or not result.get('frames'):
             raise ValueError('The engine returned no animation frames.')

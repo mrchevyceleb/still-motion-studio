@@ -114,8 +114,9 @@ try {
         await mkdir(path.dirname(target), { recursive: true });
         await cp(path.join(model, filename), target);
       }
-      // Validate the copied bytes, not only the source model.
-      execFileSync(path.join(deps, 'python/python.exe'), ['-c', 'from backend.model_bundle import verify_bundle; import sys; verify_bundle(sys.argv[1], sys.argv[2], approved_files_hash=sys.argv[3])', destination, rights.providers[provider].approvedCorpusSha256, rights.providers[provider].approvedCorpusFilesSha256], { cwd: path.join(bundle, 'app'), stdio: 'inherit', windowsHide: true });
+      // Validate the copied bytes, not only the source model. The embedded Python
+      // needs an extended Windows path when a worktree pushes staging past MAX_PATH.
+      execFileSync(path.join(deps, 'python/python.exe'), ['-c', 'from backend.model_bundle import verify_bundle; import sys; verify_bundle(sys.argv[1], sys.argv[2], approved_files_hash=sys.argv[3])', path.toNamespacedPath(destination), rights.providers[provider].approvedCorpusSha256, rights.providers[provider].approvedCorpusFilesSha256], { cwd: path.join(bundle, 'app'), stdio: 'inherit', windowsHide: true });
       runtime.config.checkpointPath = '$DATA/' + rel;
       if (!runtime.installation) {
         for (const artifact of rights.providers[provider]?.evidenceArtifacts || []) {

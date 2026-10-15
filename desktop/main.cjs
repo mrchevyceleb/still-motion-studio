@@ -1,6 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
 const { readFileSync } = require('node:fs');
-const { mkdir, writeFile, cp, access } = require('node:fs/promises');
+const { mkdir, cp } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
@@ -33,17 +33,6 @@ function icon() {
 
 async function prepare(bundle, runtime, dataRoot) {
   await prepareRuntimes(bundle, dataRoot, runtime);
-  const native = process.env.CASCADEUR_HOME || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cascadeur');
-  try {
-    await access(path.join(native, 'cascadeur.exe'));
-    await access(path.join(native, 'samples', 'Cascy.casc'));
-    for (const physics of [false, true]) {
-      const id = physics ? 'cascadeur_physics' : 'cascadeur';
-      const directory = path.join(dataRoot, '.local', physics ? 'cascadeur-physics' : 'cascadeur-proof');
-      await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(runtime, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
-    }
-  } catch { /* Optional licensed native installation is absent. */ }
   await mkdir(path.join(dataRoot, 'agent-tools'), { recursive: true });
   for (const file of ['still-agent.mjs', 'still-mcp.mjs']) await cp(path.join(bundle, 'app', 'scripts', file), path.join(dataRoot, 'agent-tools', file));
 }
@@ -69,8 +58,8 @@ async function installUpdate(updater) {
   try {
     await new Promise((resolve, reject) => {
       const finish = error => { clearTimeout(timer); engine.removeListener('message', message); engine.removeListener('exit', exit); error ? reject(error) : resolve(); };
-      const message = value => { if (value.type === 'update-blocked') finish(new Error('Finish active work and resolve native cleanup before restarting.')); };
-      const exit = code => finish(code === 0 ? null : new Error('Native cleanup did not finish. Reopen Still and retry cleanup before updating.'));
+      const message = value => { if (value.type === 'update-blocked') finish(new Error('Finish active work before restarting.')); };
+      const exit = code => finish(code === 0 ? null : new Error('The local engine did not shut down cleanly. Reopen Still before updating.'));
       const timer = setTimeout(() => finish(new Error('Engine shutdown is taking longer than expected. Wait for it to finish, then reopen Still.')), 110000);
       engine.on('message', message); engine.once('exit', exit);
       engine.postMessage({ type: 'shutdown-for-update' });
@@ -110,7 +99,7 @@ if (acquired) app.whenReady().then(async () => {
   const runtime = app.isPackaged ? await resolveRuntime(bundle, store) : path.join(bundle, 'deps');
   await prepare(bundle, runtime, dataRoot);
   const port = await unusedPort();
-  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(runtime, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(runtime, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
+  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(runtime, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   engine = utilityProcess.fork(path.join(bundle, 'app', 'server', 'engine.mjs'), [], { env, cwd: path.join(bundle, 'app'), stdio: 'pipe', serviceName: 'Still motion engine' });
   let log = '';

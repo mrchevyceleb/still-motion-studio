@@ -7,7 +7,6 @@ import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createUnrealExportService } from './unreal-export.mjs';
 import { createAgentService } from './agent-api.mjs';
-import { nativeRecoveryJournal } from './native-recovery.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataRoot = path.resolve(process.env.STILL_DATA_ROOT || root);
@@ -18,20 +17,10 @@ const configurations = {
   quadruped: '.local/quadruped/runtime.json',
   inbetween: '.local/ai-motion/runtime.json',
   physics: '.local/physics-proof/runtime.json',
-  cascadeur: '.local/cascadeur-proof/runtime.json',
-  cascadeur_physics: '.local/cascadeur-physics/runtime.json',
 };
 let activeJob = null;
-let cascadeurHealth = { expires: 0, ready: false };
-let nativeCleanupPending = false;
-let nativeRecoveryConfig = null;
-let recoveryWork = null;
-const recoveryMessage = 'Cascadeur could not restore its temporary scene. Open Cascadeur with its scripting bridge, then retry cleanup. Your animation is unchanged.';
 let stopping = false;
 const jobRoot = path.join(dataRoot, '.local', 'engine-jobs');
-const journal = nativeRecoveryJournal(dataRoot, { python: process.env.STILL_PACKAGED_PYTHON });
-nativeRecoveryConfig = await journal.read();
-nativeCleanupPending = !!nativeRecoveryConfig;
 const origins = new Set(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://localhost:4173', `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
 const agentService = createAgentService({ root, dataRoot, port });
 const exportsService = createUnrealExportService({ root, dataRoot,
@@ -46,15 +35,6 @@ async function configuration(id) {
     await access(config.python);
     await access(path.join(root, 'backend', `${id}.py`));
     for (const filename of config.requiredFiles || []) await access(filename);
-    if (id === 'cascadeur' || id === 'cascadeur_physics') {
-      if (nativeCleanupPending) return null;
-      if (Date.now() > cascadeurHealth.expires) {
-        let ready = false;
-        try { ready = (await fetch('http://127.0.0.1:8765/health', { signal: AbortSignal.timeout(6000) })).ok; } catch { /* Native engine is closed. */ }
-        cascadeurHealth = { expires: Date.now() + 30000, ready };
-      }
-      if (!cascadeurHealth.ready) return null;
-    }
     return config;
   } catch { return null; }
 }
@@ -63,7 +43,7 @@ async function providers() {
   const result = [];
   for (const id of Object.keys(configurations)) {
     const config = await configuration(id);
-    if (config) result.push({ id, kind: ['physics', 'cascadeur_physics'].includes(id) ? 'physics' : 'inbetween', name: config.provider?.name || id, learned: config.provider?.learned === true, description: config.provider?.description || '', limits: config.limits || {} });
+    if (config) result.push({ id, kind: id === 'physics' ? 'physics' : 'inbetween', name: config.provider?.name || id, learned: config.provider?.learned === true, description: config.provider?.description || '', limits: config.limits || {} });
   }
   return result;
 }
@@ -86,28 +66,6 @@ async function body(req) {
 
 function publicJob(job) {
   return { id: job.id, status: job.status, message: job.message, progress: job.progress, provider: job.provider, ...(job.status === 'done' ? { result: job.result } : {}), ...(job.error ? { error: job.error } : {}) };
-}
-
-async function cleanupNative(config) {
-  const child = spawn(config.python, ['-m', 'backend.cascadeur', '--cleanup'], { cwd: root, windowsHide: true, stdio: 'ignore', env: { ...process.env, PYTHONUTF8: '1' } });
-  const timeout = setTimeout(() => child.kill(), 45000);
-  try { return await new Promise(resolve => { child.on('error', () => resolve(false)); child.on('close', code => resolve(code === 0)); }); }
-  finally { clearTimeout(timeout); }
-}
-
-async function restoreNative(config) {
-  // One automatic retry handles a transient bridge interruption. Keep the
-  // failed configuration so explicit recovery works even while providers hide.
-  let restored = await cleanupNative(config);
-  if (!restored && !stopping) restored = await cleanupNative(config);
-  nativeCleanupPending = !restored;
-  nativeRecoveryConfig = restored ? null : config;
-  if (restored) {
-    try { await journal.clear(); }
-    catch (error) { nativeCleanupPending = true; nativeRecoveryConfig = config; restored = false; console.error('Native recovery journal:', error.message); }
-  }
-  cascadeurHealth.expires = 0;
-  return restored;
 }
 
 async function pruneJobFiles() {
@@ -133,7 +91,6 @@ async function run(job, request, config) {
     const output = path.join(folder, 'result.json');
     await writeFile(input, JSON.stringify({ ...request, runtime: config.config || {} }));
     if (job.status === 'cancelled') return;
-    if (job.provider.startsWith('cascadeur')) await journal.begin(config);
     const child = spawn(config.python, ['-u', path.join(root, 'backend/worker.py'), '--provider', job.provider, '--input', input, '--output', output], {
       cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUTF8: '1', PYTHONUNBUFFERED: '1', OMP_NUM_THREADS: '4' },
@@ -163,19 +120,11 @@ async function run(job, request, config) {
     if (job.status === 'cancelled') return;
     if (code !== 0) throw new Error(job.error || 'The local engine could not finish this motion. Check the engine log for details.');
     job.result = JSON.parse(await readFile(output, 'utf8'));
-    job.message = job.provider.startsWith('cascadeur') ? 'Restoring your native workspace…' : 'Finishing the motion…';
+    job.message = 'Finishing the motion…';
   } catch (error) {
     if (job.status !== 'cancelled') { job.status = 'error'; job.error = String(error.message || error); job.message = job.error; }
   } finally {
     job.child = null;
-    if (job.provider === 'cascadeur' || job.provider === 'cascadeur_physics') {
-      // A killed Python worker cannot execute its finally block. Recover only
-      // scenes owned by our native adapter before accepting another job.
-      if (!(await restoreNative(config))) {
-        job.status = 'error'; job.error = recoveryMessage; job.message = recoveryMessage;
-        delete job.result;
-      }
-    }
     if (activeJob === job.id) activeJob = null;
     if (job.status === 'running' && job.result) { job.status = 'done'; job.progress = 1; job.message = 'Motion ready.'; }
     await pruneJobFiles().catch(error => console.error('Diagnostic cleanup:', error.message));
@@ -193,17 +142,7 @@ const server = http.createServer(async (req, res) => {
     if (await agentService.handle(req, res, url)) return;
     if (await exportsService.handle(req, res, url)) return;
     if (req.method === 'GET' && url.pathname === '/api/engine') {
-      reply(res, 200, { application: 'still-engine', version: 1, providers: await providers(), busy: activeJob !== null, ...(nativeCleanupPending ? { recovery: { message: recoveryMessage, canRetry: activeJob === null && !stopping } } : {}) }); return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/engine/recover') {
-      if (activeJob || stopping) { reply(res, 409, { error: 'The engine is busy. Wait for the current operation before retrying cleanup.' }); return; }
-      if (!nativeCleanupPending || !nativeRecoveryConfig) { reply(res, 200, { recovered: true }); return; }
-      activeJob = 'native-recovery';
-      recoveryWork = restoreNative(nativeRecoveryConfig);
-      let recovered;
-      try { recovered = await recoveryWork; }
-      finally { activeJob = null; recoveryWork = null; }
-      reply(res, recovered ? 200 : 503, recovered ? { recovered: true } : { error: recoveryMessage }); return;
+      reply(res, 200, { application: 'still-engine', version: 1, providers: await providers(), busy: activeJob !== null }); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/engine/jobs') {
       if (stopping) { reply(res, 503, { error: 'The local motion engine is shutting down.' }); return; }
@@ -248,11 +187,6 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`Still motion engine: http://127.0.0.1:${port}`);
   process.send?.({ type: 'ready', port });
   process.parentPort?.postMessage({ type: 'ready', port });
-  if (nativeRecoveryConfig) {
-    activeJob = 'native-recovery';
-    recoveryWork = restoreNative(nativeRecoveryConfig).catch(error => console.error('Native recovery:', error.message))
-      .finally(() => { activeJob = null; recoveryWork = null; });
-  }
 });
 server.on('error', error => { console.error(error.message); process.exitCode = 1; });
 void pruneJobFiles().catch(error => console.error('Diagnostic cleanup:', error.message));
@@ -265,14 +199,14 @@ async function stop() {
     if (job.status === 'running') { job.status = 'cancelled'; job.child?.kill(); }
   }
   await exportsService.stop();
-  await Promise.allSettled([...jobs.values()].map(job => job.work).concat(recoveryWork));
+  await Promise.allSettled([...jobs.values()].map(job => job.work));
   server.closeAllConnections();
-  process.exit(nativeCleanupPending ? 2 : 0);
+  process.exit(0);
 }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
 function parentMessage(message) {
   if (message?.type === 'shutdown-for-update') {
-    if (activeJob || nativeCleanupPending || stopping || agentService.isBusy()) {
+    if (activeJob || stopping || agentService.isBusy()) {
       process.send?.({ type: 'update-blocked' });
       process.parentPort?.postMessage({ type: 'update-blocked' });
     } else void stop(); // Reserve shutdown synchronously before another job starts.

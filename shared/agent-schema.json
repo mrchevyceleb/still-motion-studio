@@ -809,9 +809,7 @@
               "owned_humanoid",
               "quadruped",
               "inbetween",
-              "physics",
-              "cascadeur",
-              "cascadeur_physics"
+              "physics"
             ]
           },
           "seed": {
@@ -835,14 +833,6 @@
         "$ref": "#/$defs/empty"
       },
       "resultDescription": "Updated compact scene state."
-    },
-    "motion.recover": {
-      "description": "Request cleanup/recovery of a interrupted native motion-engine session.",
-      "mutating": true,
-      "paramsSchema": {
-        "$ref": "#/$defs/empty"
-      },
-      "resultDescription": "Recovery status."
     },
     "export": {
       "description": "Export the scene as GLB, editable project, Unreal package, or viewport PNG to local staging.",

@@ -17,7 +17,7 @@ Still is a local character animation editor built with React, Three.js and Elect
 - Trim, blend, repeat and reverse clips. Keep a local character library with independent scenes and backups.
 - Export portable `.still` projects, animated GLB, and Unreal FBX packages with optional root motion and body retargeting.
 - Drive the editor through a local authenticated SDK or MCP server.
-- Add optional MuJoCo physics, a small learned animal-motion prior or your separately licensed Cascadeur installation.
+- Add optional MuJoCo physics, a small learned animal-motion prior.
 
 ## Getting started
 
@@ -40,7 +40,7 @@ The core editor needs no Python, Blender, pretrained weights or environment file
 
 Install the full **Still-Motion-Studio-Setup** executable attached to a [published release](https://github.com/mrchevyceleb/still-motion-studio/releases). The full installer includes its offline runtime; the smaller **Update** installer requires an existing matching runtime. Installers are currently unsigned.
 
-The 0.2.22 source introduces public updates without GitHub sign-in. An installer is available only when attached to its release; older installers use the previous private-repository update flow. [Desktop setup and builds](docs/desktop.md).
+Release 0.2.23 introduces public updates without GitHub sign-in, a neutral slate editor with distinct tool colors, and removes the Cascadeur integration. Install the full **0.2.23 Setup** once when upgrading from an older private-update build. [Desktop setup and builds](docs/desktop.md).
 
 ## Your first animation
 
