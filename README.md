@@ -4,14 +4,15 @@
 
 Still is a local character animation editor built with React, Three.js and Electron. Import a rigged character, shape its motion with a few poses, edit clips and export animation for a game or scene. Core editing runs without a cloud account, API key or GPU.
 
-[Getting started](#getting-started) · [User guide](docs/user-guide.md) · [Development](docs/development.md) · [Contributing](CONTRIBUTING.md)
+[Getting started](#getting-started) Â· [User guide](docs/user-guide.md) Â· [Development](docs/development.md) Â· [Contributing](CONTRIBUTING.md)
 
 ![Still editor with a procedural practice character, pose controls and timeline](docs/assets/still-editor.png)
 
 ## What you can do
 
 - Import rigged FBX/GLB characters and compatible animation clips; preserve joints and skin weights.
-- Fit a rig to a neutral-pose character, including editable hand and finger joints.
+- Fit a rig to a neutral-pose character, including editable hand and finger joints, hydra heads, serpents and tentacles.
+- Import BVH motion and map joints from other animation libraries. See [creature workflows and limits](docs/creature-animation.md).
 - Pose joints, edit keyframes, copy selected properties, ripple timing and undo bulk edits.
 - Trim, blend, repeat and reverse clips. Keep a local character library with independent scenes and backups.
 - Export portable `.still` projects, animated GLB, and Unreal FBX packages with optional root motion and body retargeting.

@@ -130,7 +130,17 @@ if (acquired) app.whenReady().then(async () => {
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c22' : '#f1f2f4', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   const url = `http://127.0.0.1:${port}`;
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const libraryLinks = new Set([
+    'https://mesh2motion.org/', 'https://quaternius.com/',
+    'https://actorcore.reallusion.com/', 'https://www.fab.com/',
+    'https://www.mixamo.com/', 'https://github.com/VAST-AI-Research/UniRig',
+  ]);
+  window.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (libraryLinks.has(target)) void shell.openExternal(target).catch(() => {
+      dialog.showErrorBox('Could not open the library', 'Open this address in your browser: ' + target);
+    });
+    return { action: 'deny' };
+  });
   window.webContents.on('will-navigate', (event, target) => { if (new URL(target).origin !== url) event.preventDefault(); });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const menu = Menu.buildFromTemplate([

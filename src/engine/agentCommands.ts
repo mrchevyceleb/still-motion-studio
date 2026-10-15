@@ -47,7 +47,7 @@ const number = (value: unknown, label: string, min: number, max: number): number
   return value;
 };
 const kindOf = (value: unknown): RigKind => {
-  if (value !== 'humanoid' && value !== 'quadruped') throw new Error('Choose humanoid or quadruped.');
+  if (value !== 'humanoid' && value !== 'quadruped' && value !== 'creature') throw new Error('Choose humanoid, quadruped or creature.');
   return value;
 };
 const nameOf = (value: unknown, fallback: string): string => {
