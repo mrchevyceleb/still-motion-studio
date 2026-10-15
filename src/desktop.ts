@@ -9,6 +9,8 @@ declare global {
   interface Window {
     stillDesktop?: {
       pickFolder: () => Promise<string | null>;
+      openExternal: (url: string) => Promise<void>;
+      meshyKey: { get: () => Promise<string | null>; set: (key: string) => Promise<void>; clear: () => Promise<void> };
       setTheme: (theme: 'light' | 'dark') => void;
       updates: {
         state: () => Promise<UpdateState>;

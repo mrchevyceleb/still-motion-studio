@@ -25,6 +25,7 @@ For every newly published full installer, the release process requires a matchin
 
 ## Motion and character rights
 
+- The offline Motion Library includes Quaternius Universal Animation Library 1 and 2 and selected Mesh2Motion rigs and animation packs under CC0 1.0 Universal. Source versions, individual hashes, and attribution details are retained in [`public/motions/NOTICE.txt`](public/motions/NOTICE.txt) and [`public/motions/catalog.json`](public/motions/catalog.json). The Carnegie Mellon derived mocap pack is excluded.
 - The owned quadruped prior is trained from scratch on the documented Quaternius CC0 corpus. Its model and provenance must pass `backend/model-rights.json` before packaging. Weights and training assets are not in Git; source-only builds omit unavailable models.
 - No CondMDI checkpoint is distributed. Code licensing does not resolve checkpoint, dataset or output rights. The research provider is disabled unless deliberately enabled by a developer. See [model rights](docs/motion-model-rights.md).
 - The Cascadeur integration was removed in 0.2.23. No Cascadeur binary, vendor weights, Epic Manny or MetaHuman asset is included.
