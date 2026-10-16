@@ -28,7 +28,7 @@
     "maxStoredFileBytes": 2147483648,
     "maxStoredJobBytes": 536870912,
     "errors": "HTTP failures return {error:{code,message,details?}}. Job failures use the same error object. Disconnection or missing completion acknowledgement can produce an error with details.uncertain=true; inspect the scene before issuing a new mutation. Cancelling a running command remains pending until browser acknowledgement, or ends as an uncertain timeout if acknowledgement is lost.",
-    "files": "POST /files?name=<filename> with raw bytes returns {fileId,name,size,mime,downloadUrl}; authenticated GET /files/:fileId downloads. URLs are relative to the engine origin. Files referenced by retained jobs are protected. Unreferenced files expire after 24 hours; capacity exhaustion returns a useful error instead of removing referenced files.",
+    "files": "POST /files?name=<filename> with raw bytes returns {fileId,name,size,mime,downloadUrl}; authenticated GET /files/:fileId downloads; authenticated DELETE /files/:fileId removes a staged file uploaded by the calling session once no queued/running job or open scene references it (returns 409 FILE_IN_USE while referenced, 403 FORBIDDEN for other sessions). URLs are relative to the engine origin. Files referenced by retained jobs are protected from 24-hour auto-expiry. Unreferenced files expire after 24 hours; capacity exhaustion returns a useful error instead of removing referenced files.",
     "idempotency": "Command identities are journaled for 24 hours. A restarted service never redispatches journaled commands; interrupted or unavailable results require scene inspection. Expired identities must not be used as automatic retries."
   },
   "$defs": {
