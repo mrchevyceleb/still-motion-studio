@@ -129,8 +129,16 @@ export async function createClient(options = {}) {
   async function uploadFile(filename, settings = {}) {
     const source = path.resolve(filename), info = await stat(source);
     if (!info.isFile() || info.size > 200 * 1024 * 1024) throw new StillError('Import a regular file of at most 200 MiB.', 'INVALID_FILE');
+    const sessionId = await chooseSession(settings.sessionId, settings.signal);
+    const query = new URLSearchParams({ name: path.basename(source), sessionId });
     const bytes = await readFile(source);
-    return request('/files?name=' + encodeURIComponent(path.basename(source)), { method: 'POST', body: bytes, signal: settings.signal });
+    return request('/files?' + query.toString(), { method: 'POST', body: bytes, signal: settings.signal });
+  }
+  async function deleteFile(fileId, settings = {}) {
+    identifier(fileId, 'fileId');
+    const sessionId = await chooseSession(settings.sessionId, settings.signal);
+    const query = new URLSearchParams({ sessionId });
+    return request('/files/' + fileId + '?' + query.toString(), { method: 'DELETE', signal: settings.signal });
   }
   async function importFile(filename, settings = {}) {
     const file = await uploadFile(filename, settings);
@@ -159,7 +167,7 @@ export async function createClient(options = {}) {
     const saved = await downloadFile(file.fileId, filename, settings);
     return { ...result, ...saved };
   }
-  return { schema: (settings = {}) => request('/schema', settings), sessions, enqueue, job, wait, call, cancel, uploadFile, importFile, downloadFile, exportFile };
+  return { schema: (settings = {}) => request('/schema', settings), sessions, enqueue, job, wait, call, cancel, uploadFile, deleteFile, importFile, downloadFile, exportFile };
 }
 
 export async function runCli(argv = process.argv.slice(2)) {
@@ -173,7 +181,7 @@ export async function runCli(argv = process.argv.slice(2)) {
   }
   const [action, ...values] = args;
   if (!action || ['--help', 'help'].includes(action)) {
-    console.log('Still local agent CLI\n  sessions | schema | call METHOD JSON | enqueue METHOD JSON\n  job UUID | cancel UUID | import INPUT | export FORMAT OUTPUT\n  run SCRIPT.mjs [ARGS...]\nOptions: --connection FILE --session UUID --revision N --timeout MS --id UUID\nExports refuse existing paths. Script modules export default async (client, args).');
+    console.log('Still local agent CLI\n  sessions | schema | call METHOD JSON | enqueue METHOD JSON\n  job UUID | cancel UUID | import INPUT | export FORMAT OUTPUT | delete FILE_UUID\n  run SCRIPT.mjs [ARGS...]\nOptions: --connection FILE --session UUID --revision N --timeout MS --id UUID\nExports refuse existing paths. Script modules export default async (client, args).');
     return;
   }
   const client = await createClient(config);
@@ -193,6 +201,7 @@ export async function runCli(argv = process.argv.slice(2)) {
     else if (action === 'job' || action === 'cancel') result = await client[action](values[0], settings);
     else if (action === 'import') result = await client.importFile(values[0], settings);
     else if (action === 'export') result = await client.exportFile(values[0], values[1], settings);
+    else if (action === 'delete') result = await client.deleteFile(values[0], settings);
     else if (action === 'run') {
       const script = await import(pathToFileURL(path.resolve(values[0])).href);
       if (typeof script.default !== 'function') throw new StillError('A run script must export default async function (client, args).', 'INVALID_SCRIPT');
