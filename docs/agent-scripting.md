@@ -100,7 +100,7 @@ Configure an MCP client to launch Node with an absolute script path. A typical s
   "mcpServers": {
     "still": {
       "command": "node",
-      "args": ["C:/DEV-PROJECTS/personal-projects/still-motion-studio/scripts/still-mcp.mjs"]
+      "args": ["C:/path/to/still-motion-studio/scripts/still-mcp.mjs"]
     }
   }
 }

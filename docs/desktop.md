@@ -38,13 +38,13 @@ Runtime preparation swaps staging into place only after validation, preserving t
 
 ## Publish a desktop release
 
-Maintainer access to the GitHub repository and the `gh` CLI are needed only for publishing. They are not part of the installed application.
+Releases are automatic: every push to `main` builds and publishes one through GitHub Actions, as described in [development: releases](development.md#releases). The steps below are the manual fallback from a Windows machine. Maintainer access to the GitHub repository and the `gh` CLI are needed only for publishing. They are not part of the installed application.
 
 1. Run the build/tests and verify installation, import, save/reopen, export and updates on Windows. Check included model provenance. Audit the complete runtime and its source/license obligations using [third-party notices](../THIRD_PARTY_NOTICES.md).
-2. Bump `package.json` and `package-lock.json` together, add `docs/releases/v<version>.md`, and commit/push that exact source.
+2. Bump `package.json` and `package-lock.json` together above the newest release, add `docs/releases/v<version>.md`, and commit/push that exact source. Add `[skip release]` to that commit message so the automatic workflow does not publish the same push.
 3. Download the official source archive matching the installed Blender version from [Blender's source index](https://download.blender.org/source/). Retain its dependencies' source information and build instructions too. Modified/custom Blender builds require their actual corresponding source, not a stock archive.
-4. Set `STILL_BLENDER_SOURCE_ARCHIVE` to that local archive, for example `C:/Downloads/blender-5.2.1.tar.xz`, then run `npm run desktop:release`.
+4. Set `STILL_BLENDER_SOURCE_ARCHIVE` to that local archive, for example `C:/Downloads/blender-5.2.1.tar.xz`, then run `npm run desktop:release`. To run every local check without publishing, run `npm run desktop:dist` and then `node scripts/release-desktop.mjs --dry-run`.
 
 The command builds both installers, checks their metadata and hashes, requires the matching Blender version header, then uploads installers, blockmaps, the update feed, Blender source archive, notices, checksums and source-commit metadata to a draft release. It publishes only after GitHub confirms every uploaded size and hash. A failed upload remains a draft and can be resumed. Source/archive version checks do not replace auditing a custom binary or its dependencies.
 
-Never upload `latest.yml` without its matching installer. Preserve published corresponding source for as long as binaries are offered. The public GitHub feed must be reachable before announcing public automatic updates. Code signing is not configured by this project.
+Never upload `latest.yml` without its matching installer. Preserve published corresponding source for as long as binaries are offered. Code signing is not configured by this project.
