@@ -56,6 +56,8 @@ Every push to `main` publishes a Windows release. The [release workflow](../.git
 4. Copies the approved learned models from the latest full installer (they are not in Git), then builds the full Setup and the smaller Update installer with `npm run desktop:dist`. The models pass the same rights, provenance and hash checks as a local build.
 5. Runs `scripts/release-desktop.mjs`, which checks both installers against `latest.yml` (version, runtime, SHA-512 and size), checks the Blender source version header, writes `SHA256SUMS.txt` and the source-commit manifest, uploads everything to a draft release and publishes it only after GitHub confirms every asset's size and SHA-256.
 
+Every input to the bundled runtime is pinned (Python, packages, Blender and the carried models), so the runtime id only changes when one of them does. A release that changes only the app updates installed copies with the small Update installer.
+
 Releases queue one at a time. A failed run leaves at most a draft, never a partial public release; re-running the job resumes the same version. Put `[skip release]` in the head commit message to push without releasing.
 
 To test a branch without publishing, run the workflow manually with **publish** off, for example `gh workflow run release.yml --ref <branch> -f publish=false`. Runs outside `main` never publish. A dry run builds and checks everything, then attaches both installers to the workflow run as artifacts for seven days.
