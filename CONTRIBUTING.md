@@ -18,7 +18,7 @@ The editor runs at http://127.0.0.1:5173; the local service uses port 5175. Opti
 ## Changes and checks
 
 1. Open an issue for a substantial feature or architectural change. Small fixes can go straight to a pull request.
-2. Branch from `main`. Keep each PR focused and explain the user-visible change.
+2. Branch from `main`. Keep each PR focused and explain the user-visible change. Every merge to `main` publishes a desktop release automatically (see [releases](docs/development.md#releases)), so keep `main` releasable.
 3. Run `npm run build` and `npm test`. For UI changes, exercise the affected flow in both themes and at a narrow window width; include a screenshot when useful. Check Python syntax with `python -m compileall -q backend training` when changing those files.
 4. Test the behavior you changed. Add a small regression test for a meaningful bug; documentation and styling edits do not need new test suites. Native engine/export changes need the relevant installed runtime and a description of what you actually validated.
 

@@ -14,6 +14,6 @@ Still's editor and engine bind to loopback. The agent API uses a per-installatio
 
 Imported models, animation files, projects, and scripts are untrusted inputs. Native importers and engine adapters run locally with your user permissions; use files from sources you trust and keep dependencies updated. Back up important scenes as `.still` files.
 
-The public updater requires no GitHub account. Release checks/downloads contact GitHub; normal character processing stays local. Optional setup scripts download their named dependencies and datasets. The app does not upload your character files as part of editing or generation.
+The public updater requires no GitHub account. Release checks/downloads contact GitHub; normal character processing stays local. Optional setup scripts download their named dependencies and datasets. The app does not upload your character files as part of editing or generation, with one opt-in exception: if you connect your own Meshy account and start a Meshy rigging task, the selected character is sent to Meshy under your account. The desktop app stores that Meshy key with Windows secure storage.
 
 Windows installers are currently unsigned. Release assets include `SHA256SUMS.txt` and a source-commit manifest. Download only from this repository's release page and verify checksums; checksums identify a release but do not replace code signing.

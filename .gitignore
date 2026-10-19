@@ -23,6 +23,7 @@ Thumbs.db
 *.still
 *.fbx
 *.glb
+!public/motions/*.glb
 *.gltf
 *.bvh
 *.blend

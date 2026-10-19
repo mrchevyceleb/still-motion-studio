@@ -1,4 +1,7 @@
-/** Publish a complete, tested Windows build; a draft never becomes the feed. */
+/** Check a complete Windows build before it is published: metadata, hashes and the
+ * Blender source. Writes SHA256SUMS.txt and the source manifest. Publishing happens
+ * only in the release workflow (scripts/publish-release.mjs), so releases always run
+ * one at a time. Usage: node scripts/release-desktop.mjs [notes.md] --dry-run */
 import { readFile, writeFile, stat, copyFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -16,11 +19,27 @@ const repo = 'mrchevyceleb/still-motion-studio';
 const run = (command, args) => execFileSync(command, args, { cwd: root, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const gh = args => run('gh', args);
 const api = args => JSON.parse(gh(['api', ...args]));
+const options = process.argv.slice(2);
+// --dry-run runs every local check (metadata, hashes, Blender source) and stops before GitHub changes.
+const dryRun = options.includes('--dry-run');
+if (!dryRun) throw new Error('Releases publish only from the release workflow, so two can never race. Push to main, or run npm run desktop:release to start it. Add --dry-run to check a local build.');
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 if (!semver.valid(version) || semver.prerelease(version)) throw new Error('Publish a stable semantic version.');
-if (run('git', ['status', '--porcelain'])) throw new Error('Commit the release source before publishing.');
+// Automatic releases set the version for the build without committing it back to main.
+// That exact change, and nothing else, may be uncommitted.
+async function versionOnly(file) {
+  const committed = JSON.parse(run('git', ['show', `HEAD:${file}`]));
+  committed.version = version;
+  if (file === 'package-lock.json' && committed.packages?.['']) committed.packages[''].version = version;
+  return JSON.stringify(committed) === JSON.stringify(JSON.parse(await readFile(path.join(root, file), 'utf8')));
+}
+// Read status untrimmed: the leading space of ' M' is part of the format.
+for (const line of execFileSync('git', ['status', '--porcelain'], { cwd: root, windowsHide: true, encoding: 'utf8' }).split('\n').filter(Boolean)) {
+  const file = line.slice(3);
+  if (line.slice(0, 2) !== ' M' || !['package.json', 'package-lock.json'].includes(file) || !await versionOnly(file)) throw new Error('Commit the release source before publishing.');
+}
 const commit = run('git', ['rev-parse', 'HEAD']);
-const notes = path.resolve(root, process.argv[2] || `docs/releases/v${version}.md`);
+const notes = path.resolve(root, options.find(value => !value.startsWith('--')) || `docs/releases/v${version}.md`);
 if (!(await readFile(notes, 'utf8')).trim()) throw new Error('Release notes are empty.');
 const directory = path.join(root, '.local', 'installers');
 const installer = `Still-Motion-Studio-Setup-${version}.exe`;
@@ -65,49 +84,4 @@ let previous;
 try { previous = api([`repos/${repo}/releases/latest`]); }
 catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
 if (previous && !semver.gt(version, previous.tag_name.replace(/^v/, ''))) throw new Error('The release version must be newer than the current stable release.');
-const tag = `v${version}`;
-// GitHub ignores target_commitish when a tag already exists, even if that tag
-// has never been fetched locally. Resolve and peel the remote ref first.
-function verifyRemoteTag() {
-  let remoteTag;
-  try { remoteTag = api([`repos/${repo}/git/ref/tags/${tag}`]).object; }
-  catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
-  while (remoteTag?.type === 'tag') remoteTag = api([`repos/${repo}/git/tags/${remoteTag.sha}`]).object;
-  if (remoteTag && (remoteTag.type !== 'commit' || remoteTag.sha !== commit)) throw new Error('The remote version tag points to another commit.');
-}
-verifyRemoteTag();
-// GitHub's tag endpoint can return 404 for a draft whose tag has not been
-// created yet. The authenticated release list includes those drafts.
-function findRelease() {
-  const matches = api(['--paginate', '--slurp', `repos/${repo}/releases?per_page=100`]).flat().filter(value => value.tag_name === tag);
-  if (matches.length > 1) throw new Error('Multiple releases use this tag. Resolve the duplicate drafts before publishing.');
-  return matches[0];
-}
-let release = findRelease();
-if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('This tag already belongs to another or published release.');
-if (!release) {
-  try {
-    const taggedCommit = run('git', ['rev-list', '-n', '1', tag]);
-    if (taggedCommit && taggedCommit !== commit) throw new Error('The version tag points to another commit.');
-  } catch (error) { if (!String(error.stderr || '').includes('unknown revision')) throw error; }
-  gh(['release', 'create', tag, '--repo', repo, '--draft', '--target', commit, '--title', `Still Motion Studio ${version}`, '--notes-file', notes]);
-  release = findRelease();
-}
-if (!release?.draft || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
-// Publish last: clients must never observe a partially uploaded feed.
-gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
-const uploaded = api([`repos/${repo}/releases/${release.id}`]);
-for (const file of assets) {
-  const asset = uploaded.assets.find(value => value.name === file);
-  if (!asset || asset.size !== (await stat(path.join(directory, file))).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
-  const digest = createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex');
-  // A missing digest is not proof of a successful upload. Leave the release
-  // in draft; retry after GitHub has completed processing the assets.
-  if (asset.digest !== `sha256:${digest}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
-}
-verifyRemoteTag();
-gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
-const published = api([`repos/${repo}/releases/${release.id}`]);
-if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');
-verifyRemoteTag();
-console.log(`Published https://github.com/${repo}/releases/tag/${tag}`);
+console.log(`Checks passed for ${version} at ${commit}; nothing was published. Assets: ${assets.join(', ')}`);

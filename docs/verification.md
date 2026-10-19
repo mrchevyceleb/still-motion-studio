@@ -19,13 +19,13 @@ Desktop was checked at 1440×1000 and 1024×850; mobile controls at 390×844. Br
 
 The production build reports one large JavaScript bundle warning (roughly 1.09 MB uncompressed / 298 KB gzip); it completes successfully.
 
-## Codex-fix
+## Code review
 
-**Backend:** direct Codex CLI, GPT-5.6-Sol, medium reasoning for both passes. No OpenRouter fallback. Read-only reviewers used the complete supplied diff; their local shell tool was unavailable, so browser/build verification was performed by the implementation team.
+**Backend:** automated review, medium effort for both passes. Read-only reviewers used the complete supplied diff; their local shell tool was unavailable, so browser/build verification was performed separately.
 
 **Scope:** large tier. Review 1 covered 24 files / 3,786 changed lines. Verification covered 25 files / 3,995 changed lines, including the native integration findings. No pre-existing code was present; the base was Git's empty tree.
 
-**Result:** 2 reviews, 1 fix pass, **limited** success exit under the skill's stopping rule. No P0/P1 remained in verification. Review 1 reported three P1 findings and one P2; all were fixed:
+**Result:** 2 reviews, 1 fix pass, **limited** success exit under the review stopping rule. No P0/P1 remained in verification. Review 1 reported three P1 findings and one P2; all were fixed:
 
 | Finding | Fix |
 | --- | --- |
@@ -34,7 +34,7 @@ The production build reports one large JavaScript bundle warning (roughly 1.09 M
 | P1: Mobile hid functional controls | Added a mobile disclosure for clips, warnings, joint selection, rotation, and reset. |
 | P2: Source clip labels became false after undo/restore | Clip identity is stored with history/projects; edits explicitly become “Edited motion.” |
 
-Verification reported two new P2 notes. Per the requested codex-fix skill, these were recorded without another fix/review loop:
+Verification reported two new P2 notes. Per the review process, these were recorded without another fix/review loop:
 
 - The layout has a 360px minimum width, so narrower 320px views overflow.
 - An error alert can remain visible after some subsequent successful operations until dismissed.
@@ -53,11 +53,11 @@ The earlier procedural-only scope limit is superseded. Genuine CondMDI inference
 
 Proofs and browser screenshots are retained in ignored `.local/engine-verification`, `.local/ai-motion`, `.local/physics-proof`, and `.local/cascadeur-proof`. Full research, provenance, metrics, and remaining limitations are in [the report](../reports/Real%20motion%20engines.md).
 
-The follow-up codex-fix review found three practical issues: asynchronous shutdown/worker cleanup, bounded diagnostic retention, and a missing root-torque regression gate. All three were fixed. Final medium verification confirmed all three resolved, with no P0/P1 findings. The native IPC shutdown was then verified against an actual running proxy scene: worker terminated, temporary scene closed, and exact previous scene state restored in 2.07 seconds.
+The follow-up code review found three practical issues: asynchronous shutdown/worker cleanup, bounded diagnostic retention, and a missing root-torque regression gate. All three were fixed. Final medium verification confirmed all three resolved, with no P0/P1 findings. The native IPC shutdown was then verified against an actual running proxy scene: worker terminated, temporary scene closed, and exact previous scene state restored in 2.07 seconds.
 
-Follow-up review: direct Codex CLI / GPT-5.6-Sol medium; large tier, 2 reviews and 1 fix pass. Scope was the explicit 28-file contribution manifest against the snapshot before this follow-up (2,464 changed lines after fixes). No third pass was warranted. One new P2 note remains under the skill stopping rule: a CRC-corrupt cached checkpoint ZIP, or an already-corrupt extracted checkpoint with the expected size, can require removing those cached downloads before rerunning setup. The verified installed checkpoint is unaffected. Interrupted downloads/extraction use temporary files and resume safely for ordinary incomplete files.
+Follow-up review: automated, medium effort; large tier, 2 reviews and 1 fix pass. Scope was the explicit 28-file contribution manifest against the snapshot before this follow-up (2,464 changed lines after fixes). No third pass was warranted. One new P2 note remains under the review stopping rule: a CRC-corrupt cached checkpoint ZIP, or an already-corrupt extracted checkpoint with the expected size, can require removing those cached downloads before rerunning setup. The verified installed checkpoint is unaffected. Interrupted downloads/extraction use temporary files and resume safely for ordinary incomplete files.
 
-The final physics rerun still passed: root force 686.7336→4.3074 N and root torque 10.1914→1.4251 Nm, with `requiresReview=false`. Raw review findings are archived in `.local/verification/codex-fix-engines-review1.txt` and `codex-fix-engines-review2.txt`.
+The final physics rerun still passed: root force 686.7336→4.3074 N and root torque 10.1914→1.4251 Nm, with `requiresReview=false`. Raw review findings are archived in `.local/verification/` (not in Git).
 
 
 Follow-up scope: `.gitignore`, `package.json`, `vite.config.ts`, `README.md`, `src/types.ts`, `src/App.tsx`, `src/styles.css`, `src/engine/project.ts`, `src/engine/assistance.ts`, `src/engine/assistance.test.ts`, `server/engine.mjs`, `scripts/dev.mjs`, `scripts/motion-fixture.mjs`, `scripts/smoke-engines.mjs`, `scripts/smoke.mjs`, `scripts/smoke-import.mjs`, `backend/__init__.py`, `backend/worker.py`, `backend/inbetween.py`, `backend/install_model.py`, `backend/physics.py`, `backend/cascadeur.py`, `backend/cascadeur_runtime.py`, `scripts/setup-ai-motion.ps1`, `scripts/setup-physics.ps1`, `docs/motion.md`, `docs/neural-motion.md`, `docs/cascadeur-integration.md`.
@@ -73,17 +73,17 @@ Follow-up scope: `.gitignore`, `package.json`, `vite.config.ts`, `README.md`, `s
 
 Evidence: `.local/user-fixtures/`, `.local/contact-refinement/final-result.json`, `.local/engine-verification/`, `.local/quadruped/validation-proof.json`, `.local/quadruped/extended-proof.json`, `.local/owned-humanoid/model/model.json`, and `.local/autophysics-proof/`. See [the research report](../reports/Motion%20readiness%20and%20rights.md) for model provenance, native bake measurements, and permission limits. The supplied FBX files were not added to model training data.
 
-### Codex-fix for the motion gaps
+### Code review for the motion gaps
 
-Large tier: 40 explicitly transferred files, 2,668 changed lines at final review. Direct Codex CLI / GPT-5.6-Sol produced three reviews (medium, medium, then the allowed high-effort review for a new practical P1). Four P1 findings and one P2 were fixed: native setup registration; allowlisted/hash-verified training inputs; body-type history and stale-take invalidation; failed native cleanup/recovery reporting; and preserving per-provider physics preferences. Fresh setup, source tampering/unlisted-file checks, body-type Undo, native preference switching, and fault-injected cleanup/recovery all passed. The final real native browser run passed as well. Raw reviews and the scope manifest are in `.local/verification/codex-fix-gaps-*`.
+Large tier: 40 explicitly transferred files, 2,668 changed lines at final review. Automated review produced three passes (medium, medium, then the allowed high-effort review for a new practical P1). Four P1 findings and one P2 were fixed: native setup registration; allowlisted/hash-verified training inputs; body-type history and stale-take invalidation; failed native cleanup/recovery reporting; and preserving per-provider physics preferences. Fresh setup, source tampering/unlisted-file checks, body-type Undo, native preference switching, and fault-injected cleanup/recovery all passed. The final real native browser run passed as well. Raw reviews and the scope manifest are in `.local/verification/` (not in Git).
 
-The allowed third review ended with no P0, and these notes remain under the skill's absolute stopping rule:
+The allowed third review ended with no P0, and these notes remain under the review stopping rule:
 
 - P1: If the native bridge fails during server shutdown, recovery state is not persisted across restart and shutdown still exits zero. A later native attempt can require cleanup/retry. Ordinary running-service failures now surface a recovery action correctly.
 - P1: Interrupting `-Retrain` between writing weights and metadata can leave an inconsistent local checkpoint set. Existing verified installations are unaffected; retraining does not yet atomically swap a complete model directory with rollback.
-- P2: The research report intentionally uses absolute links to this machine's local evidence. They are useful in Codex but do not travel to other clones, and ignored `.local` proof files are not bundled.
+- P2: The research report intentionally uses links to local evidence files. They do not travel to other clones, and ignored `.local` proof files are not bundled.
 
-This was the skill's third-loop, success-with-notes exit; no fourth review was run. No commits or pushes were made.
+This was a third-loop, success-with-notes exit; no fourth review was run. No commits or pushes were made.
 
 ## Unreal export — October 8, 2026
 
@@ -100,15 +100,13 @@ Evidence: `.local/unreal-proof/final-legacy-1.json`, `.local/unreal-export/`, an
 
 The Unreal review fix pass also verified cancellation before upload acknowledgement (about 300 ms in the browser), immediate server cleanup on connection loss, client-allocated job IDs with a real ZIP download, and the disabled export option for unrigged imports. Archive validation rejected a truncated central directory, corrupt entry CRC, and missing required files. An actual Unreal fault injection failed after the character was saved: only its new `/Game/Still/Bear_1` folder was removed, the existing Bear remained, and the importer setting was restored. Evidence: `.local/verification/unreal-review-fixes.json`, `unreal-zip-integrity.json`, and `.local/unreal-proof/import-failure-proof.json`. The optional default-Interchange comparison stalled before reaching Python or importing assets; it supplies no compatibility evidence, and the packaged helper remains the verified route.
 
-### Codex-fix for Unreal export
+### Code review for Unreal export
 
-Large tier: **12 files, 1,274 changed lines at verification**, scoped against the separate before-Unreal snapshot. **Two direct Codex CLI / GPT-5.6-Sol medium reviews** ran, with one fix pass. The final reviewer returned **NO FINDINGS**; this is a verified exit with no remaining review findings for this change set. No commits or pushes were made.
+Large tier: **12 files, 1,274 changed lines at verification**, scoped against the separate before-Unreal snapshot. **Two automated medium-effort reviews** ran, with one fix pass. The final reviewer returned **NO FINDINGS**; this is a verified exit with no remaining review findings for this change set. No commits or pushes were made.
 
-Found and fixed: **one P1**, upload cancellation waiting for a server acknowledgement (`src/engine/unrealExport.ts`, `server/unreal-export.mjs`); **three P2s**, missing complete ZIP integrity validation (`backend/unreal_export.py`), offering export before rigging (`src/App.tsx`), and leaving saved partial Unreal imports after failure (`scripts/unreal_import.py`). The targeted checks above exercised each fix. No findings were deliberately skipped. Review outputs and the exact scope list are archived under `.local/verification/codex-fix-unreal-*`.
+Found and fixed: **one P1**, upload cancellation waiting for a server acknowledgement (`src/engine/unrealExport.ts`, `server/unreal-export.mjs`); **three P2s**, missing complete ZIP integrity validation (`backend/unreal_export.py`), offering export before rigging (`src/App.tsx`), and leaving saved partial Unreal imports after failure (`scripts/unreal_import.py`). The targeted checks above exercised each fix. No findings were deliberately skipped. Review outputs and the exact scope list are archived under `.local/verification/` (not in Git).
 
 Reviewed files: `README.md`, `docs/verification.md`, `docs/unreal-export.md`, `src/App.tsx`, `src/engine/unrealExport.ts`, `src/unreal-export.css`, `server/engine.mjs`, `server/unreal-export.mjs`, `vite.config.ts`, `backend/unreal_export.py`, `scripts/unreal_import.py`, and `scripts/unreal_validate.py`.
-
-Temporary-file cleanup note: automatic approval review rejected deletion of this task's `.git/codex-fix-unreal-*` prompt/diff/log files, including a second attempt restricted to verified absolute file paths. Its only stated reason was “blocked by policy.” These temporary files were left in place; the review results were successfully archived and the real Git index was never changed.
 
 ## Background agent scripting — October 8, 2026
 
@@ -123,15 +121,15 @@ Still now exposes 35 discoverable scene commands through a loopback authenticate
 
 Evidence: `.local/agent-live-verify.json`, `.local/agent-operation-proof.json`, `.local/agent-api-proof-result.json`, `.local/agent-sdk-smoke.json`, `.local/agent-ui/`, and `.local/agent-operation-output/`. See [the scripting guide](agent-scripting.md) and [the executable example](../examples/agent-wave.mjs). The SDK never replays uncertain mutations automatically; scripts should inspect state after conflicts or connection loss. Scene replacement uses the existing five-scene archive and resets scene Undo history.
 
-### Codex-fix for agent scripting
+### Code review for agent scripting
 
-Large tier: **15 files, 2,782 changed lines at verification**, against the separate before-agent snapshot. **Two direct Codex CLI / GPT-5.6-Sol medium reviews** ran. This is a limited, success-with-notes exit under the skill's stopping rule; no third review was warranted. No commits or pushes were made.
+Large tier: **15 files, 2,782 changed lines at verification**, against the separate before-agent snapshot. **Two automated medium-effort reviews** ran. This is a limited, success-with-notes exit under the review stopping rule; no third review was warranted. No commits or pushes were made.
 
 - Fixed the first review's P2 concurrency concern by rejecting `skeleton.inspect` during UI generation/export while allowing immutable snapshot and pose reads. A real browser check held a generation request, verified that rejection, then verified inspection resumed afterward.
 - Three unique P1 findings were disputed with code evidence: generated-motion invalidation, body-category synchronization, and disposal after asset replacement already occur in the existing App callbacks/effect. No duplicate implementations were added. Targeted live checks confirmed invalidation for eight named mutations, both scene and skeleton category inspection, and category Undo/Redo. App's asset effect disposes the previous root only when its ownership changes, preserving shared resources during template rigging.
 - A separate live check exposed a long-poll timeout racing the journal write. The service now clears the idle timer before persisting a leased command. An isolated test deliberately delayed that write across the deadline, failed before the fix, and passed afterward. All nine transport checks passed again, and the running service was updated while idle.
 - One new **P2 note remains**, as required by the review stopping rule: camera schema limits are wider than runtime limits. Runtime accepts FOV **10–100 degrees**, coordinates within **±10,000**, and the viewport's orbit-distance bounds. Requests outside those limits return explicit errors without changing the camera. The published schema still allows FOV up to 120 and generic vectors up to ±100,000.
 
-No P0 findings were raised. Final TypeScript compilation passed. Review reports, exact scope, callback context, and focused checks are archived under `.local/verification/codex-fix-agent-*`, `agent-review-*`, and `agent-poll-deadline.json`.
+No P0 findings were raised. Final TypeScript compilation passed. Review reports, exact scope, callback context, and focused checks are archived under `.local/verification/` (not in Git).
 
 Reviewed files: `README.md`, `docs/verification.md`, `docs/agent-scripting.md`, `src/App.tsx`, `src/agent-scripting.css`, `src/engine/agentCommands.ts`, `src/engine/agentBridge.ts`, `src/engine/agentPose.ts`, `src/components/Viewport.tsx`, `server/engine.mjs`, `server/agent-api.mjs`, `shared/agent-schema.json`, `scripts/still-agent.mjs`, `scripts/still-mcp.mjs`, and `examples/agent-wave.mjs`.

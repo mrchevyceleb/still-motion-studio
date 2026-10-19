@@ -1,0 +1,14 @@
+Offline Motion Library source and license notices
+
+Quaternius, Universal Animation Library 1 and 2 (Standard, root-motion GLB):
+https://quaternius.com/packs/universalanimationlibrary.html
+https://quaternius.com/packs/universalanimationlibrary2.html
+The author-provided License.txt in both source archives states CC0 1.0 Universal.
+
+Mesh2Motion animation packs, pinned to commit 653a9698f5f315523072f1c3ff3496100401317b:
+https://github.com/Mesh2Motion/mesh2motion-app/tree/653a9698f5f315523072f1c3ff3496100401317b/static/animations
+The repository's LICENSE-CC0.MD identifies its rigs and animations as CC0 1.0 Universal.
+The human-mocap animation pack and CarnegieMellonAnimations files are excluded.
+
+CC0 1.0 Universal: https://creativecommons.org/publicdomain/zero/1.0/
+Individual packaged file hashes and source links are recorded in catalog.json.

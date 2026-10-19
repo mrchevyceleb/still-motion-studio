@@ -1,0 +1,217 @@
+name: Release
+
+# Pushes to main publish a Windows release. Put [skip release] in the head commit
+# message to skip one. A manual run with publish off (or any run outside main) is a
+# dry run: it builds and checks both installers, then keeps them as workflow
+# artifacts without creating a release.
+#
+# Only the two small jobs that pick the version and publish can write to the repo.
+# They install nothing. The build, which runs npm and Python packages, only reads.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release. Off builds both installers and keeps them as workflow artifacts only.
+        type: boolean
+        default: true
+      allow_no_models:
+        description: Build without learned models when the latest release has none to carry. Only for starting the model chain over.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Releases run one at a time and never cancel a build in progress. GitHub keeps one
+# waiting run per group, so pushes made while a release builds ship together in the
+# next one. Dry runs and skipped pushes get their own group so they never take a waiting release's place.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip release]')) || inputs.publish) && 'release-main' || format('release-other-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+env:
+  # The bundled Blender and its matching official source archive (download.blender.org).
+  BLENDER_VERSION: 5.2.1
+  BLENDER_ZIP_SHA256: 0e631dad7d0cad6d5d18abdd2e2550f6c0213215334eda00ddbd3d22b96ecb2c
+  BLENDER_SOURCE_SHA256: 14ca60236b029f575c2a8b6042554c956736206adef5ecb396445a394c0c9213
+  # The bundled CPU Python. This uv release resolves 3.10.21 to the same build every time.
+  UV_VERSION: 0.12.10
+  PYTHON_VERSION: 3.10.21
+
+jobs:
+  plan:
+    name: Pick the version
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # Draft releases are only visible with write access.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Only main can publish. Any other branch is always a dry run.
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Version selection reads every tag.
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Select the release version
+        id: version
+        run: node scripts/release-version.mjs
+
+  build:
+    name: Windows build
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }} # Read-only here: it downloads the previous release's models.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      # Pushes always require the previous release's models; only a manual run can opt out.
+      STILL_ALLOW_NO_MODELS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_no_models && '1' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Release notes read every tag.
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: requirements-desktop.txt
+
+      - name: Install the bundled Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Set the release version
+        shell: pwsh
+        run: |
+          # Set for this build only; nothing is committed back to main.
+          npm version $env:VERSION --no-git-tag-version --allow-same-version
+          if ($LASTEXITCODE -ne 0) { throw 'Could not set the build version.' }
+          Write-Host "Release version: $env:VERSION (publish: $env:PUBLISH)"
+
+      - name: Prepare release notes
+        id: notes
+        run: node scripts/release-notes.mjs ${{ env.VERSION }}
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Restore Blender downloads
+        id: blender-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/blender-downloads
+          key: blender-${{ env.BLENDER_VERSION }}-${{ env.BLENDER_ZIP_SHA256 }}-${{ env.BLENDER_SOURCE_SHA256 }}
+
+      - name: Download and verify Blender and its source
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'blender-downloads'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $version = $env:BLENDER_VERSION
+          $series = ($version -split '\.')[0..1] -join '.'
+          $files = @(
+            @{ Name = "blender-$version-windows-x64.zip"; Url = "https://download.blender.org/release/Blender$series/blender-$version-windows-x64.zip"; Sha = $env:BLENDER_ZIP_SHA256 },
+            @{ Name = "blender-$version.tar.xz"; Url = "https://download.blender.org/source/blender-$version.tar.xz"; Sha = $env:BLENDER_SOURCE_SHA256 }
+          )
+          foreach ($file in $files) {
+            $path = Join-Path $dir $file.Name
+            if (-not (Test-Path $path)) {
+              curl.exe -fsSL --retry 3 -o $path $file.Url
+              if ($LASTEXITCODE -ne 0) { throw "Download failed: $($file.Url)" }
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            if ($actual -ne $file.Sha) { Remove-Item -LiteralPath $path; throw "Checksum mismatch for $($file.Name): $actual" }
+            Write-Host "Verified $($file.Name)"
+          }
+          $target = Join-Path $env:RUNNER_TEMP 'blender'
+          7z x -y "-o$target" (Join-Path $dir "blender-$version-windows-x64.zip") | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not extract Blender.' }
+          $blenderHome = Join-Path $target "blender-$version-windows-x64"
+          if (-not (Test-Path (Join-Path $blenderHome 'blender.exe'))) { throw 'The Blender archive layout changed.' }
+          "STILL_BLENDER_DIRECTORY=$blenderHome" >> $env:GITHUB_ENV
+          "STILL_BLENDER_SOURCE_ARCHIVE=$(Join-Path $dir "blender-$version.tar.xz")" >> $env:GITHUB_ENV
+
+      - name: Save Blender downloads
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/blender-downloads
+          key: blender-${{ env.BLENDER_VERSION }}-${{ env.BLENDER_ZIP_SHA256 }}-${{ env.BLENDER_SOURCE_SHA256 }}
+
+      - name: Carry approved models from the latest release
+        run: node scripts/fetch-release-models.mjs
+
+      - name: Build both installers
+        run: npm run desktop:dist
+
+      - name: Verify the release
+        run: node scripts/release-desktop.mjs "${{ steps.notes.outputs.notes }}" --dry-run
+
+      - name: Add the notes to the release files
+        shell: pwsh
+        run: Copy-Item -LiteralPath '${{ steps.notes.outputs.notes }}' -Destination .local/installers/release-notes.md
+
+      # Dry runs keep these for a week; a publishing run hands them to the publish job.
+      - name: Keep the release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: still-motion-studio-${{ env.VERSION }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: ${{ env.PUBLISH == 'true' && 1 || 7 }}
+          compression-level: 0
+          path: |
+            .local/installers/Still-Motion-Studio-Setup-${{ env.VERSION }}.exe
+            .local/installers/Still-Motion-Studio-Setup-${{ env.VERSION }}.exe.blockmap
+            .local/installers/Still-Motion-Studio-Update-${{ env.VERSION }}.exe
+            .local/installers/Still-Motion-Studio-Update-${{ env.VERSION }}.exe.blockmap
+            .local/installers/latest.yml
+            .local/installers/blender-*.tar.xz
+            .local/installers/blender-source.json
+            .local/installers/THIRD_PARTY_NOTICES.md
+            .local/installers/SHA256SUMS.txt
+            .local/installers/release-source.json
+            .local/installers/release-notes.md
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Only the dependency-free publish script runs here; no packages are installed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: still-motion-studio-${{ needs.plan.outputs.version }}
+          path: release
+      - name: Publish the release
+        run: node scripts/publish-release.mjs release release/release-notes.md
