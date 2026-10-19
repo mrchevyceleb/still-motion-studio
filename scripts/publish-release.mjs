@@ -15,6 +15,7 @@ const repo = 'mrchevyceleb/still-motion-studio';
 const [directory, notes] = process.argv.slice(2, 4).map(value => value && path.resolve(value));
 if (!directory || !notes) throw new Error('Usage: node scripts/publish-release.mjs <release-folder> <notes.md>');
 if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Releases publish only from the release workflow. Push to main, or run npm run desktop:release to start it.');
+if (!process.env.GH_TOKEN) throw new Error('GH_TOKEN is required to publish.');
 const gh = args => execFileSync('gh', args, { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }).trim();
 const api = args => JSON.parse(gh(['api', ...args]));
 const parse = value => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value || '')?.slice(1).map(Number);
@@ -69,25 +70,35 @@ function findRelease() {
 }
 let release = findRelease();
 if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('This tag already belongs to another or published release.');
+// The release list and tag lookups lag a new draft by a few seconds, so everything
+// after this point addresses the release by its id, which GitHub answers at once.
 if (!release) {
-  gh(['release', 'create', tag, '--repo', repo, '--draft', '--target', commit, '--title', `Still Motion Studio ${version}`, '--notes-file', notes]);
-  release = findRelease();
+  const created = api(['-X', 'POST', `repos/${repo}/releases`, '-f', `tag_name=${tag}`, '-f', `target_commitish=${commit}`,
+    '-f', `name=Still Motion Studio ${version}`, '-F', `body=@${notes}`, '-F', 'draft=true']);
+  release = api([`repos/${repo}/releases/${created.id}`]);
 }
-if (!release?.draft || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
-// Publish last: clients must never observe a partially uploaded feed.
-gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
-const uploaded = api([`repos/${repo}/releases/${release.id}`]);
+if (!release?.draft || release.tag_name !== tag || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
+// Publish last: clients must never observe a partially uploaded feed. A retried run
+// replaces whatever an earlier attempt left on the draft.
+const uploadUrl = release.upload_url.replace(/\{.*\}$/, '');
 for (const file of assets) {
-  const asset = uploaded.assets.find(value => value.name === file);
-  if (!asset || asset.size !== (await stat(path.join(directory, file))).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
-  // A missing digest is not proof of a successful upload. Leave the release
-  // in draft; retry after GitHub has completed processing the assets.
-  if (asset.digest !== `sha256:${await sha256(path.join(directory, file))}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
+  const filename = path.join(directory, file);
+  const stale = release.assets.find(value => value.name === file);
+  if (stale) gh(['api', '-X', 'DELETE', `repos/${repo}/releases/assets/${stale.id}`]);
+  // curl streams the file with its length; the token goes in on stdin, never the command line.
+  const asset = JSON.parse(execFileSync('curl', ['-fsS', '--config', '-', '-X', 'POST', '-H', 'Content-Type: application/octet-stream',
+    '-T', filename, `${uploadUrl}?name=${encodeURIComponent(file)}`],
+  { input: `header = "Authorization: Bearer ${process.env.GH_TOKEN}"\n`, encoding: 'utf8', stdio: ['pipe', 'pipe', 'inherit'], maxBuffer: 1024 * 1024, windowsHide: true }));
+  if (asset.name !== file || asset.state !== 'uploaded' || asset.size !== (await stat(filename)).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
+  // A missing digest is not proof of a successful upload. Leave the release in draft;
+  // a retried run replaces the file.
+  const digest = asset.digest || api([`repos/${repo}/releases/assets/${asset.id}`]).digest;
+  if (digest !== `sha256:${await sha256(filename)}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
 }
 verifyRemoteTag();
 // Check again right before going live, in case a release was published while this one uploaded.
 assertReleasable(repo, commit);
-gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
+gh(['api', '-X', 'PATCH', `repos/${repo}/releases/${release.id}`, '-F', 'draft=false', '-f', 'make_latest=true']);
 const published = api([`repos/${repo}/releases/${release.id}`]);
 if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');
 verifyRemoteTag();
