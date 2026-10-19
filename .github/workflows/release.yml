@@ -17,9 +17,10 @@ on:
 permissions:
   contents: write
 
-# Releases queue one at a time; they never cancel a build in progress.
+# Releases queue one at a time; they never cancel a build in progress. Dry runs get their own group so they can
+# never take a queued release's place.
 concurrency:
-  group: release-${{ github.ref }}
+  group: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) && 'release-main' || format('release-dry-run-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
