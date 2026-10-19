@@ -26,9 +26,9 @@ permissions:
 
 # Releases run one at a time and never cancel a build in progress. GitHub keeps one
 # waiting run per group, so pushes made while a release builds ship together in the
-# next one. Dry runs get their own group so they never take a waiting release's place.
+# next one. Dry runs and skipped pushes get their own group so they never take a waiting release's place.
 concurrency:
-  group: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) && 'release-main' || format('release-dry-run-{0}', github.ref) }}
+  group: ${{ github.ref == 'refs/heads/main' && ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip release]')) || inputs.publish) && 'release-main' || format('release-other-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
