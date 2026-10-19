@@ -1,9 +1,12 @@
 name: Release
 
-# Every push to main publishes a Windows release. Put [skip release] in the head
-# commit message to skip one. A manual run with publish off (or any run outside
-# main) is a dry run: it builds and checks both installers, then keeps them as
-# workflow artifacts without creating a release.
+# Pushes to main publish a Windows release. Put [skip release] in the head commit
+# message to skip one. A manual run with publish off (or any run outside main) is a
+# dry run: it builds and checks both installers, then keeps them as workflow
+# artifacts without creating a release.
+#
+# Only the two small jobs that pick the version and publish can write to the repo.
+# They install nothing. The build, which runs npm and Python packages, only reads.
 on:
   push:
     branches: [main]
@@ -15,10 +18,11 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
-# Releases queue one at a time; they never cancel a build in progress. Dry runs get their own group so they can
-# never take a queued release's place.
+# Releases run one at a time and never cancel a build in progress. GitHub keeps one
+# waiting run per group, so pushes made while a release builds ship together in the
+# next one. Dry runs get their own group so they never take a waiting release's place.
 concurrency:
   group: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) && 'release-main' || format('release-dry-run-{0}', github.ref) }}
   cancel-in-progress: false
@@ -33,20 +37,46 @@ env:
   PYTHON_VERSION: 3.10.21
 
 jobs:
-  release:
-    name: Windows release
+  plan:
+    name: Pick the version
     if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
-    runs-on: windows-latest
-    timeout-minutes: 120
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # Draft releases are only visible with write access.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       # Only main can publish. Any other branch is always a dry run.
       PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # Release notes and version selection read every tag.
+          fetch-depth: 0 # Version selection reads every tag.
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Select the release version
+        id: version
+        run: node scripts/release-version.mjs
+
+  build:
+    name: Windows build
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }} # Read-only here: it downloads the previous release's models.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # Release notes read every tag.
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -62,20 +92,17 @@ jobs:
       - name: Install the bundled Python
         run: uv python install ${{ env.PYTHON_VERSION }}
 
-      - name: Select the release version
-        id: version
+      - name: Set the release version
         shell: pwsh
         run: |
-          $version = node scripts/release-version.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Could not select the release version.' }
           # Set for this build only; nothing is committed back to main.
-          npm version $version --no-git-tag-version --allow-same-version
+          npm version $env:VERSION --no-git-tag-version --allow-same-version
           if ($LASTEXITCODE -ne 0) { throw 'Could not set the build version.' }
-          Write-Host "Release version: $version (publish: $env:PUBLISH)"
+          Write-Host "Release version: $env:VERSION (publish: $env:PUBLISH)"
 
       - name: Prepare release notes
         id: notes
-        run: node scripts/release-notes.mjs ${{ steps.version.outputs.version }}
+        run: node scripts/release-notes.mjs ${{ env.VERSION }}
 
       - run: npm ci
       - run: npm test
@@ -132,26 +159,53 @@ jobs:
       - name: Verify the release
         run: node scripts/release-desktop.mjs "${{ steps.notes.outputs.notes }}" --dry-run
 
-      - name: Publish the release
-        if: env.PUBLISH == 'true'
-        run: node scripts/release-desktop.mjs "${{ steps.notes.outputs.notes }}"
+      - name: Add the notes to the release files
+        shell: pwsh
+        run: Copy-Item -LiteralPath '${{ steps.notes.outputs.notes }}' -Destination .local/installers/release-notes.md
 
-      - name: Keep the dry-run installers
-        if: env.PUBLISH != 'true'
+      # Dry runs keep these for a week; a publishing run hands them to the publish job.
+      - name: Keep the release files
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: still-motion-studio-${{ steps.version.outputs.version }}-dry-run
+          name: still-motion-studio-${{ env.VERSION }}
           include-hidden-files: true
           if-no-files-found: error
-          retention-days: 7
+          retention-days: ${{ env.PUBLISH == 'true' && 1 || 7 }}
           compression-level: 0
           path: |
-            .local/installers/Still-Motion-Studio-Setup-*.exe
-            .local/installers/Still-Motion-Studio-Setup-*.exe.blockmap
-            .local/installers/Still-Motion-Studio-Update-*.exe
-            .local/installers/Still-Motion-Studio-Update-*.exe.blockmap
+            .local/installers/Still-Motion-Studio-Setup-${{ env.VERSION }}.exe
+            .local/installers/Still-Motion-Studio-Setup-${{ env.VERSION }}.exe.blockmap
+            .local/installers/Still-Motion-Studio-Update-${{ env.VERSION }}.exe
+            .local/installers/Still-Motion-Studio-Update-${{ env.VERSION }}.exe.blockmap
             .local/installers/latest.yml
-            .local/installers/SHA256SUMS.txt
+            .local/installers/blender-*.tar.xz
             .local/installers/blender-source.json
+            .local/installers/THIRD_PARTY_NOTICES.md
+            .local/installers/SHA256SUMS.txt
             .local/installers/release-source.json
-            ${{ steps.notes.outputs.notes }}
+            .local/installers/release-notes.md
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Only the dependency-free publish script runs here; no packages are installed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: still-motion-studio-${{ needs.plan.outputs.version }}
+          path: release
+      - name: Publish the release
+        run: node scripts/publish-release.mjs release release/release-notes.md

@@ -6,6 +6,7 @@ import { readFile, appendFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertReleasable } from './release-guard.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repo = process.env.GITHUB_REPOSITORY || 'mrchevyceleb/still-motion-studio';
@@ -16,6 +17,8 @@ const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 const minimum = parse(JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
 if (!minimum) throw new Error('Use a stable major.minor.patch version in package.json.');
 const commit = process.env.GITHUB_SHA || run('git', ['rev-parse', 'HEAD']);
+// Stop a publishing run before the long build if it could never publish.
+if (process.env.PUBLISH === 'true') assertReleasable(repo, commit);
 const releases = run('gh', ['api', '--paginate', `repos/${repo}/releases?per_page=100`, '--jq', '.[] | {tag_name, draft, target_commitish}']).split('\n').filter(Boolean).map(line => JSON.parse(line));
 const tags = run('git', ['tag', '--list', 'v*']).split('\n');
 const used = [...releases.map(release => release.tag_name), ...tags].map(parse).filter(Boolean).sort(compare);

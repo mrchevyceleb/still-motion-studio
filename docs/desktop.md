@@ -38,7 +38,7 @@ Runtime preparation swaps staging into place only after validation, preserving t
 
 ## Publish a desktop release
 
-Releases are automatic: every push to `main` builds and publishes one through GitHub Actions, as described in [development: releases](development.md#releases). The steps below are the manual fallback from a Windows machine. Maintainer access to the GitHub repository and the `gh` CLI are needed only for publishing. They are not part of the installed application.
+Releases are automatic: pushes to `main` build and publish one through GitHub Actions, as described in [development: releases](development.md#releases). The steps below are the manual fallback from a Windows machine. Maintainer access to the GitHub repository and the `gh` CLI are needed only for publishing. They are not part of the installed application.
 
 1. Run the build/tests and verify installation, import, save/reopen, export and updates on Windows. Check included model provenance. Audit the complete runtime and its source/license obligations using [third-party notices](../THIRD_PARTY_NOTICES.md).
 2. Bump `package.json` and `package-lock.json` together above the newest release, add `docs/releases/v<version>.md`, and commit/push that exact source. Add `[skip release]` to that commit message so the automatic workflow does not publish the same push.

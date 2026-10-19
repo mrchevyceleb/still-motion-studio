@@ -84,49 +84,5 @@ if (dryRun) {
   console.log(`Dry run passed for ${version} at ${commit}; nothing was published. Assets: ${assets.join(', ')}`);
   process.exit(0);
 }
-const tag = `v${version}`;
-// GitHub ignores target_commitish when a tag already exists, even if that tag
-// has never been fetched locally. Resolve and peel the remote ref first.
-function verifyRemoteTag() {
-  let remoteTag;
-  try { remoteTag = api([`repos/${repo}/git/ref/tags/${tag}`]).object; }
-  catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
-  while (remoteTag?.type === 'tag') remoteTag = api([`repos/${repo}/git/tags/${remoteTag.sha}`]).object;
-  if (remoteTag && (remoteTag.type !== 'commit' || remoteTag.sha !== commit)) throw new Error('The remote version tag points to another commit.');
-}
-verifyRemoteTag();
-// GitHub's tag endpoint can return 404 for a draft whose tag has not been
-// created yet. The authenticated release list includes those drafts.
-function findRelease() {
-  const matches = api(['--paginate', '--slurp', `repos/${repo}/releases?per_page=100`]).flat().filter(value => value.tag_name === tag);
-  if (matches.length > 1) throw new Error('Multiple releases use this tag. Resolve the duplicate drafts before publishing.');
-  return matches[0];
-}
-let release = findRelease();
-if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('This tag already belongs to another or published release.');
-if (!release) {
-  try {
-    const taggedCommit = run('git', ['rev-list', '-n', '1', tag]);
-    if (taggedCommit && taggedCommit !== commit) throw new Error('The version tag points to another commit.');
-  } catch (error) { if (!String(error.stderr || '').includes('unknown revision')) throw error; }
-  gh(['release', 'create', tag, '--repo', repo, '--draft', '--target', commit, '--title', `Still Motion Studio ${version}`, '--notes-file', notes]);
-  release = findRelease();
-}
-if (!release?.draft || release.target_commitish !== commit) throw new Error('GitHub did not confirm the matching source draft.');
-// Publish last: clients must never observe a partially uploaded feed.
-gh(['release', 'upload', tag, ...assets.map(file => path.join(directory, file)), '--repo', repo, '--clobber']);
-const uploaded = api([`repos/${repo}/releases/${release.id}`]);
-for (const file of assets) {
-  const asset = uploaded.assets.find(value => value.name === file);
-  if (!asset || asset.size !== (await stat(path.join(directory, file))).size) throw new Error(`GitHub asset is missing or incomplete: ${file}`);
-  const digest = createHash('sha256').update(await readFile(path.join(directory, file))).digest('hex');
-  // A missing digest is not proof of a successful upload. Leave the release
-  // in draft; retry after GitHub has completed processing the assets.
-  if (asset.digest !== `sha256:${digest}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
-}
-verifyRemoteTag();
-gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
-const published = api([`repos/${repo}/releases/${release.id}`]);
-if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');
-verifyRemoteTag();
-console.log(`Published https://github.com/${repo}/releases/tag/${tag}`);
+// Publishing lives in its own script with no dependencies, so CI can run it in a job that installs nothing.
+execFileSync(process.execPath, [path.join(root, 'scripts', 'publish-release.mjs'), directory, notes], { cwd: root, stdio: 'inherit', windowsHide: true });

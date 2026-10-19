@@ -1,7 +1,9 @@
 /** Carry the approved learned models from the latest published full installer
  * into .local/, so an automatic build ships the same models as the last release.
  * Model weights are not in Git. prepare-desktop.mjs still re-verifies every copied
- * file against the rights registry before anything is bundled. */
+ * file against the rights registry before anything is bundled. A release with no
+ * learned models to carry stops the build, so a lost model can never pass from one
+ * release to the next; set STILL_ALLOW_NO_MODELS=1 only to start the chain over. */
 import { access, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -14,6 +16,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repo = process.env.GITHUB_REPOSITORY || 'mrchevyceleb/still-motion-studio';
 const run = (command, args, options = {}) => execFileSync(command, args, { cwd: root, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, ...options }).trim();
 const exists = file => access(file).then(() => true, () => false);
+const noModels = reason => {
+  if (process.env.STILL_ALLOW_NO_MODELS !== '1') throw new Error(`${reason} Set STILL_ALLOW_NO_MODELS=1 to build without learned models on purpose.`);
+  console.log(`${reason} Building without learned models (STILL_ALLOW_NO_MODELS=1).`);
+};
 const fileHash = file => new Promise((resolve, reject) => {
   const hash = createHash('sha256');
   createReadStream(file).on('error', reject).on('data', chunk => hash.update(chunk)).on('end', () => resolve(hash.digest('hex')));
@@ -25,7 +31,7 @@ catch { sevenZip = 'C:/Program Files/7-Zip/7z.exe'; if (!await exists(sevenZip))
 
 let latest;
 try { latest = JSON.parse(run('gh', ['api', `repos/${repo}/releases/latest`])); }
-catch (error) { if (String(error.stderr || '').includes('HTTP 404')) { console.log('No published release yet; building without learned models.'); process.exit(0); } throw error; }
+catch (error) { if (String(error.stderr || '').includes('HTTP 404')) { noModels('No published release to carry models from.'); process.exit(0); } throw error; }
 const version = latest.tag_name.replace(/^v/, '');
 const installer = `Still-Motion-Studio-Setup-${version}.exe`;
 if (!latest.assets.some(asset => asset.name === installer)) throw new Error(`${latest.tag_name} has no ${installer}.`);
@@ -66,7 +72,7 @@ try {
     console.log(`Carried ${runtime.provider?.name || file} (${runtime.installation.modelSha256.slice(0, 12)}) from ${latest.tag_name}`);
     carried++;
   }
-  if (!carried) console.log(`${latest.tag_name} ships no learned models; building without them.`);
+  if (!carried) noModels(`${latest.tag_name} ships no learned models.`);
 } finally {
   await rm(work, { recursive: true, force: true });
 }

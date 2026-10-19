@@ -52,7 +52,7 @@ Scenes stay in local browser/app storage. Export backups before clearing app dat
 
 ## How releases work
 
-Every push to `main` builds and publishes a new Windows release automatically through [GitHub Actions](.github/workflows/release.yml). The version is the next patch number above the newest release, notes come from `docs/releases/v<version>.md` when that file exists (otherwise from the commit list), and the installers, update feed, checksums and matching Blender source archive are uploaded together before the release goes live. Add `[skip release]` to a commit message to skip one. Details are in [development](docs/development.md#releases).
+Pushes to `main` build and publish a new Windows release automatically through [GitHub Actions](.github/workflows/release.yml). The version is the next patch number above the newest release, notes come from `docs/releases/v<version>.md` when that file exists (otherwise from the commit list), and the installers, update feed, checksums and matching Blender source archive are uploaded together before the release goes live. Add `[skip release]` to a commit message to skip one. Details are in [development](docs/development.md#releases).
 
 ## Current limits
 
