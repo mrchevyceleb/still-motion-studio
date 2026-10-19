@@ -39,6 +39,10 @@ env:
   # The bundled CPU Python. This uv release resolves 3.10.21 to the same build every time.
   UV_VERSION: 0.12.10
   PYTHON_VERSION: 3.10.21
+  # download.pytorch.org can stall for a few minutes. Ride it out instead of failing
+  # the release (uv's defaults are a 30 second timeout and 3 retries).
+  UV_HTTP_TIMEOUT: 120
+  UV_HTTP_RETRIES: 10
 
 jobs:
   plan:
