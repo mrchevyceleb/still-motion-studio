@@ -60,7 +60,8 @@ try {
     if (!/^[a-z-]+\/runtime\.json$/.test(file)) throw new Error(`Unexpected runtime entry: ${file}`);
     const checkpoint = runtime.config?.checkpointPath || '';
     const relative = checkpoint.startsWith('$DATA/.local/') ? checkpoint.slice('$DATA/'.length) : '';
-    if (!relative || relative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error(`Unexpected model location for ${file}.`);
+    // Windows treats \ and drive letters as path syntax too, so only plain forward-slash names are accepted.
+    if (!relative || /[\\:]/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..')) throw new Error(`Unexpected model location for ${file}.`);
     const source = path.join(extracted, runtimeEntry('deps/local/' + relative.slice('.local/'.length)));
     const destination = path.join(root, ...relative.split('/'));
     await rm(destination, { recursive: true, force: true });

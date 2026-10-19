@@ -83,6 +83,8 @@ for (const file of assets) {
   if (asset.digest !== `sha256:${await sha256(path.join(directory, file))}`) throw new Error(`GitHub asset hash is unavailable or differs: ${file}. The release remains a draft.`);
 }
 verifyRemoteTag();
+// Check again right before going live, in case a release was published while this one uploaded.
+assertReleasable(repo, commit);
 gh(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest']);
 const published = api([`repos/${repo}/releases/${release.id}`]);
 if (published.draft || published.prerelease || published.tag_name !== tag || published.target_commitish !== commit) throw new Error('GitHub did not confirm the stable published release. Inspect the release before retrying.');

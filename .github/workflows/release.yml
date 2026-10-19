@@ -16,6 +16,10 @@ on:
         description: Publish the release. Off builds both installers and keeps them as workflow artifacts only.
         type: boolean
         default: true
+      allow_no_models:
+        description: Build without learned models when the latest release has none to carry. Only for starting the model chain over.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,6 +76,8 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       PUBLISH: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish) }}
       VERSION: ${{ needs.plan.outputs.version }}
+      # Pushes always require the previous release's models; only a manual run can opt out.
+      STILL_ALLOW_NO_MODELS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_no_models && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
