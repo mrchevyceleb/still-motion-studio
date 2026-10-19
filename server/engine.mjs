@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createUnrealExportService } from './unreal-export.mjs';
 import { createAgentService } from './agent-api.mjs';
+import { handleMeshy } from './meshy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dataRoot = path.resolve(process.env.STILL_DATA_ROOT || root);
@@ -141,6 +142,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (await agentService.handle(req, res, url)) return;
     if (await exportsService.handle(req, res, url)) return;
+    if (await handleMeshy(req, res, url)) return;
     if (req.method === 'GET' && url.pathname === '/api/engine') {
       reply(res, 200, { application: 'still-engine', version: 1, providers: await providers(), busy: activeJob !== null }); return;
     }
@@ -175,7 +177,7 @@ const server = http.createServer(async (req, res) => {
       const filename = path.extname(requested) ? requested : path.join(staticRoot, 'index.html');
       const info = await stat(filename).catch(() => null);
       if (!info?.isFile()) { reply(res, 404, { error: 'Asset not found.' }); return; }
-      const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
+      const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.glb': 'model/gltf-binary', '.txt': 'text/plain; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
       res.writeHead(200, { 'Content-Type': mime[path.extname(filename)] || 'application/octet-stream', 'Content-Length': info.size, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'", 'Cache-Control': 'no-cache' });
       const stream = createReadStream(filename); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return;
     }

@@ -1,6 +1,6 @@
-const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
 const { readFileSync } = require('node:fs');
-const { mkdir, cp } = require('node:fs/promises');
+const { mkdir, cp, readFile, writeFile, unlink } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
@@ -85,6 +85,25 @@ ipcMain.handle('still:pick-folder', async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
   const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
   return result.canceled ? null : result.filePaths[0] || null;
+});
+const externalHosts = new Set(['www.mixamo.com', 'mixamo.com', 'mesh2motion.org', 'quaternius.com', 'actorcore.reallusion.com', 'www.fab.com', 'github.com']);
+ipcMain.handle('still:open-external', async (event, address) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('External links are unavailable.');
+  const url = new URL(address);
+  if (url.protocol !== 'https:' || !externalHosts.has(url.hostname) || url.port || url.username || url.password) throw new Error('This external link is not allowed.');
+  await shell.openExternal(url.href);
+});
+const meshyKeyPath = () => path.join(app.getPath('userData'), 'meshy-key.bin');
+for (const method of ['get', 'set', 'clear']) ipcMain.handle(`still:meshy-key:${method}`, async (event, value) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Meshy key access is unavailable.');
+  if (method === 'clear') { await unlink(meshyKeyPath()).catch(error => { if (error.code !== 'ENOENT') throw error; }); return null; }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure key storage is unavailable on this computer.');
+  if (method === 'set') {
+    if (typeof value !== 'string' || value.length < 8 || value.length > 512) throw new Error('Enter a valid Meshy API key.');
+    await writeFile(meshyKeyPath(), safeStorage.encryptString(value), { mode: 0o600 }); return null;
+  }
+  const bytes = await readFile(meshyKeyPath()).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  return bytes ? safeStorage.decryptString(bytes) : null;
 });
 for (const method of ['state', 'check', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
