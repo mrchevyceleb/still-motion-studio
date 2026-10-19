@@ -6,7 +6,7 @@ name: Release
 # workflow artifacts without creating a release.
 on:
   push:
-    branches: [main, ivy/still-release-on-main] # TEMP: dry-run proof, remove before merge
+    branches: [main]
   workflow_dispatch:
     inputs:
       publish:
