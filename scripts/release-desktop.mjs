@@ -16,11 +16,26 @@ const repo = 'mrchevyceleb/still-motion-studio';
 const run = (command, args) => execFileSync(command, args, { cwd: root, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const gh = args => run('gh', args);
 const api = args => JSON.parse(gh(['api', ...args]));
+const options = process.argv.slice(2);
+// --dry-run runs every local check (metadata, hashes, Blender source) and stops before GitHub changes.
+const dryRun = options.includes('--dry-run');
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 if (!semver.valid(version) || semver.prerelease(version)) throw new Error('Publish a stable semantic version.');
-if (run('git', ['status', '--porcelain'])) throw new Error('Commit the release source before publishing.');
+// Automatic releases set the version for the build without committing it back to main.
+// That exact change, and nothing else, may be uncommitted.
+async function versionOnly(file) {
+  const committed = JSON.parse(run('git', ['show', `HEAD:${file}`]));
+  committed.version = version;
+  if (file === 'package-lock.json' && committed.packages?.['']) committed.packages[''].version = version;
+  return JSON.stringify(committed) === JSON.stringify(JSON.parse(await readFile(path.join(root, file), 'utf8')));
+}
+// Read status untrimmed: the leading space of ' M' is part of the format.
+for (const line of execFileSync('git', ['status', '--porcelain'], { cwd: root, windowsHide: true, encoding: 'utf8' }).split('\n').filter(Boolean)) {
+  const file = line.slice(3);
+  if (line.slice(0, 2) !== ' M' || !['package.json', 'package-lock.json'].includes(file) || !await versionOnly(file)) throw new Error('Commit the release source before publishing.');
+}
 const commit = run('git', ['rev-parse', 'HEAD']);
-const notes = path.resolve(root, process.argv[2] || `docs/releases/v${version}.md`);
+const notes = path.resolve(root, options.find(value => !value.startsWith('--')) || `docs/releases/v${version}.md`);
 if (!(await readFile(notes, 'utf8')).trim()) throw new Error('Release notes are empty.');
 const directory = path.join(root, '.local', 'installers');
 const installer = `Still-Motion-Studio-Setup-${version}.exe`;
@@ -65,6 +80,10 @@ let previous;
 try { previous = api([`repos/${repo}/releases/latest`]); }
 catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
 if (previous && !semver.gt(version, previous.tag_name.replace(/^v/, ''))) throw new Error('The release version must be newer than the current stable release.');
+if (dryRun) {
+  console.log(`Dry run passed for ${version} at ${commit}; nothing was published. Assets: ${assets.join(', ')}`);
+  process.exit(0);
+}
 const tag = `v${version}`;
 // GitHub ignores target_commitish when a tag already exists, even if that tag
 // has never been fetched locally. Resolve and peel the remote ref first.
