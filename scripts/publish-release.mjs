@@ -1,7 +1,8 @@
 /** Publish a verified build as the next GitHub release; a draft never becomes the
  * update feed. Uses only Node and the GitHub CLI: in CI it runs in its own job with
  * no project dependencies installed, so nothing the build ran can reach the write
- * token. release-desktop.mjs prepares and checks the folder first.
+ * token. release-desktop.mjs prepares and checks the folder first. It only runs in
+ * the release workflow, whose concurrency group keeps releases one at a time.
  * Usage: node scripts/publish-release.mjs <release-folder> <notes.md> */
 import { readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -13,6 +14,7 @@ import { assertReleasable } from './release-guard.mjs';
 const repo = 'mrchevyceleb/still-motion-studio';
 const [directory, notes] = process.argv.slice(2, 4).map(value => value && path.resolve(value));
 if (!directory || !notes) throw new Error('Usage: node scripts/publish-release.mjs <release-folder> <notes.md>');
+if (process.env.GITHUB_ACTIONS !== 'true') throw new Error('Releases publish only from the release workflow. Push to main, or run npm run desktop:release to start it.');
 const gh = args => execFileSync('gh', args, { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }).trim();
 const api = args => JSON.parse(gh(['api', ...args]));
 const parse = value => /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value || '')?.slice(1).map(Number);

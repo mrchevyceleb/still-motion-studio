@@ -15,7 +15,7 @@
     "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
     "desktop:pack": "npm run desktop:prepare && electron-builder --dir",
     "desktop:dist": "npm run desktop:prepare && node scripts/build-desktop.mjs",
-    "desktop:release": "npm run desktop:dist && node scripts/release-desktop.mjs"
+    "desktop:release": "gh workflow run release.yml --ref main"
   },
   "dependencies": {
     "electron-updater": "6.8.9",

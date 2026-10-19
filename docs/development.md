@@ -63,4 +63,4 @@ Releases run one at a time. GitHub keeps one waiting run, so pushes made while a
 
 To test a branch without publishing, run the workflow manually with **publish** off, for example `gh workflow run release.yml --ref <branch> -f publish=false`. Runs outside `main` never publish. A dry run builds and checks everything, then attaches the release files to the workflow run as an artifact for seven days.
 
-Maintainers can still publish from a Windows machine with `npm run desktop:release`; see [desktop builds](desktop.md#publish-a-desktop-release).
+Releases only ever publish from this workflow. `npm run desktop:release` starts it on `main` without a new push; see [desktop builds](desktop.md#publish-a-desktop-release) for the local checks.

@@ -1,4 +1,7 @@
-/** Publish a complete, tested Windows build; a draft never becomes the feed. */
+/** Check a complete Windows build before it is published: metadata, hashes and the
+ * Blender source. Writes SHA256SUMS.txt and the source manifest. Publishing happens
+ * only in the release workflow (scripts/publish-release.mjs), so releases always run
+ * one at a time. Usage: node scripts/release-desktop.mjs [notes.md] --dry-run */
 import { readFile, writeFile, stat, copyFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -19,6 +22,7 @@ const api = args => JSON.parse(gh(['api', ...args]));
 const options = process.argv.slice(2);
 // --dry-run runs every local check (metadata, hashes, Blender source) and stops before GitHub changes.
 const dryRun = options.includes('--dry-run');
+if (!dryRun) throw new Error('Releases publish only from the release workflow, so two can never race. Push to main, or run npm run desktop:release to start it. Add --dry-run to check a local build.');
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 if (!semver.valid(version) || semver.prerelease(version)) throw new Error('Publish a stable semantic version.');
 // Automatic releases set the version for the build without committing it back to main.
@@ -80,9 +84,4 @@ let previous;
 try { previous = api([`repos/${repo}/releases/latest`]); }
 catch (error) { if (!String(error.stderr || '').includes('HTTP 404')) throw error; }
 if (previous && !semver.gt(version, previous.tag_name.replace(/^v/, ''))) throw new Error('The release version must be newer than the current stable release.');
-if (dryRun) {
-  console.log(`Dry run passed for ${version} at ${commit}; nothing was published. Assets: ${assets.join(', ')}`);
-  process.exit(0);
-}
-// Publishing lives in its own script with no dependencies, so CI can run it in a job that installs nothing.
-execFileSync(process.execPath, [path.join(root, 'scripts', 'publish-release.mjs'), directory, notes], { cwd: root, stdio: 'inherit', windowsHide: true });
+console.log(`Checks passed for ${version} at ${commit}; nothing was published. Assets: ${assets.join(', ')}`);
