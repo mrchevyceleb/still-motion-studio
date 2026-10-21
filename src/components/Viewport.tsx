@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
 import { solveIK } from '../engine/motion';
+import { solveFollow, type FollowMemory } from '../engine/followChain';
 import { isFingerBone } from '../engine/handRig';
 import { offsetPose, propertyValues } from '../engine/poseProperties';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
@@ -30,6 +31,8 @@ export interface ViewportProps {
   ghostPoses: Pose[];
   cameraView: 'perspective' | 'front' | 'side';
   tool: 'move' | 'rotate';
+  /** Follow feel (0 snaky, 1 robotic) when moving a joint drags its chain along; null keeps the classic IK. */
+  follow?: number | null;
   moveModel?: boolean;
   zoomToCursor?: boolean;
   playing: boolean;
@@ -232,7 +235,7 @@ export default function Viewport(props: ViewportProps) {
     const pointer = new THREE.Vector2();
     const plane = new THREE.Plane();
     const intersection = new THREE.Vector3();
-    let drag: { index: number; original: Pose; pose?: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] | 'model'; right: THREE.Vector3; forward: THREE.Vector3; units: number } | null = null;
+    let drag: { index: number; original: Pose; pose?: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] | 'model'; right: THREE.Vector3; forward: THREE.Vector3; units: number; memory: FollowMemory } | null = null;
 
     function frame(view: ViewportProps['cameraView']) {
       asset.root.updateMatrixWorld(true);
@@ -309,7 +312,7 @@ export default function Viewport(props: ViewportProps) {
       if (forward.lengthSq() < 1e-6) forward.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)).setY(0);
       forward.normalize();
       const units = 2 * camera.position.distanceTo(joint) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / canvas.clientHeight;
-      drag = { index, original: model ? structuredClone(latest.current.pose) : capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: model ? 'model' : latest.current.tool, right, forward, units };
+      drag = { index, original: model ? structuredClone(latest.current.pose) : capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: model ? 'model' : latest.current.tool, right, forward, units, memory: {} };
       canvas.style.cursor = 'grabbing';
     }
 
@@ -343,7 +346,7 @@ export default function Viewport(props: ViewportProps) {
             // Placement moves one landmark; neighboring markers stay on the mesh.
             for (const { child, position } of children) child.position.copy(bone.worldToLocal(position));
             asset.root.updateMatrixWorld(true);
-          } else solveIK(asset, drag.index, target);
+          } else if (latest.current.follow == null || !solveFollow(asset, drag.index, target, latest.current.follow, drag.memory)) solveIK(asset, drag.index, target);
         }
       } else {
         const bone = asset.bones[drag.index];

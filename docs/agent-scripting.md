@@ -40,6 +40,8 @@ await still.exportFile('glb', './edited-motion.glb', {
 });
 ```
 
+Pass `follow` (0 to 1) on `pose.move` to drag a head's whole neck, tail or tentacle after it, up to where chains meet: 0 bends it in one smooth snaky curve, 1 bends it at a few stiff robotic hinges, and the moved joint keeps its world aim. It matches the editor's Follow tool (F). Limbs keep the four-ancestor IK.
+
 `pose.move` targets use the editor's world coordinates: approximately meters, +Y up and +Z forward. Full poses and `pose.set` bone edits use **native local bone units**, which may differ on imported skeletons. Quaternions are `[x,y,z,w]`; `rotationDegrees` is local XYZ Euler rotation. Prefer bone indices from `skeleton.inspect`: duplicate bone names cannot identify an unambiguous joint. A pose array contains one transform per bone, in that inspection order.
 
 Every command result includes `revision`. Pass the last observed revision as `expectedRevision` on dependent edits or exports. A concurrent user edit fails that command rather than allowing a stale script to replace newer work. Read the scene again before deciding how to continue; do not blindly retry a revision conflict.

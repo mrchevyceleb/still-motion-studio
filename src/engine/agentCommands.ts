@@ -163,7 +163,8 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     }
     case 'pose.move': {
       requireRig(); const time = atTime();
-      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number]);
+      const follow = params.follow === undefined ? undefined : number(params.follow, 'Follow feel', 0, 1);
+      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number], follow);
       return { ...put(time, result.pose), boneIndex: result.boneIndex, target: result.target, achieved: result.achieved, error: result.error };
     }
     case 'keys.list': return { keys: params.includePoses ? copy(studio.keys) : studio.keys.map(({ id, time, label }) => ({ id, time, label })) };

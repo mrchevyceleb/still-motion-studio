@@ -537,7 +537,7 @@
       "resultDescription": "Updated pose/key and revision."
     },
     "pose.move": {
-      "description": "Move a joint toward a world-space target using the application's IK solver and record the resulting pose. IK uses the existing four-ancestor chain.",
+      "description": "Move a joint toward a world-space target using the application's IK solver and record the resulting pose. IK uses the existing four-ancestor chain, or the follow chain when follow is set.",
       "mutating": true,
       "paramsSchema": {
         "type": "object",
@@ -555,6 +555,12 @@
           },
           "time": {
             "$ref": "#/$defs/time"
+          },
+          "follow": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Follow chain: the joint's whole chain (neck, tail, tentacle) up to where chains meet bends after it and the joint keeps its world aim. 0 is snaky (one smooth curve), 1 is robotic (stiff links, sharp hinges). Omit for the four-ancestor IK. Limbs always use the four-ancestor IK."
           }
         }
       },

@@ -215,3 +215,5 @@
   .header-right { gap: 5px; }
   .theme-toggle { width: 28px; height: 28px; }
 }
+
+[data-theme] .follow-feel { background: var(--paper); border-color: var(--line); color: var(--muted); }
