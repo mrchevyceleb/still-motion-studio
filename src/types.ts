@@ -7,6 +7,18 @@ export interface BonePose { position: Vec3; quaternion: Quat; scale: Vec3 }
 export type Pose = BonePose[];
 export type MorphValues = Record<string, number>;
 export interface PoseKey { id: string; time: number; pose: Pose; label?: string; morphs?: MorphValues }
+export interface AnimationTrack {
+  id: string; name: string; keys: PoseKey[]; muted: boolean; interpolation: InterpolationMode;
+  channels: { bone: number; property: keyof BonePose }[];
+  morphs: string[];
+}
+export interface TrackState {
+  tracks?: AnimationTrack[];
+  activeTrackId?: string | null;
+  baseTrackName?: string;
+  baseTrackMuted?: boolean;
+  baseMotionName?: string;
+}
 export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[]; comparison?: { before: PoseKey[]; interpolation: InterpolationMode } }
 export type InterpolationMode = 'smooth' | 'linear' | 'stepped';
 export interface MotionSettings { interpolation: InterpolationMode; floorContact: boolean; gravity: number; strength: number }
@@ -25,7 +37,7 @@ export interface CharacterAsset {
   referenceFbx?: ArrayBuffer;
   referenceFbxName?: string;
 }
-export interface ProjectDocument {
+export interface ProjectDocument extends TrackState {
   version: 1;
   characterId?: string;
   name: string;
