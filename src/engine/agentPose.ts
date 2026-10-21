@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { applyPose, capturePose } from './character';
 import { solveIK } from './motion';
+import { solveFollow } from './followChain';
 import type { BonePose, CharacterAsset, Pose, Quat, Vec3 } from '../types';
 
 export type BoneReference = number | string | { index?: number; name?: string };
@@ -104,15 +105,16 @@ export function editLocalPose(asset: CharacterAsset, pose: Pose, edits: LocalPos
   return output;
 }
 
-/** Use the editor's CCD solver in viewport world units, then restore the asset. */
-export function moveJoint(asset: CharacterAsset, pose: Pose, bone: BoneReference, targetWorld: Vec3) {
+/** Use the editor's CCD solver (or the follow-chain solver at a feel, 0 snaky to 1 robotic) in viewport world units, then restore the asset. */
+export function moveJoint(asset: CharacterAsset, pose: Pose, bone: BoneReference, targetWorld: Vec3, follow?: number) {
   const index = resolveBone(asset, bone);
   const target = vector(targetWorld, 3, 'World target') as Vec3;
   const source = validateAgentPose(asset, pose);
   const original = capturePose(asset);
   try {
     applyPose(asset, source);
-    solveIK(asset, index, new THREE.Vector3().fromArray(target));
+    const goal = new THREE.Vector3().fromArray(target);
+    if (follow === undefined || !solveFollow(asset, index, goal, follow)) solveIK(asset, index, goal);
     const output = capturePose(asset);
     const achieved = asset.bones[index].getWorldPosition(new THREE.Vector3()).toArray() as Vec3;
     return { pose: output, boneIndex: index, target, achieved, error: new THREE.Vector3().fromArray(achieved).distanceTo(new THREE.Vector3().fromArray(target)) };
