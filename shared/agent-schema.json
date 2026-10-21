@@ -458,7 +458,11 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["humanoid", "quadruped", "creature"]
+            "enum": [
+              "humanoid",
+              "quadruped",
+              "creature"
+            ]
           }
         }
       },
@@ -476,7 +480,11 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["humanoid", "quadruped", "creature"]
+            "enum": [
+              "humanoid",
+              "quadruped",
+              "creature"
+            ]
           }
         }
       },
@@ -1004,6 +1012,107 @@
         ]
       },
       "resultDescription": "Updated compact scene state including revision."
+    },
+    "tracks.list": {
+      "description": "List tracks in bottom-to-top order, their keys, and the active track.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "resultDescription": "Track details or updated scene state."
+    },
+    "tracks.add": {
+      "description": "Add and select a layer. Subsequent pose edits record only changed properties.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        }
+      },
+      "resultDescription": "Track details or updated scene state."
+    },
+    "tracks.select": {
+      "description": "Select a layer for editing. Use null for the base motion.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "resultDescription": "Track details or updated scene state."
+    },
+    "tracks.update": {
+      "description": "Rename or mute a track without changing its keyframes.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "muted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultDescription": "Track details or updated scene state."
+    },
+    "tracks.delete": {
+      "description": "Remove an overlay track. Undo restores it.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/uuid"
+          }
+        }
+      },
+      "resultDescription": "Track details or updated scene state."
     }
   }
 }

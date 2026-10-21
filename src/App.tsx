@@ -14,6 +14,8 @@ import type { AgentConnection } from './engine/agentBridge';
 import { executeAgentCommand, READ_COMMANDS } from './engine/agentCommands';
 import type { AgentEditor } from './engine/agentCommands';
 import PoseThumbnail from './components/PoseThumbnail';
+import AnimationTracks from './components/AnimationTracks';
+import { activeTrack, combinedInterpolation, combinedKeys, coveringTrackNames, createAnimationTrack, createLayerSampler, editableKeys, editAnimationTrack, fitEmptyTracks, putLayerKey, recordTrackKey, trackEditDuration, trackFields, underlyingTrackSampler } from './engine/tracks';
 import PhysicsComparison from './components/PhysicsComparison';
 import SceneLibrary from './components/SceneLibrary';
 import KeyframeProperties from './components/KeyframeProperties';
@@ -49,9 +51,9 @@ import { duplicateMoment, MAX_ANIMATION_DURATION, moveMoment, nearestFreeKeyTime
 import { applyKeyframeProperty, offsetKeyframes, setModelPosition } from './engine/poseProperties';
 import { morphKeyData } from './engine/morphs';
 import type { PoseProperty, PoseReference, PropertyAxes } from './engine/poseProperties';
-import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, Vec3 } from './types';
+import type { AnimationTrack, CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, TrackState, Vec3 } from './types';
 
-interface Studio { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
+interface Studio extends TrackState { title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration; duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind }
 interface KeyDrag { id: string; pointerId: number; startX: number; startTime: number; time: number; beforeTime: number; moved: boolean; ripple: boolean; result?: { keys: PoseKey[]; duration: number; time: number }; studio: Studio; asset: CharacterAsset; fps: number }
 type Dialog = 'import' | 'animation' | 'export' | 'help' | 'shortcuts' | 'viewport' | 'rig' | 'new' | 'agent' | 'updates' | 'physics' | 'library' | null;
 const SHORTCUTS = [['S', 'Toggle Select / regular mode'], ['Esc or V', 'Return to regular mode'], ['R', 'Toggle Ripple editing'], ['M', 'Move selected keyframe to a time'], ['Space', 'Play / pause'], ['← / →', 'Step one frame'], ['Home / End', 'Go to clip start / end'], ['K', 'Add or update a pose'], ['Ctrl C / V', 'Copy / paste keyframes'], ['Ctrl D', 'Duplicate current keyframe'], ['Ctrl A', 'Select all keyframes'], ['Delete', 'Delete selected keyframes'], ['Ctrl Z', 'Undo'], ['Ctrl Shift Z / Ctrl Y', 'Redo'], ['Ctrl S', 'Save scene'], ['Ctrl Shift S', 'Export a .still backup'], ['G', 'Move the whole model'], ['W / E', 'Move / rotate joints'], ['F', 'Follow: a moved head drags its neck along'], ['? or F1', 'Show keyboard shortcuts']];
@@ -82,7 +84,7 @@ export default function App() {
   const [comparisonView, setComparisonView] = useState<'before' | 'split' | 'after'>('after');
   const [dragPreview, setDragPreview] = useState<{ id: string; time: number; keys: PoseKey[]; duration: number; ripple: boolean } | null>(null);
   const [ripple, setRipple] = useState(false);
-  const [keyClipboard, setKeyClipboard] = useState<{ keys: PoseKey[]; character: string } | null>(null);
+  const [keyClipboard, setKeyClipboard] = useState<{ keys: PoseKey[]; character: string; channels?: AnimationTrack['channels']; morphs?: string[] } | null>(null);
   const [moveTime, setMoveTime] = useState('');
   const [movingKey, setMovingKey] = useState<string | null>(null);
   const [timelineToolsOpen, setTimelineToolsOpen] = useState(false);
@@ -92,7 +94,7 @@ export default function App() {
   useEffect(() => { setDurationInput(String(Number(studio.duration.toFixed(3)))); }, [studio.duration]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [poseReference, setPoseReference] = useState<PoseReference | null>(null);
+  const [poseReference, setPoseReference] = useState<(PoseReference & { storedPose?: Pose }) | null>(null);
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>(null);
   const selectionDrag = useRef<{ pointerId: number; start: number; previous: Set<string>; base: Set<string> } | null>(null);
   const keyDrag = useRef<KeyDrag | null>(null);
@@ -191,10 +193,23 @@ export default function App() {
   const operation = useRef(0);
   const dirty = useRef(false);
   const saveGeneration = useRef(0);
-  // lookRevision: Fit a part reshapes the meshes in place, so the saved character must be re-read.
   const embedded = useMemo(() => embedCharacter(asset), [asset, lookRevision]);
-  const poseKeys = dragPreview?.keys ?? studio.keys;
+  const editingTrack = activeTrack(studio);
+  const editKeys = editableKeys(studio);
+  const emptyTrack = !!editingTrack && !editingTrack.channels.length && !editingTrack.morphs.length;
+  const trackMuted = editingTrack ? editingTrack.muted : !!studio.baseTrackMuted;
+  const poseKeys = dragPreview?.keys ?? editKeys;
+  const authoredEnd = Math.max(studio.keys.at(-1)!.time, ...(studio.tracks ?? []).filter(t => t.channels.length || t.morphs.length).map(t => t.keys.at(-1)!.time));
   const timelineDuration = libraryPreview?.duration ?? dragPreview?.duration ?? studio.duration;
+  const previewStudio = useMemo(() => !dragPreview ? studio : editingTrack
+    ? { ...studio, duration: dragPreview.duration, tracks: studio.tracks!.map(t => t.id === editingTrack.id ? { ...t, keys: dragPreview.keys } : t) }
+    : { ...studio, duration: dragPreview.duration, keys: dragPreview.keys, generated: undefined }, [studio, dragPreview, editingTrack]);
+  const baseMotionKeys = studio.generated ?? studio.keys;
+  const basePlaybackMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const motionKeys = useMemo(() => combinedKeys(previewStudio, asset.restPose, asset.restMorphs, fps), [previewStudio, asset, fps]);
+  const playbackMode = combinedInterpolation(previewStudio);
+  const sampleLayers = useMemo(() => createLayerSampler(previewStudio, asset.restPose, asset.restMorphs), [previewStudio, asset]);
+  const currentPose = useMemo(() => sampleLayers(time).pose, [sampleLayers, time]);
   const visibleTimelineSeconds = Math.min(timelineWindow, timelineDuration);
   const rulerStep = visibleTimelineSeconds / 8;
   const rulerFirst = Math.max(0, Math.floor(Math.min(timelineStart, Math.max(0, timelineDuration - visibleTimelineSeconds)) / rulerStep) - 1);
@@ -208,9 +223,6 @@ export default function App() {
     const x = time / timelineDuration * track.clientWidth;
     if (x < scroll.scrollLeft || x > scroll.scrollLeft + scroll.clientWidth - 12) scroll.scrollLeft = Math.max(0, x - scroll.clientWidth / 2);
   }, [time, timelineDuration, timelineWindow]);
-  const motionKeys = dragPreview ? poseKeys : studio.generated ?? poseKeys;
-  const playbackMode = !dragPreview && studio.generated ? 'linear' : studio.settings.interpolation;
-  const currentPose = useMemo(() => samplePose(motionKeys, time, playbackMode), [motionKeys, playbackMode, time]);
   const comparison = studio.generated && studio.generation?.kind === 'physics' ? studio.generation.comparison : undefined;
   const viewingBefore = !!comparison && comparisonView === 'before' && !dragPreview;
   const viewingSplit = !!comparison && comparisonView === 'split' && !dragPreview;
@@ -229,15 +241,15 @@ export default function App() {
   useEffect(() => { if (dialog !== 'rig') setRigDraft(null); }, [dialog]);
   useEffect(() => () => { if (rigDraft) disposeCharacter(rigDraft.preview); }, [rigDraft?.preview]);
   useEffect(() => {
-    setPoseReference(reference => reference?.keyId && !studio.keys.some(key => key.id === reference.keyId && JSON.stringify(key.pose) === JSON.stringify(reference.after)) ? null : reference);
-  }, [studio.keys]);
-  useEffect(() => { cancelSelection(); setSelectedIds(new Set()); }, [studio.keys, sceneId]);
+    setPoseReference(reference => reference?.keyId && !editKeys.some(key => key.id === reference.keyId && JSON.stringify(key.pose) === JSON.stringify(reference.storedPose ?? reference.after)) ? null : reference);
+  }, [editKeys]);
+  useEffect(() => { cancelSelection(); setSelectedIds(new Set()); }, [editKeys, studio.activeTrackId, sceneId]);
   const keyIndex = selectedKey ? poseKeys.indexOf(selectedKey) : -1;
   const shownKeys = useMemo(() => {
     const shown = poseKeys.length <= 8 ? poseKeys : simplifyKeys(poseKeys, 6);
     return selectedKey && !shown.some(key => key.id === selectedKey.id) ? [...shown, selectedKey].sort((a, b) => a.time - b.time) : shown;
   }, [poseKeys, selectedKey]);
-  const ghostPoses = useMemo(() => showGhosts ? [samplePose(motionKeys, Math.max(0, time - .22), playbackMode), samplePose(motionKeys, Math.min(studio.duration, time + .22), playbackMode)] : [], [showGhosts, motionKeys, studio.duration, playbackMode, time]);
+  const ghostPoses = useMemo(() => showGhosts ? [sampleLayers(Math.max(0, time - .22)).pose, sampleLayers(Math.min(studio.duration, time + .22)).pose] : [], [showGhosts, sampleLayers, studio.duration, time]);
   const selectedRotation = useMemo(() => {
     if (selectedBone === null || !currentPose[selectedBone]) return [0, 0, 0];
     const e = new Euler().setFromQuaternion(new Quaternion().fromArray(currentPose[selectedBone].quaternion), 'XYZ');
@@ -262,8 +274,9 @@ export default function App() {
     setSelectionMode(selecting); setSelectedIds(new Set()); setRipple(false); setPlaying(false); setMovingKey(null); setMoveModel(false);
   }, []);
   const toggleModelMove = useCallback(() => {
+    if (trackMuted) return;
     setTimelineMode(false); setSelectedBone(null); setMoveModel(!moveModel);
-  }, [moveModel, setTimelineMode]);
+  }, [moveModel, setTimelineMode, trackMuted]);
   useEffect(() => {
     const drag = keyDrag.current;
     if (drag && (drag.studio !== studio || drag.asset !== asset || drag.fps !== fps || dialog || busy)) cancelKeyDrag();
@@ -295,6 +308,7 @@ export default function App() {
   const notify = useCallback((message: string) => { setNotice(message); }, []);
   useEffect(() => { if (notice) { const timer = setTimeout(() => setNotice(null), 5000); return () => clearTimeout(timer); } }, [notice]);
   const commit = useCallback((next: Studio, message?: string) => {
+    next = fitEmptyTracks(next);
     setLibraryPreview(null);
     // Editing a key invalidates its generated in-betweens, keeping the simple pose timeline.
     if (next.keys !== studio.keys && next.generated === studio.generated) next = { ...next, generated: undefined, generation: undefined };
@@ -308,7 +322,71 @@ export default function App() {
     if (message) notify(message);
   }, [studio, asset.kind, notify]);
 
-  const changeSettings = (patch: Partial<MotionSettings>) => commit({ ...studio, ...(patch.interpolation ? { generated: undefined, generation: undefined } : {}), settings: { ...studio.settings, ...patch } });
+  const commitEditingKeys = useCallback((keys: PoseKey[], message?: string, duration = studio.duration, captureChanges = false, interpolation?: InterpolationMode, captureBefore = editKeys) => {
+    if (trackMuted) { notify('Unmute this track to edit it.'); return; }
+    duration = trackEditDuration(studio, duration);
+    if (editingTrack) {
+      let next = { ...editingTrack, keys, ...(interpolation ? { interpolation } : {}) };
+      if (captureChanges) for (const key of keys) {
+        const original = captureBefore.find(k => k.id === key.id);
+        if (original && original !== key) next = recordTrackKey(next, key, { pose: original.pose, morphs: original.morphs ?? {} }, underlyingTrackSampler(studio, editingTrack.id, asset.restPose, asset.restMorphs));
+      }
+      commit({ ...studio, duration, tracks: studio.tracks!.map(t => t.id === next.id ? next : t) }, message);
+    } else commit({ ...studio, sourceClip: null, keys, duration, ...(interpolation ? { settings: { ...studio.settings, interpolation } } : {}) }, message);
+  }, [studio, editingTrack, editKeys, trackMuted, commit, notify, asset]);
+  const selectTrack = (id: string | null) => {
+    if (id === (studio.activeTrackId ?? null)) return;
+    cancelKeyDrag(); cancelSelection(); setPlaying(false); setSelectedIds(new Set()); setPoseReference(null);
+    setStudio(current => ({ ...current, activeTrackId: id }));
+  };
+  const addTrack = () => {
+    const track = createAnimationTrack(`Track ${(studio.tracks?.length ?? 0) + 2}`, studio, asset.restPose, asset.restMorphs);
+    commit({ ...studio, tracks: [...studio.tracks ?? [], track], activeTrackId: track.id }, 'Track added. Anything you change goes here; your other motion keeps playing.');
+    setPlaying(false); setPoseReference(null);
+  };
+  const updateTrack = (id: string | null, patch: Partial<Pick<AnimationTrack, 'name' | 'muted'>>) => {
+    if (id === null) commit({ ...studio, ...(patch.name !== undefined ? { baseTrackName: patch.name } : {}), ...(patch.muted !== undefined ? { baseTrackMuted: patch.muted } : {}) });
+    else commit({ ...studio, tracks: studio.tracks!.map(t => t.id === id ? { ...t, ...patch } : t) });
+  };
+  const copyTrack = (id: string | null) => {
+    const source = studio.tracks?.find(t => t.id === id);
+    const track: AnimationTrack = source ? { ...clone(source), id: uid(), name: `${source.name.slice(0, 73)} (copy)` } : {
+      id: uid(), name: `${(studio.baseTrackName ?? 'Base motion').slice(0, 73)} (copy)`, muted: false,
+      keys: clone(baseMotionKeys), interpolation: basePlaybackMode,
+      channels: asset.bones.flatMap((_, bone) => (['position', 'quaternion', 'scale'] as const).map(property => ({ bone, property }))),
+      morphs: [...new Set(baseMotionKeys.flatMap(k => Object.keys(k.morphs ?? {})))],
+    };
+    track.keys = track.keys.map(k => ({ ...k, id: uid() }));
+    commit({ ...studio, tracks: [...studio.tracks ?? [], track], activeTrackId: track.id }, 'Track duplicated. Drag its strip to shift the timing.');
+  };
+  const reorderTrack = (id: string, direction: number) => {
+    const tracks = [...studio.tracks ?? []], index = tracks.findIndex(t => t.id === id), next = index + direction;
+    if (index < 0 || next < 0 || next >= tracks.length) return;
+    [tracks[index], tracks[next]] = [tracks[next], tracks[index]];
+    commit({ ...studio, tracks });
+  };
+  const moveTrack = (id: string, offset: number) => {
+    const track = studio.tracks?.find(t => t.id === id); if (!track || track.muted || !offset) return;
+    const keys = track.keys.map(k => ({ ...k, time: k.time + offset }));
+    commit({ ...studio, tracks: studio.tracks!.map(t => t.id === id ? { ...t, keys } : t), duration: Math.max(studio.duration, ...keys.map(k => k.time)) });
+    setPlaying(false);
+  };
+  const moveTrackKey = (id: string | null, keyId: string, wanted: number) => {
+    const track = studio.tracks?.find(t => t.id === id);
+    if (track?.muted || !track && studio.baseTrackMuted) return;
+    const keys = track?.keys ?? studio.keys;
+    const time = nearestFreeKeyTime(keys, keyId, wanted, studio.duration, fps);
+    if (time === null) return;
+    const next = keys.map(k => k.id === keyId ? { ...k, time } : k).sort((a, b) => a.time - b.time);
+    commit(track ? { ...studio, activeTrackId: id, tracks: studio.tracks!.map(t => t.id === id ? { ...t, keys: next } : t) } : { ...studio, activeTrackId: null, keys: next, sourceClip: null });
+    setTime(time); setPlaying(false);
+  };
+  const changeSettings = (patch: Partial<MotionSettings>) => {
+    if (editingTrack && patch.interpolation) {
+      commit({ ...studio, tracks: studio.tracks!.map(t => t.id === editingTrack.id ? { ...t, interpolation: patch.interpolation! } : t) }); return;
+    }
+    commit({ ...studio, ...(patch.interpolation ? { generated: undefined, generation: undefined } : {}), settings: { ...studio.settings, ...patch } });
+  };
   const restoreBeforePhysics = () => {
     if (!comparison || busy) return;
     const original = comparison.before;
@@ -322,24 +400,26 @@ export default function App() {
     setTime(atTime === undefined ? 0 : Math.max(0, Math.min(studio.duration, atTime)));
     setPlaying(atTime === undefined);
   };
-  const simplifyMotion = () => commit({ ...studio, sourceClip: null, keys: simplifyKeys(studio.keys, 6), settings: { ...studio.settings, interpolation: 'smooth' } }, 'Reduced to six key moments. Undo restores the full animation.');
+  const simplifyMotion = () => commitEditingKeys(simplifyKeys(editKeys, 6, asset.restMorphs), 'Reduced this track to six key moments. Undo restores it.', studio.duration, false, 'smooth');
   const undo = useCallback(() => {
     setLibraryPreview(null);
     const previous = history.current.past.pop();
     if (!previous) return;
     history.current.future.push(clone({ ...studio, rigKind: asset.kind }));
+    notify('Undid last change.');
     setStudio(previous); setTime(t => Math.min(t, previous.duration)); setPlaying(false); setHistoryVersion(v => v + 1); dirty.current = true;
     if (previous.rigKind) setAsset(current => current.kind === previous.rigKind ? current : { ...current, kind: previous.rigKind! });
-  }, [studio, asset.kind]);
+  }, [studio, asset.kind, notify]);
   const redo = useCallback(() => {
     setLibraryPreview(null);
     const next = history.current.future.pop();
     if (!next) return;
+    notify('Redid last change.');
     history.current.past.push(clone({ ...studio, rigKind: asset.kind })); setStudio(next); setTime(t => Math.min(t, next.duration)); setPlaying(false); setHistoryVersion(v => v + 1); dirty.current = true;
     if (next.rigKind) setAsset(current => current.kind === next.rigKind ? current : { ...current, kind: next.rigKind! });
-  }, [studio, asset.kind]);
+  }, [studio, asset.kind, notify]);
 
-  const documentFor = useCallback((): ProjectDocument => ({ version: 1, characterId, name: studio.title, duration: studio.duration, fps, keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded, characterId]);
+  const documentFor = useCallback((): ProjectDocument => ({ version: 1, characterId, name: studio.title, duration: studio.duration, fps, ...trackFields(studio), keys: studio.keys, generated: studio.generated, generation: studio.generation, settings: studio.settings, sourceClip: studio.sourceClip ?? null, boneNames: asset.bones.map(b => b.name), character: embedded }), [studio, fps, asset, embedded, characterId]);
   const persistDocument = useCallback(async (document: ProjectDocument, id: string, thumbnail?: string) => {
     let token = sceneTokens.current.get(id);
     if (!token) { token = { id, revision: 0 }; sceneTokens.current.set(id, token); }
@@ -404,7 +484,7 @@ export default function App() {
     const apply = () => {
       activeSceneId.current = id;
       setSceneId(id); setCharacterId(document.characterId); setHasActiveScene(true);
-      setAsset(nextAsset); setStudio({ title: document.name, keys: document.keys, generated: document.generated, generation: document.generation, duration: document.duration, settings: document.settings, sourceClip: document.sourceClip != null && document.sourceClip < nextAsset.clips.length ? document.sourceClip : null });
+      setAsset(nextAsset); setStudio({ title: document.name, ...trackFields(document), keys: document.keys, generated: document.generated, generation: document.generation, duration: document.duration, settings: document.settings, sourceClip: document.sourceClip != null && document.sourceClip < nextAsset.clips.length ? document.sourceClip : null });
       setFps(document.fps); setTime(0); setSelectedBone(null); setPlaying(false);
       history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = false;
     };
@@ -476,23 +556,29 @@ export default function App() {
   }, [dialog]);
 
   const writePose = useCallback((pose: Pose) => {
-    if (libraryPreview) return;
+    if (libraryPreview || trackMuted) return;
     setPlaying(false);
     const snapped = Math.min(studio.duration, Math.round(timeRef.current * fps) / fps);
-    const existing = studio.keys.find(key => Math.abs(key.time - snapped) < .5 / fps);
-    const nextKey: PoseKey = { id: existing?.id ?? uid(), time: existing?.time ?? snapped, pose: clone(pose), label: existing?.label ?? 'New pose', ...morphKeyData(motionKeys, timeRef.current, playbackMode, asset.restMorphs) };
-    setPoseReference(previous => ({ keyId: nextKey.id, time: nextKey.time, before: previous?.keyId === nextKey.id && JSON.stringify(previous.after) === JSON.stringify(currentPose) ? previous.before : clone(currentPose), after: clone(pose), bone: selectedBone }));
-    const keys = [...studio.keys.filter(key => key.id !== existing?.id), nextKey].sort((a, b) => a.time - b.time);
-    commit({ ...studio, sourceClip: null, keys }); setTime(nextKey.time);
-  }, [studio, fps, commit, currentPose, selectedBone, motionKeys, playbackMode, asset.restMorphs, libraryPreview]);
+    const existing = editKeys.find(key => Math.abs(key.time - snapped) < .5 / fps);
+    const before = sampleLayers(timeRef.current);
+    const nextKey: PoseKey = { id: existing?.id ?? uid(), time: existing?.time ?? snapped, pose: clone(pose), label: existing?.label ?? 'New pose', morphs: before.morphs };
+    const next = putLayerKey(studio, nextKey, before, asset.restPose, asset.restMorphs);
+    const storedPose = editableKeys(next).find(k => k.id === nextKey.id)!.pose;
+    setPoseReference(previous => ({ storedPose, keyId: nextKey.id, time: nextKey.time, before: previous?.keyId === nextKey.id && JSON.stringify(previous.after) === JSON.stringify(currentPose) ? previous.before : clone(currentPose), after: clone(pose), bone: selectedBone }));
+    commit(next); setTime(nextKey.time);
+  }, [studio, fps, commit, currentPose, selectedBone, editKeys, sampleLayers, libraryPreview, trackMuted, asset]);
 
   const applyProperty = (property: PoseProperty, axes: PropertyAxes, mode: 'offset' | 'match') => {
     if (!poseReference || busy || keyDrag.current || selectionDrag.current || !selectedIds.size) return;
     try {
-      const keys = applyKeyframeProperty(asset, studio.keys, selectedIds, poseReference, property, axes, mode);
-      if (keys === studio.keys) { notify('The selected poses already match. The source pose is kept as corrected.'); return; }
-      const count = keys.filter((key, index) => key !== studio.keys[index]).length;
-      commit({ ...studio, sourceClip: null, keys }, `${count} poses updated. One Undo restores them.${studio.generated ? ' Generate again to refresh your take.' : ''}`);
+      // Unowned values are placeholders. Paste against the current lower motion,
+      // retaining this row's own channels and excluding higher rows.
+      const sampleEditable = editingTrack ? createLayerSampler({ ...studio, tracks: studio.tracks!.slice(0, studio.tracks!.indexOf(editingTrack) + 1) }, asset.restPose, asset.restMorphs) : null;
+      const before = sampleEditable ? editKeys.map(key => selectedIds.has(key.id) ? { ...key, ...sampleEditable(key.time) } : key) : editKeys;
+      const keys = applyKeyframeProperty(asset, before, selectedIds, poseReference, property, axes, mode);
+      if (keys === before) { notify('The selected poses already match. The source pose is kept as corrected.'); return; }
+      const count = keys.filter((key, index) => key !== before[index]).length;
+      commitEditingKeys(keys, `${count} poses updated on this track. One Undo restores them.`, studio.duration, true, undefined, before);
       setPlaying(false);
     } catch (error) { setError(error instanceof Error ? error.message : 'The property could not be applied.'); }
   };
@@ -510,13 +596,13 @@ export default function App() {
         warnings: [...new Set([...physics.warnings, warning])],
         comparison: physics.comparison ? { ...physics.comparison, before: offsetKeyframes(asset, physics.comparison.before, delta) } : undefined,
       } : studio.generation;
-      commit({ ...studio, sourceClip: null, keys, generated, generation }, 'Entire animation moved, including generated frames. One Undo restores it.');
+      commit({ ...studio, sourceClip: null, keys, generated, generation, tracks: studio.tracks?.map(t => ({ ...t, keys: offsetKeyframes(asset, t.keys, delta) })) }, 'Entire animation moved, including generated frames. One Undo restores it.');
       setPlaying(false);
       return true;
     } catch (error) { setError(error instanceof Error ? error.message : 'The animation could not be moved.'); return false; }
   };
 
-  const activeMotion = (): MotionSequence => ({ keys: studio.generated ?? studio.keys, duration: studio.duration, interpolation: playbackMode });
+  const activeMotion = (): MotionSequence => ({ keys: studio.generated ?? studio.keys, duration: studio.duration, interpolation: basePlaybackMode });
   const editClip = (edit: ClipEdit) => {
     if (busy || keyDrag.current || selectionDrag.current || !hydrated || viewingBefore) return;
     try {
@@ -524,14 +610,15 @@ export default function App() {
       const take = studio.generated ? editMotion(asset, activeMotion(), edit, fps) : undefined;
       const warning = 'Clip edited after generation. Review contacts and rerun physics to refresh its measurements.';
       const generation = take && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
-      commit({ ...studio, keys: authored.keys, generated: take?.keys, generation, duration: authored.duration, sourceClip: null, settings: { ...studio.settings, interpolation: authored.interpolation } }, 'Clip edited. One Undo restores the entire motion. Review playback and contacts.');
+      const tracks = studio.tracks?.flatMap(track => { const edited = editAnimationTrack(asset, track, studio.duration, edit, fps); return edited ? [edited] : []; });
+      commit({ ...studio, tracks, activeTrackId: tracks?.some(t => t.id === studio.activeTrackId) ? studio.activeTrackId : null, keys: authored.keys, generated: take?.keys, generation, duration: authored.duration, sourceClip: null, settings: { ...studio.settings, interpolation: authored.interpolation } }, 'Clip edited. One Undo restores the entire motion. Review playback and contacts.');
       setTime(edit.kind === 'trim' ? Math.max(0, Math.min(authored.duration, time - edit.start)) : edit.kind === 'speed' ? time / edit.factor : edit.kind === 'speed-range' ? rangeSpeedTime(edit, time) : edit.kind === 'reverse' ? studio.duration - time : Math.min(time, authored.duration));
       setPlaying(false); setPoseReference(null);
     } catch (error) { setError(error instanceof Error ? error.message : 'This clip could not be edited.'); }
   };
   const appendMotion = (sequence: MotionSequence, blend: number) => {
     const combined = composeMotion(asset, activeMotion(), sequence, blend, fps);
-    commit({ ...studio, keys: combined.keys, generated: undefined, generation: undefined, duration: combined.duration, sourceClip: null, settings: { ...studio.settings, interpolation: combined.interpolation } }, 'Clips blended with aligned position and heading. One Undo restores your take. Review foot contacts.');
+    commit({ ...studio, baseMotionName: 'Combined motion', keys: combined.keys, generated: undefined, generation: undefined, duration: combined.duration, sourceClip: null, settings: { ...studio.settings, interpolation: combined.interpolation } }, 'Clips blended with aligned position and heading. One Undo restores your take. Review foot contacts.');
     setTime(Math.max(0, studio.duration - blend)); setPlaying(false); setPoseReference(null);
   };
   const appendClip = (index: number, blend: number) => {
@@ -552,7 +639,7 @@ export default function App() {
     setLibraryPreview(null);
     if (mode === 'append') appendMotion({ keys, duration, interpolation: 'linear' }, blend);
     else {
-      commit({ ...studio, keys, duration, generated: undefined, generation: undefined, sourceClip: null, settings: { ...studio.settings, interpolation: 'linear' } }, `${name} applied to ${asset.name}. One Undo restores the previous motion.`);
+      commit({ ...studio, baseMotionName: name.slice(0, 200), keys, duration: trackEditDuration({ ...studio, activeTrackId: null }, duration), generated: undefined, generation: undefined, sourceClip: null, settings: { ...studio.settings, interpolation: 'linear' } }, `${name} applied to the base track.${studio.tracks?.length ? ' Other tracks keep their timing.' : ''} One Undo restores the previous motion.`);
       setTime(0); setPlaying(false); setPoseReference(null);
     }
     setDialog(null);
@@ -569,46 +656,63 @@ export default function App() {
       if (version !== agentVersion.current) throw new Error('Your scene changed while opening the take. Try appending it again.');
       if (source.bones.some((bone, i) => bone.name !== document.boneNames[i]) || source.bones.length !== document.boneNames.length) throw new Error('The saved take’s pose data does not match its skeleton.');
       assertMatchingRig(asset, source);
-      appendMotion({ keys: document.generated ?? document.keys, duration: document.duration, interpolation: document.generated ? 'linear' : document.settings.interpolation }, blend);
+      appendMotion({ keys: combinedKeys(document, source.restPose, source.restMorphs, fps), duration: document.duration, interpolation: combinedInterpolation(document) }, blend);
     } catch (error) { setError(error instanceof Error ? error.message : 'The saved take could not be appended.'); }
     finally { if (source) disposeCharacter(source); setBusy(null); }
   };
 
-  const addKey = useCallback(() => { writePose(currentPose); notify(selectedKey ? 'Pose updated. The motion follows automatically.' : 'New pose added. The motion follows automatically.'); }, [writePose, currentPose, selectedKey, notify]);
+  const addKey = useCallback(() => { if (trackMuted) { notify('Unmute this track to edit it.'); return; } writePose(currentPose); notify(selectedKey ? 'Pose updated. The motion follows automatically.' : 'New pose added. The motion follows automatically.'); }, [writePose, currentPose, selectedKey, notify, trackMuted]);
   const duplicateKey = useCallback(() => {
     if (!selectedKey || keyDrag.current) return;
-    const duplicate = duplicateMoment(studio.keys, selectedKey, studio.duration, fps);
+    const duplicate = duplicateMoment(editKeys, selectedKey, studio.duration, fps);
     if (!duplicate) { notify(selectedKey.time === studio.duration && studio.duration === MAX_ANIMATION_DURATION ? 'This moment is at the 10-minute limit. Move it earlier to make room for a copy.' : 'The timeline has no empty frames. Increase its duration or remove a pose.'); return; }
-    commit({ ...studio, keys: duplicate.keys, duration: duplicate.duration, sourceClip: null, generated: undefined, generation: undefined }, 'Moment duplicated. Drag its diamond to change the timing.');
+    commitEditingKeys(duplicate.keys, 'Moment duplicated on this track. Drag its diamond to change the timing.', duplicate.duration);
     setPlaying(false); setTime(duplicate.key.time);
-  }, [selectedKey, studio, fps, commit, notify]);
+  }, [selectedKey, studio, fps, editKeys, commitEditingKeys, notify]);
 
   const copyKeyframes = useCallback(() => {
     if (busy || !asset.rigged || keyDrag.current) return;
-    const keys = selectionMode ? studio.keys.filter(key => selectedIds.has(key.id)) : selectedKey ? [selectedKey] : [];
+    const keys = selectionMode ? editKeys.filter(key => selectedIds.has(key.id)) : selectedKey ? [selectedKey] : [];
     if (!keys.length) { notify('Click a keyframe diamond to copy it.'); return; }
-    setKeyClipboard({ keys: clone(keys), character: characterFingerprint(embedded, asset.bones.map(bone => bone.name)) });
+    setKeyClipboard({ keys: clone(keys), channels: editingTrack ? clone(editingTrack.channels) : undefined, morphs: editingTrack ? [...editingTrack.morphs] : undefined, character: characterFingerprint(embedded, asset.bones.map(bone => bone.name)) });
     notify(`${keys.length === 1 ? 'Keyframe' : `${keys.length} keyframes`} copied. Click a time on the timeline, then Paste.`);
-  }, [busy, asset, selectionMode, studio.keys, selectedIds, selectedKey, embedded, notify]);
+  }, [busy, asset, selectionMode, editKeys, selectedIds, selectedKey, embedded, notify, editingTrack]);
   const pasteKeyframes = useCallback(() => {
-    if (!keyClipboard || busy || keyDrag.current || !asset.rigged) return;
+    if (!keyClipboard || trackMuted || busy || keyDrag.current || !asset.rigged) return;
     try {
       if (keyClipboard.character !== characterFingerprint(embedded, asset.bones.map(bone => bone.name))) throw new Error('These keyframes belong to another character. Open a scene for that character to paste them.');
-      const result = pasteMoments(studio.keys, keyClipboard.keys, time, studio.duration, fps);
-      commit({ ...studio, keys: result.keys, duration: result.duration, sourceClip: null, generated: undefined, generation: undefined }, `${result.pasted.length === 1 ? 'Keyframe' : `${result.pasted.length} keyframes`} pasted at ${result.pasted[0].time.toFixed(2)}s.${result.replaced ? ` Replaced ${result.replaced} existing ${result.replaced === 1 ? 'pose' : 'poses'}.` : ''} Undo restores your previous motion.`);
+      const result = pasteMoments(editKeys, keyClipboard.keys, time, studio.duration, fps);
+      let next = { ...studio, duration: result.duration };
+      const pastedIds = new Set(result.pasted.map(k => k.id));
+      const retained = result.keys.filter(k => !pastedIds.has(k.id));
+      const sample = createLayerSampler({ ...studio, tracks: editingTrack ? studio.tracks!.slice(0, studio.tracks!.indexOf(editingTrack) + 1) : [] }, asset.restPose, asset.restMorphs);
+      for (const pasted of result.pasted) {
+        const before = sample(pasted.time), key = clone(pasted);
+        if (keyClipboard.channels) {
+          key.pose = clone(before.pose); key.morphs = { ...before.morphs };
+          for (const { bone, property } of keyClipboard.channels) Object.assign(key.pose[bone], { [property]: [...pasted.pose[bone][property]] });
+          for (const name of keyClipboard.morphs ?? []) key.morphs[name] = pasted.morphs?.[name] ?? asset.restMorphs?.[name] ?? 0;
+        }
+        next = putLayerKey(next, key, before, asset.restPose, asset.restMorphs);
+      }
+      const keys = editableKeys(next).filter(k => pastedIds.has(k.id) || retained.some(old => old.id === k.id));
+      next = editingTrack ? { ...next, tracks: next.tracks!.map(t => t.id === editingTrack.id ? { ...t, keys } : t) } : { ...next, keys, sourceClip: null };
+      commit(next, `${result.pasted.length === 1 ? 'Keyframe' : `${result.pasted.length} keyframes`} pasted at ${result.pasted[0].time.toFixed(2)}s.${result.replaced ? ` Replaced ${result.replaced} existing ${result.replaced === 1 ? 'pose' : 'poses'}.` : ''} Undo restores your previous motion.`);
       setPlaying(false); setSelectionMode(false); setTime(result.pasted[0].time);
     } catch (error) { setError(error instanceof Error ? error.message : 'The keyframes could not be pasted.'); }
-  }, [keyClipboard, busy, asset, embedded, studio, time, fps, commit]);
+  }, [keyClipboard, busy, asset, embedded, studio, time, fps, commit, editKeys, editingTrack, trackMuted]);
   const moveSelectedKey = () => {
-    if (!selectedKey || busy || !moveTime.trim()) return;
+    if (!selectedKey || trackMuted || busy || !moveTime.trim()) return;
     const wanted = Number(moveTime);
     if (!Number.isFinite(wanted) || wanted < 0 || wanted > MAX_ANIMATION_DURATION) { setError('Enter a time between 0 and 600 seconds.'); return; }
-    const result = moveMoment(studio.keys, selectedKey.id, wanted, Math.max(studio.duration, wanted), fps);
+    const result = moveMoment(editKeys, selectedKey.id, wanted, Math.max(studio.duration, wanted), fps);
     if (!result) { setError('Keep at least two poses. Move this keyframe to another time.'); return; }
-    commit({ ...studio, keys: result.keys, duration: result.duration, sourceClip: null, generated: undefined, generation: undefined }, `Keyframe moved to ${result.time.toFixed(2)}s.${result.replaced ? ' Replaced the pose at that time.' : ''} Undo restores it.`);
+    commitEditingKeys(result.keys, `Keyframe moved to ${result.time.toFixed(2)}s.${result.replaced ? ' Replaced the pose at that time.' : ''} Undo restores it.`, result.duration);
     setPlaying(false); setTime(result.time); setMovingKey(null);
   };
   const removeKeys = useCallback((keys: PoseKey[], message: string) => {
+    if (trackMuted) return;
+    if (editingTrack) { commitEditingKeys(keys, message); return; }
     // Removing an ending must not replace the retained take with newly interpolated motion.
     const end = keys.at(-1)!.time;
     const retainedIds = new Set(keys.map(key => key.id));
@@ -624,18 +728,18 @@ export default function App() {
     const warning = 'Ending keyframes removed. Retained playback is preserved; rerun physics to refresh measurements.';
     const generation = generated && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
     commit({ ...studio, keys, generated, generation, sourceClip: null }, `${message} Remaining keyframes keep their timing.${trailingOnly ? ' Use Remove empty tail to end the clip here.' : ''}`);
-  }, [studio, asset, fps, commit]);
+  }, [studio, asset, fps, commit, trackMuted, editingTrack, commitEditingKeys]);
   const deleteKey = useCallback(() => {
     if (selectionMode) {
       if (!selectedIds.size) return;
-      const keys = studio.keys.filter(key => !selectedIds.has(key.id));
+      const keys = editKeys.filter(key => !selectedIds.has(key.id));
       if (keys.length < 2) { notify('Keep at least two poses. Select a smaller range to delete.'); return; }
-      removeKeys(keys, `${studio.keys.length - keys.length} poses removed. Undo restores them together.`);
+      removeKeys(keys, `${editKeys.length - keys.length} poses removed. Undo restores them together.`);
       setSelectedIds(new Set()); return;
     }
-    if (!selectedKey || studio.keys.length <= 2) return;
-    removeKeys(studio.keys.filter(k => k.id !== selectedKey.id), 'Pose removed. Undo is always here.');
-  }, [selectedKey, studio, removeKeys, selectionMode, selectedIds, notify]);
+    if (!selectedKey || editKeys.length <= 2) return;
+    removeKeys(editKeys.filter(k => k.id !== selectedKey.id), 'Pose removed. Undo is always here.');
+  }, [selectedKey, editKeys, removeKeys, selectionMode, selectedIds, notify]);
 
   const saveProject = useCallback(() => {
     try { downloadFile(JSON.stringify(documentFor()), `${studio.title.trim() || 'Untitled'}.still`, 'application/json'); dirty.current = false; notify('Editable project saved, with your character included.'); }
@@ -661,7 +765,7 @@ export default function App() {
       if (target?.closest('input:not([type="range"]), textarea, select, [contenteditable="true"]') || dialog || busy || !hydrated || !hasActiveScene) return;
       if (target?.matches('input[type="range"]') && !mod && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
       if (!mod && !event.altKey && event.repeat && ['s', 'v', 'r', 'm', 'w', 'e', 'f', 'g', ' '].includes(key)) { event.preventDefault(); return; }
-      if (mod && key === 'a') { event.preventDefault(); setTimelineMode(true); setSelectedIds(new Set(studio.keys.map(key => key.id))); }
+      if (mod && key === 'a') { event.preventDefault(); setTimelineMode(true); setSelectedIds(new Set(editKeys.map(key => key.id))); }
       else if (mod && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); }
       else if (mod && key === 'y') { event.preventDefault(); redo(); }
       else if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); if (event.shiftKey) saveProject(); else void saveCurrentScene().catch(() => setError('Could not save this scene. Export a .still copy to keep your work.')); }
@@ -687,7 +791,7 @@ export default function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, studio.keys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode, toggleModelMove]);
+  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, editKeys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode, toggleModelMove]);
 
   const handleImport = async (file: File) => {
     if (busy) return;
@@ -738,7 +842,7 @@ export default function App() {
   const switchClip = (index: number) => {
     try {
       const clip = asset.clips[index]; const keys = sampleClip(asset, clip);
-      commit({ ...studio, keys, duration: Math.max(clip.duration, 1 / fps), settings: { ...studio.settings, interpolation: 'linear' }, sourceClip: index }, `Loaded ${clip.name || `animation ${index + 1}`}. Your previous edits are available with Undo.`);
+      commit({ ...studio, baseMotionName: (clip.name || 'Imported animation').slice(0, 200), keys, duration: trackEditDuration({ ...studio, activeTrackId: null }, Math.max(clip.duration, 1 / fps)), settings: { ...studio.settings, interpolation: 'linear' }, sourceClip: index }, `Loaded ${clip.name || `animation ${index + 1}`} on the base track.${studio.tracks?.length ? ' Other tracks keep their timing.' : ''} Undo restores your previous motion.`);
       setTime(0); setPlaying(false);
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not open this animation.'); }
   };
@@ -878,7 +982,7 @@ export default function App() {
       await saveCurrentScene();
       const next = autoRigCharacter(asset, rigKind, { fingers: rigFingers, fit, creature: creatureRig }); setAsset({ ...next });
       const keys = [{ id: uid(), time: 0, pose: clone(next.restPose) }, { id: uid(), time: studio.duration, pose: clone(next.restPose) }];
-      setStudio({ ...studio, keys, generated: undefined, generation: undefined, sourceClip: null }); setSelectedBone(null); setTime(0); setDialog(null); setShowFingerJoints(!!next.bones.find(b => isFingerBone(b.name)));
+      setStudio({ ...studio, tracks: undefined, activeTrackId: null, baseTrackMuted: false, keys, generated: undefined, generation: undefined, sourceClip: null }); setSelectedBone(null); setTime(0); setDialog(null); setShowFingerJoints(!!next.bones.find(b => isFingerBone(b.name)));
       history.current = { past: [], future: [] }; setHistoryVersion(v => v + 1); dirty.current = true; notify(rigKind === 'creature' ? 'Creature bound. Use Rotate to test each chain and jaw separately.' : fit?.diagnostics.hands ? 'Hands and body bound. Select a finger and use Rotate to check a small bend.' : 'Rig fitted to your geometry. Try a small bend at the shoulders, elbows and knees.');
     } catch (e) { setError(e instanceof Error ? e.message : 'The rig could not be fitted.'); }
     finally { setBusy(null); }
@@ -967,15 +1071,15 @@ export default function App() {
     try {
       controller.signal.throwIfAborted();
       const anchors = studio.keys.length > 24 ? simplifyKeys(studio.keys, 6) : studio.keys;
-      const settings = { ...studio.settings, interpolation: playbackMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
-      const request = makeMotionRequest(asset, motionKeys, anchors, studio.duration, settings, provider.id, seed.current++);
+      const settings = { ...studio.settings, interpolation: basePlaybackMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
+      const request = makeMotionRequest(asset, baseMotionKeys, anchors, studio.duration, settings, provider.id, seed.current++);
       const result = await generateMotion(request, (message, fraction) => { setBusy(message); setProgress(fraction); }, controller.signal);
       controller.signal.throwIfAborted();
-      const generated = restoreEngineFrames(asset, motionKeys, anchors, result, playbackMode, studio.duration, provider.learned);
+      const generated = restoreEngineFrames(asset, baseMotionKeys, anchors, result, basePlaybackMode, studio.duration, provider.learned);
       // Physics adjusts poses without discarding authored key identities or timing.
       const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
       const review = (result.metrics?.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
-      commit({ ...studio, keys, generated, generation: { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: clone(motionKeys), interpolation: playbackMode } } : {}) }, sourceClip: null }, provider.learned ? 'AI motion is ready. Your key poses are preserved. Play it, or Undo to compare.' : review ? 'Physics applied, but needs review. Open the pass details before exporting.' : 'Dynamics correction is ready. Play it, or Undo to compare.');
+      commit({ ...studio, keys, generated, generation: { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: clone(baseMotionKeys), interpolation: basePlaybackMode } } : {}) }, sourceClip: null }, provider.learned ? 'AI motion is ready. Your key poses are preserved. Play it, or Undo to compare.' : review ? 'Physics applied, but needs review. Open the pass details before exporting.' : 'Dynamics correction is ready. Play it, or Undo to compare.');
     } catch (e) {
       if (controller.signal.aborted) notify('Cancelled. Your animation is unchanged.');
       else setError(e instanceof Error ? e.message : 'The motion engine could not finish. Your animation is unchanged.');
@@ -995,7 +1099,7 @@ export default function App() {
     if (!drag) return;
     const end = selectionTime(clientX), low = Math.min(drag.start, end), high = Math.max(drag.start, end);
     setSelectionRange({ start: low, end: high });
-    setSelectedIds(new Set([...drag.base, ...studio.keys.filter(key => key.time >= low - 1e-6 && key.time <= high + 1e-6).map(key => key.id)]));
+    setSelectedIds(new Set([...drag.base, ...editKeys.filter(key => key.time >= low - 1e-6 && key.time <= high + 1e-6).map(key => key.id)]));
   };
   const startSelection = (clientX: number, pointerId: number, additive: boolean, key?: PoseKey) => {
     setPlaying(false);
@@ -1013,8 +1117,9 @@ export default function App() {
     const rect = timeline.current?.getBoundingClientRect(); if (!rect) return;
     if (rect.width <= 0) return;
     const wanted = drag.startTime + (clientX - drag.startX) / rect.width * drag.studio.duration;
-    const result = drag.ripple ? rippleMoment(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps) : moveMoment(drag.studio.keys, drag.id, wanted, drag.studio.duration, drag.fps);
+    const result = drag.ripple ? rippleMoment(editableKeys(drag.studio), drag.id, wanted, drag.studio.duration, drag.fps) : moveMoment(editableKeys(drag.studio), drag.id, wanted, drag.studio.duration, drag.fps);
     if (!result) return;
+    result.duration = trackEditDuration(drag.studio, result.duration);
     drag.moved = true; drag.time = result.time; drag.result = result;
     setDragPreview(current => current?.id === drag.id && current.time === result.time ? current : { id: drag.id, ...result, ripple: drag.ripple });
     setTime(result.time);
@@ -1027,23 +1132,23 @@ export default function App() {
     previewKeyDrag(clientX, pointerId);
     keyDrag.current = null; setDragPreview(null);
     if (drag.moved && drag.result && drag.time !== drag.startTime) {
-      const replaced = studio.keys.length - drag.result.keys.length;
-      commit({ ...studio, sourceClip: null, keys: drag.result.keys, duration: drag.result.duration, generated: undefined, generation: undefined }, `Keyframe moved to ${drag.time.toFixed(2)}s.${replaced ? ' Replaced the pose at that time. Undo restores it.' : ''}`);
+      const replaced = editKeys.length - drag.result.keys.length;
+      commitEditingKeys(drag.result.keys, `Keyframe moved to ${drag.time.toFixed(2)}s.${replaced ? ' Replaced the pose at that time. Undo restores it.' : ''}`, drag.result.duration);
       setTime(drag.time);
     }
   };
   const nudgeKey = (key: PoseKey, direction: number, rippleEdit: boolean) => {
     if (busy || keyDrag.current) return;
     if (rippleEdit) {
-      const result = rippleMoment(studio.keys, key.id, key.time + direction / fps, studio.duration, fps);
+      const result = rippleMoment(editKeys, key.id, key.time + direction / fps, studio.duration, fps);
       if (!result || result.time === key.time) return;
-      commit({ ...studio, sourceClip: null, keys: result.keys, duration: result.duration });
+      commitEditingKeys(result.keys, undefined, result.duration);
       setPlaying(false); setTime(result.time);
       return;
     }
-    const nextTime = nearestFreeKeyTime(studio.keys, key.id, key.time + direction / fps, studio.duration, fps, direction);
+    const nextTime = nearestFreeKeyTime(editKeys, key.id, key.time + direction / fps, studio.duration, fps, direction);
     if (nextTime === null || direction * (nextTime - key.time) <= 0) return;
-    commit({ ...studio, sourceClip: null, keys: studio.keys.map(item => item.id === key.id ? { ...item, time: nextTime } : item).sort((a, b) => a.time - b.time) });
+    commitEditingKeys(editKeys.map(item => item.id === key.id ? { ...item, time: nextTime } : item).sort((a, b) => a.time - b.time));
     setPlaying(false); setTime(nextTime);
   };
   const changeDuration = (value: number) => {
@@ -1061,7 +1166,8 @@ export default function App() {
     const generated = shortened && studio.generated ? trim(studio.generated, 'linear') : studio.generated;
     const warning = 'Clip end changed after generation. Review playback and rerun physics to refresh its measurements.';
     const generation = studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
-    commit({ ...studio, sourceClip: null, duration: value, keys, generated, generation }, shortened ? `Clip ends at ${value.toFixed(2)}s. Earlier keyframes keep their timing. Undo restores the trimmed end.` : `Clip extended to ${value.toFixed(2)}s. Your keyframe timing is unchanged.`);
+    const tracks = shortened ? studio.tracks?.flatMap(track => { const edited = editAnimationTrack(asset, track, studio.duration, { kind: 'trim', start: 0, end: value }, fps); return edited ? [edited] : []; }) : studio.tracks;
+    commit({ ...studio, tracks, activeTrackId: tracks?.some(t => t.id === studio.activeTrackId) ? studio.activeTrackId : null, sourceClip: null, duration: value, keys, generated, generation }, shortened ? `Clip ends at ${value.toFixed(2)}s. Earlier keyframes keep their timing. Undo restores the trimmed end.` : `Clip extended to ${value.toFixed(2)}s. Your keyframe timing is unchanged.`);
     setPlaying(false); setTime(t => Math.min(value, t));
   };
 
@@ -1069,7 +1175,7 @@ export default function App() {
     revision: agentVersion.current.revision,
     project: { name: studio.title, duration: studio.duration, fps },
     character: { name: asset.name, kind: asset.kind, rigged: asset.rigged, boneCount: asset.bones.length },
-    timeline: { time, playing, keyCount: studio.keys.length, generatedFrames: studio.generated?.length ?? 0 },
+    timeline: { time, playing, activeTrackId: editingTrack?.id ?? null, tracks: [{ id: null, name: studio.baseTrackName ?? 'Base motion', muted: !!studio.baseTrackMuted, keyCount: studio.keys.length }, ...(studio.tracks ?? []).map(t => ({ id: t.id, name: t.name, muted: t.muted, keyCount: t.keys.length }))], keyCount: editKeys.length, generatedFrames: studio.generated?.length ?? 0 },
     view: { cameraView, showRig, showGhosts, tool, selectedBone },
     camera: viewportAPI.current?.getCamera() ?? null,
     history: { canUndo: history.current.past.length > 0, canRedo: history.current.future.length > 0 },
@@ -1159,8 +1265,8 @@ export default function App() {
         </div>
         <MotionLibrary target={asset} disabled={!asset.rigged || !!busy || !hydrated} onPreview={(keys, duration, name) => { setLibraryPreview({ keys, duration, name }); setTime(0); setPlaying(true); }} onClear={() => { setLibraryPreview(null); setPlaying(false); setTime(value => Math.min(value, studio.duration)); }} onApply={applyImportedAnimation} onNeedsMapping={(file, mode, clipIndex) => { setLibraryPreview(null); setLibraryImportFile(file); setLibraryImportClipIndex(clipIndex); setAnimationImportMode(mode); setDialog('animation'); }}/>
 
-        <button className="mobile-inspector-toggle" aria-expanded={inspectorOpen} disabled={!!libraryPreview} onClick={() => setInspectorOpen(v => !v)}><SlidersHorizontal size={15}/>Character &amp; joint controls{asset.warnings.length > 0 && <span>{asset.warnings.length} notes</span>}<ChevronDown size={14}/></button><div className="inspector-body" data-open={inspectorOpen} inert={!!libraryPreview}><div className="sidebar-section animation-section"><div className="section-heading"><h2>Animation</h2><span className="tiny-badge">{studio.keys.length} POSES</span></div>
-          {asset.clips.length > 0 ? <label className="clip-select"><Activity size={15}/><select aria-label="Animation clip" value={studio.sourceClip ?? -1} onChange={e => { if (Number(e.target.value) >= 0) switchClip(Number(e.target.value)); }}><option value={-1}>Edited motion</option>{asset.clips.map((clip, index) => <option value={index} key={index}>{clip.name || `Animation ${index + 1}`}</option>)}</select></label> : <div className="animation-name"><span className="motion-icon"><Activity size={18}/></span><div><strong>{asset.source === 'demo' ? asset.kind === 'humanoid' ? 'A friendly wave' : 'An easy stride' : 'Your motion'}</strong><span>{studio.duration.toFixed(1)} seconds · {fps} fps</span></div><Check size={14}/></div>}
+        <button className="mobile-inspector-toggle" aria-expanded={inspectorOpen} disabled={!!libraryPreview} onClick={() => setInspectorOpen(v => !v)}><SlidersHorizontal size={15}/>Character &amp; joint controls{asset.warnings.length > 0 && <span>{asset.warnings.length} notes</span>}<ChevronDown size={14}/></button><div className="inspector-body" data-open={inspectorOpen} inert={!!libraryPreview}><div className="sidebar-section animation-section"><div className="section-heading"><h2>Animation</h2><span className="tiny-badge">{emptyTrack ? 'READY' : `${editKeys.length} POSES`}</span></div>
+          {asset.clips.length > 0 ? <label className="clip-select"><Activity size={15}/><select aria-label="Animation clip" value={studio.sourceClip ?? -1} onChange={e => { if (Number(e.target.value) >= 0) switchClip(Number(e.target.value)); }}><option value={-1}>Edited motion</option>{asset.clips.map((clip, index) => <option value={index} key={index}>{clip.name || `Animation ${index + 1}`}</option>)}</select></label> : <div className="animation-name"><span className="motion-icon"><Activity size={18}/></span><div><strong>{studio.baseMotionName ?? studio.baseTrackName ?? (asset.source === 'demo' ? asset.kind === 'humanoid' ? 'A friendly wave' : 'An easy stride' : 'Base motion')}</strong><span>{studio.duration.toFixed(1)} seconds · {fps} fps</span></div><Check size={14}/></div>}
           {asset.source === 'import' && asset.rigged && <label className="clip-select">Moves like<select aria-label="Character body type" value={asset.kind} disabled={!!busy} onChange={e => { commit({ ...studio, rigKind: e.target.value as RigKind, generated: undefined, generation: undefined }, 'Motion mapping updated. Generate again for this body type; your original rig is preserved.'); }}><option value="humanoid">Two legs</option><option value="quadruped">Four legs</option><option value="creature">Creature / other anatomy</option></select></label>}
           {asset.warnings.length > 0 && <details className="import-notes"><summary>Import notes ({asset.warnings.length})</summary>{asset.warnings.map((warning, i) => <p key={i}>{warning}</p>)}</details>}
         </div>
@@ -1183,46 +1289,50 @@ export default function App() {
         <div className="scene-heading"><div><span className="scene-dot"/>YOUR PLAYGROUND<span className="scene-separator">/</span><span className="scene-name">{studio.title || 'Untitled'}</span></div><button className="text-button" onClick={() => setDialog('help')}><CircleHelp size={14}/><span>A quick tour</span></button></div>
         <div className="stage-and-assists">
           <section className="viewport-shell" aria-label="Character editor">
-            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit && !libraryPreview ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore && !busy && !libraryPreview} moveModel={moveModel && !viewingBefore && !libraryPreview} zoomToCursor={zoomToCursor} showRig={showRig} showFingerJoints={showFingerJoints} showGhosts={showGhosts && !viewingBefore && !libraryPreview} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} follow={follow && tool === 'move' ? followFeel : null} playing={playing}/>
+            <Viewport theme={theme} apiRef={viewportAPI} asset={asset} pose={previewPose} comparisonPose={viewingSplit && !libraryPreview ? beforePose : undefined} selectedBone={selectedBone} onSelectBone={index => { setPlaying(false); setSelectedBone(index); }} onPoseChange={writePose} editable={!viewingBefore && !busy && !libraryPreview && !trackMuted} moveModel={moveModel && !viewingBefore && !libraryPreview && !trackMuted} zoomToCursor={zoomToCursor} showRig={showRig} showFingerJoints={showFingerJoints} showGhosts={showGhosts && !viewingBefore && !libraryPreview} ghostPoses={ghostPoses} cameraView={cameraView} tool={tool} follow={follow && tool === 'move' ? followFeel : null} playing={playing}/>
             <div className={`viewport-top ${studio.generation?.kind === 'physics' ? 'has-physics-comparison' : ''}`}><div className="mode-pill"><span className={playing ? 'live-dot' : 'mode-dot'}/>{libraryPreview ? `Preview · ${libraryPreview.name}` : viewingBefore ? 'Before physics' : playing ? 'In motion' : 'Pose mode'}<span>{libraryPreview ? `${libraryPreview.duration.toFixed(2)}s · scene unchanged` : selectedKey ? `Pose ${keyIndex + 1}` : 'Between poses'}</span></div>{!libraryPreview && studio.generated && studio.generation?.kind === 'physics' && <div className="physics-compare-switch viewport-compare-switch" role="group" aria-label="Compare physics motion"><button aria-label="Before physics" aria-pressed={viewingBefore} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('before'); }}>Before</button><button aria-label="Side-by-side physics comparison" aria-pressed={viewingSplit} disabled={!comparison || !!busy || !!dragPreview} onClick={() => { setSelectedBone(null); setComparisonView('split'); }}>Side by side</button><button aria-label="After physics" aria-pressed={!viewingBefore && !viewingSplit} disabled={!!busy || !!dragPreview} onClick={() => setComparisonView('after')}>After</button></div>}<button className={`icon-button viewport-icon ${showGhosts ? 'active' : ''}`} aria-label="Toggle onion skin" aria-pressed={showGhosts && !viewingBefore} disabled={viewingBefore} title={viewingBefore ? 'Onion skin is available in After physics' : 'Show neighboring poses'} onClick={() => setShowGhosts(v => !v)}><Layers2 size={17}/></button></div>
             <div className="viewport-tools"><button aria-label="Move joint" title="Move joint · W" className={!moveModel && tool === 'move' ? 'active' : ''} onClick={() => { setTimelineMode(false); setTool('move'); }}><Move size={18}/></button><button aria-label="Rotate joint" title="Rotate joint · E" className={!moveModel && tool === 'rotate' ? 'active' : ''} onClick={() => { setTimelineMode(false); setTool('rotate'); }}><RotateCw size={18}/></button><button aria-label="Follow chain" title="Follow · F · Move a head and its neck bends after it" aria-pressed={follow} className={`follow-toggle ${follow ? 'active secondary' : ''}`} onClick={() => { setTimelineMode(false); setMoveModel(false); setTool('move'); setFollow(value => !value); }}><Spline size={18}/></button>{follow && <label className="follow-feel" title="How the neck bends behind the head"><span>Snaky</span><input type="range" min="0" max="1" step="0.05" aria-label="Follow feel, snaky to robotic" value={followFeel} onChange={event => setFollowFeel(Number(event.target.value))}/><span>Robotic</span></label>}<div/><button aria-label="Show joints" title="Show joints" aria-pressed={showRig} className={showRig ? 'active secondary' : ''} onClick={() => setShowRig(v => !v)}><Bone size={18}/></button></div>
-            <button className="button model-move-toggle" aria-label="Move whole model" aria-pressed={moveModel} aria-keyshortcuts="G" title="Move whole model · G. Drag across the floor; Shift-drag to change height." disabled={!asset.rigged || !!busy || viewingBefore} onClick={toggleModelMove}><Move size={16}/>Move model<kbd>G</kbd></button>
+            <button className="button model-move-toggle" aria-label="Move whole model" aria-pressed={moveModel && !trackMuted} aria-keyshortcuts="G" title="Move whole model · G. Drag across the floor; Shift-drag to change height." disabled={trackMuted || !asset.rigged || !!busy || viewingBefore} onClick={toggleModelMove}><Move size={16}/>Move model<kbd>G</kbd></button>
             {!viewingSplit && <div className="viewport-label"><span className="viewport-kicker">LESS LEARNING. MORE MAKING.</span><span className="viewport-big-word">Let’s move.</span></div>}
             <div className="viewport-bottom"><span className="viewport-instruction"><MousePointer2 size={13}/>{libraryPreview ? 'Preview only · use Apply or Append in Motion Library' : moveModel && !viewingBefore ? 'Move this pose: drag the character across the floor · Shift-drag for height · Esc to exit' : viewingSplit ? 'Shared camera · edit poses on the right' : viewingBefore ? 'Before physics · drag the background to orbit' : selectedBone !== null ? `${niceName(asset.bones[selectedBone]?.name || '')} selected · drag to pose` : 'Drag a joint to pose · drag the background to orbit'}</span><div className="view-picker">{(['perspective', 'front', 'side'] as const).map(view => <button key={view} className={cameraView === view ? 'active' : ''} onClick={() => setCameraView(view)}>{view === 'perspective' ? '3D' : view.charAt(0).toUpperCase() + view.slice(1)}</button>)}<button aria-label="Viewport settings" title="Viewport settings" onClick={() => setDialog('viewport')}><Settings2 size={13}/></button></div></div>
             {!asset.rigged && <div className="rig-overlay"><Bone size={24}/><strong>Let’s give it some joints.</strong><p>Choose a simple skeleton to start posing.</p><button className="button primary" onClick={() => setDialog('rig')}>Add a rig <ArrowRight size={15}/></button></div>}
           </section>
 
           <aside className="assist-panel" inert={!!libraryPreview}><div className="assist-heading"><span className="assist-icon"><Sparkles size={19}/></span><span className="eyebrow">A LITTLE HELP</span><h2>You pose.<br/>We connect the dots.</h2><p>Good motion starts with a few good moments.</p></div>
-            <FaceShapes key={`face:${sceneId}:${asset.root.uuid}`} asset={asset} keys={motionKeys} moments={studio.keys} pose={currentPose} time={time} duration={studio.duration} fps={fps} interpolation={playbackMode} disabled={!!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore} onPause={() => setPlaying(false)} onCommit={key => { commit({ ...studio, sourceClip: null, keys: [...studio.keys.filter(moment => moment.id !== key.id), key].sort((a, b) => a.time - b.time) }); setPlaying(false); setTime(key.time); }}/>
+            <FaceShapes key={`face:${sceneId}:${asset.root.uuid}`} asset={asset} keys={motionKeys} moments={editKeys} pose={currentPose} time={time} duration={studio.duration} fps={fps} interpolation={playbackMode} disabled={trackMuted || !!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore} onPause={() => setPlaying(false)} onCommit={key => { if (trackMuted) return; commit(putLayerKey(studio, key, sampleLayers(time), asset.restPose, asset.restMorphs)); setPlaying(false); setTime(key.time); }}/>
             {getAutoRigDiagnostics(asset) && <details className="assist-section generation-details"><summary>Rig fit checks</summary><p>{getAutoRigDiagnostics(asset)?.evidence === 'clear' ? 'Body landmarks found.' : 'Joint positions are estimates to review.'} Try a small bend before animating.</p>{getAutoRigDiagnostics(asset)?.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}<div className="assist-section ai-section"><div className="section-heading"><h3>AI in-betweening</h3><span className={`engine-tag ${learnedProvider ? 'ready' : ''}`}>{learnedProvider ? 'ON DEVICE' : 'NOT READY'}</span></div><p className="micro-copy">A trained motion model fills the space between your poses.</p>{learnedProviders.length > 1 && <select className="engine-select" aria-label="AI motion engine" value={learnedProvider?.id} onChange={e => setEngineChoice(e.target.value as EngineProvider['id'])}>{learnedProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<button className="button primary generate-button" disabled={!learnedProvider || !asset.rigged || !!busy} onClick={() => learnedProvider && void runMotionEngine(learnedProvider)}><Sparkles size={15}/>{studio.generated ? 'Generate another take' : studio.keys.length > 24 ? 'Find 6 poses & generate' : 'Generate motion'}<ArrowRight size={14}/></button><p className="engine-caption">{learnedProvider ? `${learnedProvider.name} · your key poses stay exact` : engine ? (asset.kind === 'creature' ? 'Creature rigs use imported clips and editable pose interpolation. Human and quadruped AI models do not support this anatomy.' : asset.kind === 'humanoid' ? 'No validated humanoid model is installed. Use curve interpolation or import an animation clip.' : 'No validated animal model is installed. Curve interpolation is available.') : 'Start the local engine to enable AI.'}{learnedProvider?.id === 'owned_humanoid' && ' · Limited motion coverage'}{learnedProvider?.id === 'inbetween' && ' · Commercial rights pending'}</p>{studio.generation?.kind === 'inbetween' && <details className={`generation-details ${needsReview ? 'needs-review' : ''}`}><summary><Check size={12}/>{needsReview ? 'Motion · review needed' : studio.generation.kind === 'inbetween' ? 'AI take ready' : 'Dynamics pass ready'}<span>{studio.generated?.length} frames</span></summary><p>{studio.generation.name}. Editing a pose returns to your key moments; generate again to update the motion.</p>{studio.generation.warnings.map((warning, i) => <p key={i}>{warning}</p>)}<button className="text-button" onClick={() => downloadFile(JSON.stringify(studio.generation, null, 2), 'motion-generation-report.json', 'application/json')}>Save generation report <ArrowDownToLine size={12}/></button></details>}</div>
 
             <div className="assist-section physics-section"><div className="section-heading"><h3>Physics correction</h3><span className={`engine-tag ${physicsProvider ? 'ready' : ''}`}>{physicsProvider ? 'DYNAMICS' : 'OFFLINE'}</span></div>{physicsProviders.length > 1 && <select className="engine-select" aria-label="Physics engine" value={physicsProvider?.id} onChange={e => setPhysicsChoice(e.target.value as EngineProvider['id'])}>{physicsProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<div className="setting-row"><div><Footprints size={15}/><span>Keep feet planted</span></div><Switch label="Floor contact" checked={physicsProvider?.limits?.requiresFloorContact || studio.settings.floorContact} disabled={asset.kind === 'creature' || physicsProvider?.limits?.requiresFloorContact} onChange={() => changeSettings({ floorContact: !studio.settings.floorContact })}/></div><div className="setting-row"><label htmlFor="gravity">Gravity</label><select id="gravity" disabled={physicsProvider?.limits?.earthGravityOnly} value={physicsProvider?.limits?.earthGravityOnly ? 9.81 : studio.settings.gravity} onChange={e => changeSettings({ gravity: Number(e.target.value) })}><option value="9.81">Earth</option><option value="1.62">Moon</option><option value="0">Weightless</option></select></div><div className="strength-label"><label htmlFor="strength">A helping hand</label><span>{Math.round(studio.settings.strength * 100)}%</span></div><input id="strength" type="range" min="0" max="1" step=".05" value={studio.settings.strength} onChange={e => changeSettings({ strength: Number(e.target.value) })}/><button className="button assist-button" disabled={!physicsProvider || !asset.rigged || !!busy} onClick={() => physicsProvider && void runMotionEngine(physicsProvider)}><Activity size={15}/>Correct with physics<ArrowRight size={14}/></button><p className="micro-copy physics-note">{physicsProvider ? 'Articulated dynamics, gravity, and contact forces. Poses may shift to improve balance.' : asset.kind === 'creature' ? 'These physics engines require human or quadruped anatomy. Creature poses use interpolation.' : 'Start the local engine to enable dynamics.'}</p>{studio.generated && studio.generation?.kind === 'physics' && !comparison && needsReview && <p className="micro-copy">Clip edited. Run physics again to refresh contact measurements and comparison.</p>}{studio.generated && studio.generation?.kind === 'physics' && (comparison || !needsReview) && <button className="button physics-report-button" onClick={() => setDialog('physics')}>{needsReview ? 'Review physics changes' : 'See physics changes'}<ArrowUpRight size={13}/></button>}<button className="text-button quick-ground" disabled={asset.kind === 'creature' || !asset.rigged || !!busy} onClick={() => void assistMotion()}>Quick ground pass <Footprints size={12}/></button></div>
-            <details className="assist-section curve-section"><summary>Curve interpolation<span>{studio.settings.interpolation === 'smooth' ? 'Smooth' : studio.settings.interpolation === 'linear' ? 'Direct' : 'Hold'}</span><ChevronDown size={12}/></summary><div className="blend-options">{(['smooth', 'linear', 'stepped'] as InterpolationMode[]).map(mode => <button key={mode} className={studio.settings.interpolation === mode ? 'active' : ''} onClick={() => changeSettings({ interpolation: mode })}>{mode === 'smooth' ? 'Smooth' : mode === 'linear' ? 'Direct' : 'Hold'}</button>)}</div><div className={`curve-preview ${studio.settings.interpolation}`}><svg viewBox="0 0 220 52" aria-hidden="true"><path className="curve-guide" d="M8 44H212M8 26H212M8 8H212"/><path className="curve-path" d={studio.settings.interpolation === 'smooth' ? 'M8 44C84 44 116 8 212 8' : studio.settings.interpolation === 'linear' ? 'M8 44L212 8' : 'M8 44H110V8H212'}/><circle cx="8" cy="44" r="4"/><circle cx="212" cy="8" r="4"/></svg><span>POSE A</span><span>POSE B</span></div><p className="micro-copy">{studio.settings.interpolation === 'smooth' ? 'Soft starts. Natural arcs. Your poses stay yours.' : studio.settings.interpolation === 'linear' ? 'A direct, constant-speed blend between poses.' : 'Hold each pose until the next. Great for blocking.'}</p></details>
+            <details className="assist-section curve-section"><summary>Curve interpolation<span>{(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'Smooth' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'Direct' : 'Hold'}</span><ChevronDown size={12}/></summary><div className="blend-options">{(['smooth', 'linear', 'stepped'] as InterpolationMode[]).map(mode => <button key={mode} className={(editingTrack?.interpolation ?? studio.settings.interpolation) === mode ? 'active' : ''} onClick={() => changeSettings({ interpolation: mode })}>{mode === 'smooth' ? 'Smooth' : mode === 'linear' ? 'Direct' : 'Hold'}</button>)}</div><div className={`curve-preview ${(editingTrack?.interpolation ?? studio.settings.interpolation)}`}><svg viewBox="0 0 220 52" aria-hidden="true"><path className="curve-guide" d="M8 44H212M8 26H212M8 8H212"/><path className="curve-path" d={(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'M8 44C84 44 116 8 212 8' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'M8 44L212 8' : 'M8 44H110V8H212'}/><circle cx="8" cy="44" r="4"/><circle cx="212" cy="8" r="4"/></svg><span>POSE A</span><span>POSE B</span></div><p className="micro-copy">{(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'Soft starts. Natural arcs. Your poses stay yours.' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'A direct, constant-speed blend between poses.' : 'Hold each pose until the next. Great for blocking.'}</p></details>
             <ClipTools key={`${sceneId}:${asset.root.uuid}`} duration={studio.duration} fps={fps} clips={asset.clips} disabled={!asset.rigged || !!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore} onPause={() => setPlaying(false)} onEdit={editClip} onAppend={appendClip} onAppendProject={(file, blend) => void appendSavedTake(file, blend)} onImportAnimation={() => openAnimationImport('append')}/>
-            <div className="simplify-card"><span className="six-dots">•••<br/>•••</span><div><strong>Find the key moments.</strong><p>Turn a busy timeline into six editable poses.</p></div><button className="text-button" disabled={studio.keys.length <= 6} onClick={simplifyMotion}>Simplify to 6 poses <ArrowUpRight size={13}/></button></div>
+            <div className="simplify-card"><span className="six-dots">•••<br/>•••</span><div><strong>Find the key moments.</strong><p>Turn a busy timeline into six editable poses.</p></div><button className="text-button" disabled={editKeys.length <= 6 || trackMuted} onClick={simplifyMotion}>Simplify to 6 poses <ArrowUpRight size={13}/></button></div>
           </aside>
         </div>
 
-        <section className="timeline-section compact-timeline" inert={!!libraryPreview} aria-label="Animation timeline" onDragStart={e => e.preventDefault()}><div className="timeline-heading"><div className="timeline-title"><h2>Your moments</h2><span>{studio.keys.length} poses<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generation?.kind === 'physics' ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions"><button className="button" aria-expanded={timelineToolsOpen} aria-controls="timeline-details" onClick={() => setTimelineToolsOpen(open => !open)}>Clip &amp; position<ChevronDown size={13}/></button>{studio.keys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="button duplicate-pose-button" title="Duplicate selected moment · Ctrl D" aria-label="Duplicate selected moment" disabled={!selectedKey || !asset.rigged || !!dragPreview || selectionMode} onClick={duplicateKey}><Copy size={14}/><span>Duplicate</span></button>{!selectionMode && <button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={!selectedKey || studio.keys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button>}<button className="button add-pose-button" disabled={!asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
+        <section className="timeline-section compact-timeline" inert={!!libraryPreview} aria-label="Animation timeline" onDragStart={e => e.preventDefault()}>
+          <AnimationTracks coveredBy={coveringTrackNames(studio, time)} tracks={studio.tracks ?? []} baseName={studio.baseTrackName ?? 'Base motion'} baseMuted={!!studio.baseTrackMuted} baseKeys={studio.keys} activeId={editingTrack?.id ?? null} duration={studio.duration} time={time} fps={fps} disabled={!!busy || !!dragPreview || !hydrated || !asset.rigged}
+            onAdd={addTrack} onSelect={selectTrack} onTime={value => { setPlaying(false); setTime(Math.min(studio.duration, Math.round(value * fps) / fps)); }} onUpdate={updateTrack} onCopy={copyTrack} onReorder={reorderTrack} onMove={moveTrack} onMoveKey={moveTrackKey}
+            onDelete={id => { commit({ ...studio, tracks: studio.tracks!.filter(t => t.id !== id), activeTrackId: null }, 'Track deleted. Undo brings it back.'); setPlaying(false); }}/>
+<div className="timeline-heading"><div className="timeline-title"><h2>{editingTrack?.name ?? studio.baseTrackName ?? 'Base motion'}</h2><span>{emptyTrack ? 'Ready to animate' : `${editKeys.length} poses`}<span className="timeline-dot">·</span>{studio.generation?.kind === 'inbetween' ? 'AI motion ready' : studio.generation?.kind === 'physics' ? 'dynamics applied' : 'one fluid motion'}</span></div><div className="timeline-actions"><button className="button" aria-expanded={timelineToolsOpen} aria-controls="timeline-details" onClick={() => setTimelineToolsOpen(open => !open)}>Clip &amp; position<ChevronDown size={13}/></button>{editKeys.length > 6 && <button className="button simplify-timeline" onClick={simplifyMotion}><Sparkles size={13}/><span>Simplify to 6</span></button>}<button className="button duplicate-pose-button" title="Duplicate selected moment · Ctrl D" aria-label="Duplicate selected moment" disabled={trackMuted || !selectedKey || !asset.rigged || !!dragPreview || selectionMode} onClick={duplicateKey}><Copy size={14}/><span>Duplicate</span></button>{!selectionMode && <button className="icon-button" title="Delete selected pose" aria-label="Delete selected pose" disabled={trackMuted || !selectedKey || editKeys.length <= 2} onClick={deleteKey}><Trash2 size={15}/></button>}<button className="button add-pose-button" disabled={trackMuted || !asset.rigged} onClick={addKey}><Plus size={15}/>{selectedKey ? 'Update pose' : 'Add a pose'}<kbd>K</kbd></button></div></div>
           <div className="timeline-toolbar">
           <div className="keyframe-clipboard" aria-label="Keyframe editing tools">
-            <button className="button" aria-label="Move selected keyframe" title="Move selected keyframe to a time · M" aria-keyshortcuts="M" disabled={!selectedKey || selectionMode || !!busy || !!dragPreview} onClick={() => { setPlaying(false); setMovingKey(selectedKey!.id); setMoveTime(selectedKey!.time.toFixed(3)); }}><Move size={14}/>Move…</button>
+            <button className="button" aria-label="Move selected keyframe" title="Move selected keyframe to a time · M" aria-keyshortcuts="M" disabled={trackMuted || !selectedKey || selectionMode || !!busy || !!dragPreview} onClick={() => { setPlaying(false); setMovingKey(selectedKey!.id); setMoveTime(selectedKey!.time.toFixed(3)); }}><Move size={14}/>Move…</button>
             <button className="button" aria-label="Copy keyframes" title="Copy selected keyframes · Ctrl C" disabled={selectionMode ? !selectedIds.size || !!busy || !!selectionRange : !selectedKey || !!busy || !!dragPreview} onClick={copyKeyframes}><Copy size={14}/>Copy</button>
-            <button className="button" aria-label="Paste keyframes at playhead" title="Paste at the playhead · Ctrl V" disabled={!keyClipboard || !!busy || !!dragPreview || !!selectionRange} onClick={pasteKeyframes}><Save size={14}/>Paste here</button>
+            <button className="button" aria-label="Paste keyframes at playhead" title="Paste at the playhead · Ctrl V" disabled={trackMuted || !keyClipboard || !!busy || !!dragPreview || !!selectionRange} onClick={pasteKeyframes}><Save size={14}/>Paste here</button>
             <span className={keyClipboard ? 'clipboard-status' : 'editing-hint'}>{keyClipboard ? keyClipboard.keys.length + ' copied · paste at ' + time.toFixed(2) + 's' : 'Click a diamond to select it. Move it, or Copy → click a time → Paste.'}</span>
           </div>
-          <div className="timeline-edit-tools"><button className="button ripple-button" aria-label="Select keyframes" title="Toggle Select / regular mode · S (Esc returns to regular mode)" aria-keyshortcuts="S" aria-pressed={selectionMode} disabled={!!busy || !!dragPreview} onClick={() => setTimelineMode(!selectionMode)}><MousePointer2 size={13}/>{selectionMode ? 'Select mode' : 'Select'}<kbd>S</kbd></button><button className="button ripple-button" aria-label="Ripple edit" aria-pressed={ripple} title="Move a pose and all later poses together · R" aria-keyshortcuts="R" disabled={!!busy || !!dragPreview || selectionMode} onClick={() => setRipple(value => !value)}><ArrowRight size={13}/>Ripple<span>{ripple ? 'On' : 'Off'}</span><kbd>R</kbd></button>{selectionMode ? <><span className="editing-hint">Drag across diamonds. Ctrl-click to add or remove. Esc returns to regular mode.</span><button className="button selection-delete" disabled={!selectedIds.size || !!selectionRange} onClick={deleteKey}><Trash2 size={13}/>Delete {selectedIds.size || ''} selected</button><span role="status">{selectedIds.size} selected · keep at least 2 poses</span></> : <span className="editing-hint">{ripple ? 'Drag a diamond to move it and all later poses.' : 'Drag a diamond to move it. Drop on a pose to replace it. Shift-drag moves later poses.'}</span>}{dragPreview?.ripple && <output>{dragPreview.duration.toFixed(2)}s total</output>}</div>
+          <div className="timeline-edit-tools"><button className="button ripple-button" aria-label="Select keyframes" title="Toggle Select / regular mode · S (Esc returns to regular mode)" aria-keyshortcuts="S" aria-pressed={selectionMode} disabled={!!busy || !!dragPreview} onClick={() => setTimelineMode(!selectionMode)}><MousePointer2 size={13}/>{selectionMode ? 'Select mode' : 'Select'}<kbd>S</kbd></button><button className="button ripple-button" aria-label="Ripple edit" aria-pressed={ripple} title="Move a pose and all later poses together · R" aria-keyshortcuts="R" disabled={!!busy || !!dragPreview || selectionMode} onClick={() => setRipple(value => !value)}><ArrowRight size={13}/>Ripple<span>{ripple ? 'On' : 'Off'}</span><kbd>R</kbd></button>{selectionMode ? <><span className="editing-hint">Drag across diamonds. Ctrl-click to add or remove. Esc returns to regular mode.</span><button className="button selection-delete" disabled={trackMuted || !selectedIds.size || !!selectionRange} onClick={deleteKey}><Trash2 size={13}/>Delete {selectedIds.size || ''} selected</button><span role="status">{selectedIds.size} selected · keep at least 2 poses</span></> : <span className="editing-hint">{ripple ? 'Drag a diamond to move it and all later poses.' : 'Drag a diamond to move it. Drop on a pose to replace it. Shift-drag moves later poses.'}</span>}{dragPreview?.ripple && <output>{dragPreview.duration.toFixed(2)}s total</output>}</div>
           <div className="timeline-view-tools" aria-label="Timeline zoom"><button className="button" aria-label="Zoom timeline out" disabled={visibleTimelineSeconds >= timelineDuration} onClick={() => setTimelineWindow(Math.min(timelineDuration, visibleTimelineSeconds * 2))}>−</button><button className="button" aria-label="Zoom timeline in" disabled={visibleTimelineSeconds <= Math.min(.1, timelineDuration)} onClick={() => setTimelineWindow(Math.max(Math.min(.1, timelineDuration), visibleTimelineSeconds / 2))}>+</button><button className="button" onClick={() => setTimelineWindow(timelineDuration)}>Fit clip</button><span>{visibleTimelineSeconds.toFixed(2)}s view</span></div>
           </div>
           {movingKey && selectedKey && <form className="keyframe-move" onSubmit={event => { event.preventDefault(); moveSelectedKey(); }}><label>Move keyframe to <input autoFocus aria-label="Move keyframe to seconds" type="number" min="0" max={MAX_ANIMATION_DURATION} step={1 / fps} value={moveTime} onChange={event => setMoveTime(event.target.value)}/> seconds</label><button className="button primary" disabled={!!busy || !moveTime.trim()}>Move keyframe</button><button type="button" className="text-button" onClick={() => setMovingKey(null)}>Cancel</button><small>A pose at that time is replaced. Undo restores it.</small></form>}
           <div className="timeline-details" id="timeline-details" hidden={!timelineToolsOpen}>
-          <div className="clip-length-tools" aria-label="Clip length tools"><label>Clip end <input aria-label="Clip end seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step={1 / fps} value={durationInput} disabled={!!busy || !!dragPreview || !!selectionRange} onChange={event => setDurationInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); changeDuration(durationInput.trim() ? Number(durationInput) : NaN); } }}/> s</label><button className="button" disabled={!!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(durationInput.trim() ? Number(durationInput) : NaN)}>Set end</button><button className="button" aria-label="End clip at playhead" disabled={time < .1 || time >= studio.duration || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(time)}>End clip here</button><button className="button" aria-label="Remove empty clip tail" disabled={studio.keys.at(-1)!.time < .1 || studio.keys.at(-1)!.time >= studio.duration - 1e-9 || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(studio.keys.at(-1)!.time)}>Remove empty tail</button><span>Trims the end. Earlier keyframes stay in place.</span></div>
-          {asset.rigged && <KeyframeProperties key={`${sceneId}:${asset.root.uuid}`} asset={asset} pose={currentPose} selectedBone={selectedBone} reference={poseReference} selectedCount={selectedIds.size} selectionMode={selectionMode} disabled={!!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore}
+          <div className="clip-length-tools" aria-label="Clip length tools"><label>Clip end <input aria-label="Clip end seconds" type="number" min=".1" max={MAX_ANIMATION_DURATION} step={1 / fps} value={durationInput} disabled={!!busy || !!dragPreview || !!selectionRange} onChange={event => setDurationInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); changeDuration(durationInput.trim() ? Number(durationInput) : NaN); } }}/> s</label><button className="button" disabled={!!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(durationInput.trim() ? Number(durationInput) : NaN)}>Set end</button><button className="button" aria-label="End clip at playhead" disabled={time < .1 || time >= studio.duration || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(time)}>End clip here</button><button className="button" aria-label="Remove empty clip tail" disabled={authoredEnd < .1 || authoredEnd >= studio.duration - 1e-9 || !!busy || !!dragPreview || !!selectionRange} onClick={() => changeDuration(authoredEnd)}>Remove empty tail</button><span>Trims the end. Earlier keyframes stay in place.</span></div>
+          {asset.rigged && <KeyframeProperties key={`${sceneId}:${asset.root.uuid}`} asset={asset} pose={currentPose} selectedBone={selectedBone} reference={poseReference} selectedCount={selectedIds.size} selectionMode={selectionMode} disabled={trackMuted || !!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore}
             onPosition={position => { try { const pose = setModelPosition(asset, currentPose, position); if (pose !== currentPose) writePose(pose); } catch (error) { setError(error instanceof Error ? error.message : 'The model could not be moved.'); } }}
-            onCopy={() => { setPlaying(false); setPoseReference({ keyId: selectedKey?.id ?? null, time, before: clone(currentPose), after: clone(currentPose), bone: selectedBone }); notify('Property values copied. Select poses and choose the axes to paste.'); }}
+            onCopy={() => { setPlaying(false); setPoseReference({ storedPose: selectedKey?.pose, keyId: selectedKey?.id ?? null, time, before: clone(currentPose), after: clone(currentPose), bone: selectedBone }); notify('Property values copied. Select poses and choose the axes to paste.'); }}
             onSelect={() => { setSelectionMode(true); setSelectedIds(new Set()); setRipple(false); setPlaying(false); }} onPause={() => setPlaying(false)} onApply={applyProperty} onOffset={moveAnimation}/>}
           </div>
-          <div className="pose-cards">{shownKeys.map((key) => <button className={`pose-card ${selectedKey?.id === key.id ? 'selected' : ''}`} key={key.id} onClick={() => { setPlaying(false); setTime(key.time); }} aria-label={`Go to pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}><div className="pose-card-top"><span>{String(poseKeys.findIndex(k => k.id === key.id) + 1).padStart(2, '0')}</span><span className="key-diamond"/></div><PoseThumbnail asset={asset} pose={key.pose}/><div className="pose-card-caption"><span>{key.label || `Pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}</span><span>{key.time.toFixed(2)}s</span></div></button>)}<button className="new-pose-card" title="Add a pose at the playhead" disabled={!asset.rigged} onClick={addKey}><Plus size={19}/><span>A new moment</span></button></div>
+          <details className="track-pose-previews"><summary>Pose previews</summary><div className="pose-cards">{shownKeys.map((key) => <button className={`pose-card ${selectedKey?.id === key.id ? 'selected' : ''}`} key={key.id} onClick={() => { setPlaying(false); setTime(key.time); }} aria-label={`Go to pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}><div className="pose-card-top"><span>{String(poseKeys.findIndex(k => k.id === key.id) + 1).padStart(2, '0')}</span><span className="key-diamond"/></div><PoseThumbnail asset={asset} pose={key.pose}/><div className="pose-card-caption"><span>{key.label || `Pose ${poseKeys.findIndex(k => k.id === key.id) + 1}`}</span><span>{key.time.toFixed(2)}s</span></div></button>)}<button className="new-pose-card" title="Add a pose at the playhead" disabled={!asset.rigged || trackMuted} onClick={addKey}><Plus size={19}/><span>A new moment</span></button></div></details>
           <div className="timeline-scroll" ref={timelineScroll} onScroll={event => { if (timeline.current) setTimelineStart(event.currentTarget.scrollLeft / timeline.current.clientWidth * timelineDuration); }}><div className="scrubber" ref={timeline} style={{ width: `${timelineDuration / visibleTimelineSeconds * 100}%` }} data-dragging={!!dragPreview} data-selecting={selectionMode}
             onPointerDown={e => { if (busy || e.button !== 0 || keyDrag.current || (e.target as HTMLElement).closest('.timeline-key, input')) return; e.preventDefault(); if (selectionMode) startSelection(e.clientX, e.pointerId, e.ctrlKey || e.metaKey); else { e.currentTarget.setPointerCapture(e.pointerId); scrub(e.clientX); } }}
             onPointerMove={e => { if (!e.currentTarget.hasPointerCapture(e.pointerId)) return; if (selectionDrag.current) extendSelection(e.clientX); else if (keyDrag.current) previewKeyDrag(e.clientX, e.pointerId); else scrub(e.clientX); }}
@@ -1230,7 +1340,7 @@ export default function App() {
             onPointerCancel={e => { cancelKeyDrag(e.pointerId); cancelSelection(); }} onLostPointerCapture={e => { cancelKeyDrag(e.pointerId); cancelSelection(); }}>
             <div className="ruler-labels">{rulerTimes.map(value => <span key={value} style={{ position: 'absolute', left: `${value / timelineDuration * 100}%`, transform: value === 0 ? undefined : value === timelineDuration ? 'translateX(-100%)' : 'translateX(-50%)' }}>{value.toFixed(rulerStep >= .1 ? 1 : 2)}<small>s</small></span>)}</div>
             <div className="timeline-track"><div className="timeline-progress" style={{ width: `${time / timelineDuration * 100}%` }}/>{selectionRange && <div className="timeline-selection-range" style={{ left: `${selectionRange.start / timelineDuration * 100}%`, width: `${(selectionRange.end - selectionRange.start) / timelineDuration * 100}%` }}/>}{poseKeys.map((key, i) => <button key={key.id} className={`timeline-key ${selectedKey?.id === key.id ? 'selected' : ''} ${selectedIds.has(key.id) ? 'multi-selected' : ''} ${dragPreview?.id === key.id ? 'dragging' : ''} ${dragPreview?.ripple && key.time >= dragPreview.time ? 'ripple-moving' : ''}`} style={{ left: `${key.time / timelineDuration * 100}%` }}
-              aria-pressed={selectionMode ? selectedIds.has(key.id) : undefined} aria-label={`Pose ${i + 1} at ${key.time.toFixed(2)} seconds. ${selectionMode ? 'Select for bulk editing.' : 'Drag or Alt arrows to retime. Hold Shift to move all later poses.'}`} title={`Pose ${i + 1} · ${key.time.toFixed(2)}s · ${selectionMode ? 'select for bulk editing' : 'drag or Alt ← → to retime · Shift moves all later poses'}`} disabled={!!busy}
+              aria-pressed={selectionMode ? selectedIds.has(key.id) : undefined} aria-label={`Pose ${i + 1} at ${key.time.toFixed(2)} seconds. ${selectionMode ? 'Select for bulk editing.' : 'Drag or Alt arrows to retime. Hold Shift to move all later poses.'}`} title={`Pose ${i + 1} · ${key.time.toFixed(2)}s · ${selectionMode ? 'select for bulk editing' : 'drag or Alt ← → to retime · Shift moves all later poses'}`} disabled={!!busy || trackMuted}
               onKeyDown={e => { if (selectionMode && (e.code === 'Space' || e.key === 'Enter')) { e.preventDefault(); e.stopPropagation(); setSelectedIds(previous => { const next = new Set(previous); if (next.has(key.id)) next.delete(key.id); else next.add(key.id); return next; }); } else if (!selectionMode && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); e.stopPropagation(); nudgeKey(key, e.key === 'ArrowLeft' ? -1 : 1, ripple || e.shiftKey); } }}
               onClick={e => { if (e.detail === 0) { if (selectionMode) setSelectedIds(previous => { const next = new Set(previous); if (next.has(key.id)) next.delete(key.id); else next.add(key.id); return next; }); else { setPlaying(false); setTime(key.time); } } }}
               onPointerDown={e => { e.stopPropagation(); if (e.button !== 0 || !timeline.current || keyDrag.current) return; e.preventDefault(); e.currentTarget.focus({ preventScroll: true }); if (selectionMode) { startSelection(e.clientX, e.pointerId, e.ctrlKey || e.metaKey, key); return; } keyDrag.current = { id: key.id, pointerId: e.pointerId, startX: e.clientX, startTime: key.time, time: key.time, beforeTime: time, moved: false, ripple: ripple || e.shiftKey, studio, asset, fps }; timeline.current.setPointerCapture(e.pointerId); setPlaying(false); setTime(key.time); }}/>)}</div>

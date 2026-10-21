@@ -293,10 +293,22 @@ export function validateProject(input: unknown): ProjectDocument {
   if (data.generation !== undefined && (!data.generation || typeof data.generation.name !== 'string' || !['inbetween', 'physics'].includes(data.generation.kind) || !data.generation.metrics || typeof data.generation.metrics !== 'object' || !Array.isArray(data.generation.warnings) || !data.generation.warnings.every(w => typeof w === 'string'))) throw new Error('This project contains invalid generation details.');
   const comparison = data.generation?.comparison;
   if (comparison !== undefined && (!comparison || data.generation?.kind !== 'physics' || !data.generated || !Array.isArray(comparison.before) || comparison.before.length < 1 || comparison.before.length > 72001 || !['smooth', 'linear', 'stepped'].includes(comparison.interpolation))) throw new Error('This project contains an invalid physics comparison.');
-  for (const sequence of [data.keys, ...(data.generated ? [data.generated] : []), ...(comparison ? [comparison.before] : [])]) {
+  if (data.baseMotionName !== undefined && (typeof data.baseMotionName !== 'string' || data.baseMotionName.length > 200)) throw new Error('This project contains an invalid motion name.');
+  if (data.baseTrackName !== undefined && (typeof data.baseTrackName !== 'string' || !data.baseTrackName.trim() || data.baseTrackName.length > 80) || data.baseTrackMuted !== undefined && typeof data.baseTrackMuted !== 'boolean') throw new Error('This project contains invalid track details.');
+  if (data.tracks !== undefined) {
+    if (!Array.isArray(data.tracks) || data.tracks.length > 31) throw new Error('This project contains too many animation tracks.');
+    const ids = new Set<string>();
+    for (const track of data.tracks) {
+      if (!track || typeof track.id !== 'string' || !track.id || ids.has(track.id) || typeof track.name !== 'string' || !track.name.trim() || track.name.length > 80 || typeof track.muted !== 'boolean' || !['smooth', 'linear', 'stepped'].includes(track.interpolation) || !Array.isArray(track.keys) || track.keys.length < 2 || track.keys.length > 72001 || !Array.isArray(track.channels) || !Array.isArray(track.morphs) || track.morphs.some(name => typeof name !== 'string' || !name) || track.channels.some(c => !c || !Number.isInteger(c.bone) || c.bone < 0 || c.bone >= data.boneNames!.length || !['position', 'quaternion', 'scale'].includes(c.property))) throw new Error('This project contains an invalid animation track.');
+      ids.add(track.id);
+    }
+  }
+  if (data.activeTrackId != null && !data.tracks?.some(t => t.id === data.activeTrackId)) throw new Error('This project selects a missing animation track.');
+  for (const sequence of [data.keys, ...(data.tracks ?? []).map(t => t.keys), ...(data.generated ? [data.generated] : []), ...(comparison ? [comparison.before] : [])]) {
    const times = new Set<number>();
    const ids = new Set<string>();
    for (const key of sequence) {
+    if (!key || typeof key !== 'object') throw new Error('This project contains invalid pose data.');
     if (key.morphs !== undefined && (!key.morphs || typeof key.morphs !== 'object' || Array.isArray(key.morphs) ||
         Object.entries(key.morphs).some(([name, value]) => !name || typeof value !== 'number' || !Number.isFinite(value)))) {
       throw new Error('This project contains invalid morph values.');
@@ -310,7 +322,7 @@ export function validateProject(input: unknown): ProjectDocument {
     ids.add(key.id); times.add(key.time);
    }
   }
-  return { ...data, keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined, generation: comparison ? { ...data.generation!, comparison: { ...comparison, before: [...comparison.before].sort((a, b) => a.time - b.time) } } : data.generation };
+  return { ...data, tracks: data.tracks?.map(t => ({ ...t, keys: [...t.keys].sort((a, b) => a.time - b.time) })), keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined, generation: comparison ? { ...data.generation!, comparison: { ...comparison, before: [...comparison.before].sort((a, b) => a.time - b.time) } } : data.generation };
 }
 
 export function downloadFile(contents: BlobPart, filename: string, type: string): void {
