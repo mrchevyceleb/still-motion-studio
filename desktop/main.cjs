@@ -1,12 +1,13 @@
 const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
 const { readFileSync } = require('node:fs');
-const { mkdir, writeFile, cp, access } = require('node:fs/promises');
+const { mkdir, cp, readFile, writeFile, unlink } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
+const { resolveRuntime } = require('./runtime-store.cjs');
 const { createUpdates } = require('./updates.cjs');
 const { NsisUpdater } = require('electron-updater');
-// An inherited CI/repository token must not override the user's stored login.
+// Public updates and the local engine do not need inherited publisher credentials.
 for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) delete process.env[name];
 
 app.setName('Still Motion Studio');
@@ -30,19 +31,8 @@ function icon() {
   return nativeImage.createFromBuffer(readFileSync(path.join(__dirname, '../public/still-icon.png')));
 }
 
-async function prepare(bundle, dataRoot) {
-  await prepareRuntimes(bundle, dataRoot);
-  const native = process.env.CASCADEUR_HOME || path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Cascadeur');
-  try {
-    await access(path.join(native, 'cascadeur.exe'));
-    await access(path.join(native, 'samples', 'Cascy.casc'));
-    for (const physics of [false, true]) {
-      const id = physics ? 'cascadeur_physics' : 'cascadeur';
-      const directory = path.join(dataRoot, '.local', physics ? 'cascadeur-physics' : 'cascadeur-proof');
-      await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'runtime.json'), JSON.stringify({ python: path.join(bundle, 'python', 'python.exe'), requiredFiles: [path.join(native, 'cascadeur.exe'), path.join(native, 'samples', 'Cascy.casc')], config: { installPath: native }, limits: { maxDuration: 20, humanoidOnly: true, ...(physics ? { earthGravityOnly: true, requiresFloorContact: true } : {}) }, provider: { id, name: physics ? 'Cascadeur AutoPhysics' : 'Cascadeur AI', learned: !physics, description: 'Your installed native engine; its scripting bridge must be running.' } }));
-    }
-  } catch { /* Optional licensed native installation is absent. */ }
+async function prepare(bundle, runtime, dataRoot) {
+  await prepareRuntimes(bundle, dataRoot, runtime);
   await mkdir(path.join(dataRoot, 'agent-tools'), { recursive: true });
   for (const file of ['still-agent.mjs', 'still-mcp.mjs']) await cp(path.join(bundle, 'app', 'scripts', file), path.join(dataRoot, 'agent-tools', file));
 }
@@ -68,8 +58,8 @@ async function installUpdate(updater) {
   try {
     await new Promise((resolve, reject) => {
       const finish = error => { clearTimeout(timer); engine.removeListener('message', message); engine.removeListener('exit', exit); error ? reject(error) : resolve(); };
-      const message = value => { if (value.type === 'update-blocked') finish(new Error('Finish active work and resolve native cleanup before restarting.')); };
-      const exit = code => finish(code === 0 ? null : new Error('Native cleanup did not finish. Reopen Still and retry cleanup before updating.'));
+      const message = value => { if (value.type === 'update-blocked') finish(new Error('Finish active work before restarting.')); };
+      const exit = code => finish(code === 0 ? null : new Error('The local engine did not shut down cleanly. Reopen Still before updating.'));
       const timer = setTimeout(() => finish(new Error('Engine shutdown is taking longer than expected. Wait for it to finish, then reopen Still.')), 110000);
       engine.on('message', message); engine.once('exit', exit);
       engine.postMessage({ type: 'shutdown-for-update' });
@@ -89,9 +79,33 @@ app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void s
 ipcMain.on('still:theme', (event, theme) => {
   if (event.sender !== window?.webContents || (theme !== 'light' && theme !== 'dark')) return;
   nativeTheme.themeSource = theme;
-  window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
+  window.setBackgroundColor(theme === 'dark' ? '#191c22' : '#f1f2f4');
 });
-for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
+ipcMain.handle('still:pick-folder', async event => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
+  return result.canceled ? null : result.filePaths[0] || null;
+});
+const externalHosts = new Set(['www.mixamo.com', 'mixamo.com', 'mesh2motion.org', 'quaternius.com', 'actorcore.reallusion.com', 'www.fab.com', 'github.com']);
+ipcMain.handle('still:open-external', async (event, address) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('External links are unavailable.');
+  const url = new URL(address);
+  if (url.protocol !== 'https:' || !externalHosts.has(url.hostname) || url.port || url.username || url.password) throw new Error('This external link is not allowed.');
+  await shell.openExternal(url.href);
+});
+const meshyKeyPath = () => path.join(app.getPath('userData'), 'meshy-key.bin');
+for (const method of ['get', 'set', 'clear']) ipcMain.handle(`still:meshy-key:${method}`, async (event, value) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Meshy key access is unavailable.');
+  if (method === 'clear') { await unlink(meshyKeyPath()).catch(error => { if (error.code !== 'ENOENT') throw error; }); return null; }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure key storage is unavailable on this computer.');
+  if (method === 'set') {
+    if (typeof value !== 'string' || value.length < 8 || value.length > 512) throw new Error('Enter a valid Meshy API key.');
+    await writeFile(meshyKeyPath(), safeStorage.encryptString(value), { mode: 0o600 }); return null;
+  }
+  const bytes = await readFile(meshyKeyPath()).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  return bytes ? safeStorage.decryptString(bytes) : null;
+});
+for (const method of ['state', 'check', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
   if (!updates) throw new Error('Updates are not ready.');
   return method === 'state' ? updates.getState() : method === 'install' ? updates.apply() : updates[method]();
@@ -100,9 +114,11 @@ for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`s
 if (acquired) app.whenReady().then(async () => {
   const bundle = app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.resolve(__dirname, '../.local/desktop-bundle');
   const dataRoot = app.getPath('userData');
-  await prepare(bundle, dataRoot);
+  const store = process.env.STILL_TEST_USER_DATA ? path.join(dataRoot, 'runtime') : path.join(process.env.LOCALAPPDATA || dataRoot, 'Still Motion Studio', 'runtime');
+  const runtime = app.isPackaged ? await resolveRuntime(bundle, store) : path.join(bundle, 'deps');
+  await prepare(bundle, runtime, dataRoot);
   const port = await unusedPort();
-  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_PACKAGED_PYTHON: path.join(bundle, 'python', 'python.exe'), STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(bundle, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
+  const env = { ...process.env, STILL_ENGINE_PORT: String(port), STILL_DATA_ROOT: dataRoot, STILL_STATIC_ROOT: path.join(bundle, 'app', 'dist'), STILL_BLENDER_EXECUTABLE: path.join(runtime, 'blender', 'blender.exe'), STILL_ALLOW_UNCLEARED_MODELS: '0', PYTHONUTF8: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   engine = utilityProcess.fork(path.join(bundle, 'app', 'server', 'engine.mjs'), [], { env, cwd: path.join(bundle, 'app'), stdio: 'pipe', serviceName: 'Still motion engine' });
   let log = '';
@@ -119,10 +135,20 @@ if (acquired) app.whenReady().then(async () => {
     engine.once('message', message => { if (message.type === 'ready') { clearTimeout(timer); resolve(); } });
     engine.once('exit', () => { clearTimeout(timer); reject(new Error(log || 'The local engine stopped during startup.')); });
   });
-  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141d19' : '#f4f3ee', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
+  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c22' : '#f1f2f4', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   const url = `http://127.0.0.1:${port}`;
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const libraryLinks = new Set([
+    'https://mesh2motion.org/', 'https://quaternius.com/',
+    'https://actorcore.reallusion.com/', 'https://www.fab.com/',
+    'https://www.mixamo.com/', 'https://github.com/VAST-AI-Research/UniRig',
+  ]);
+  window.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (libraryLinks.has(target)) void shell.openExternal(target).catch(() => {
+      dialog.showErrorBox('Could not open the library', 'Open this address in your browser: ' + target);
+    });
+    return { action: 'deny' };
+  });
   window.webContents.on('will-navigate', (event, target) => { if (new URL(target).origin !== url) event.preventDefault(); });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const menu = Menu.buildFromTemplate([
@@ -132,7 +158,7 @@ if (acquired) app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
   tray = new Tray(icon().resize({ width: 24, height: 24 })); tray.setToolTip('Still — agent scripting remains available');
   tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Open Still', click: show }, { label: 'Quit Still', click: () => void shutdown() }])); tray.on('double-click', show);
-  updates = createUpdates({ app, safeStorage, bundle, Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
+  updates = createUpdates({ app, runtimeId: path.basename(runtime), Updater: NsisUpdater, install: installUpdate, send: state => { if (!window.webContents.isDestroyed()) window.webContents.send('still:updates:state', state); } });
   await window.loadURL(url);
   updates.start();
   if (process.env.STILL_BACKGROUND !== '1') show();

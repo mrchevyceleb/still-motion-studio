@@ -18,7 +18,7 @@ function applyTheme() {
   theme = preference ?? (system.matches ? 'dark' : 'light');
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#141d19' : '#f4f3ee');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#191c22' : '#f1f2f4');
   window.stillDesktop?.setTheme(theme);
   listeners.forEach(listener => listener());
 }

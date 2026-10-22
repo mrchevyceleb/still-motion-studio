@@ -234,6 +234,25 @@ export function createAgentService({ root, dataRoot = root, port }) {
   // the engine starts before the first agent request arrives.
   ready.catch(() => {});
 
+  function collectProtectedFiles({ activeOnly = false } = {}) {
+    const protectedFiles = new Set();
+    if (activeOnly) {
+      for (const job of jobs.values()) {
+        if (!TERMINAL.has(job.status) || [...sessions.values()].some(s => !s.closed && s.active === job.id)) {
+          for (const id of job.fileIds || []) protectedFiles.add(id);
+        }
+      }
+      for (const session of sessions.values()) {
+        if (session.closed) continue;
+        for (const id of referencedFileIds(session.state)) protectedFiles.add(id);
+      }
+    } else {
+      for (const record of identities.values()) for (const id of record.fileIds || []) protectedFiles.add(id);
+      for (const session of sessions.values()) for (const id of referencedFileIds(session.state)) protectedFiles.add(id);
+    }
+    return protectedFiles;
+  }
+
   async function sweep() {
     for (const session of sessions.values()) {
       if (!session.closed && now() - session.lastSeen > STALE) await closeSession(session, 'The browser session stopped responding. No queued command was executed.');
@@ -255,8 +274,7 @@ export function createAgentService({ root, dataRoot = root, port }) {
       if (now() - record.updatedAt <= DAY || (job && !TERMINAL.has(job.status)) || [...sessions.values()].some(s => s.active === id)) continue;
       identities.delete(id); jobs.delete(id); await unlink(journalPath(id)).catch(() => {});
     }
-    const protectedFiles = new Set([...identities.values()].flatMap(record => record.fileIds || []));
-    for (const session of sessions.values()) for (const id of referencedFileIds(session.state)) protectedFiles.add(id);
+    const protectedFiles = collectProtectedFiles();
     for (const [id, file] of files) {
       if (now() - file.lastAccess <= DAY || protectedFiles.has(id)) continue;
       await unlink(filePath(id)).catch(() => {});
@@ -396,6 +414,8 @@ export function createAgentService({ root, dataRoot = root, port }) {
         }
       }
       if (suffix === '/files' && req.method === 'POST') {
+        const explicitSessionId = url.searchParams.get('sessionId') || req.headers['x-session-id'];
+        if (explicitSessionId && !uuid(explicitSessionId)) fail(400, 'INVALID_PARAMS', 'sessionId must be a UUID.');
         const name = path.posix.basename((url.searchParams.get('name') || 'upload.bin').replaceAll('\\', '/')).replace(/[\x00-\x1f\x7f]/g, '_').slice(0, 200) || 'upload.bin';
         const mime = /^[\w.+-]+\/[\w.+-]+(?:;[\x20-\x7e]*)?$/.test(req.headers['content-type'] || '') ? req.headers['content-type'] : 'application/octet-stream';
         const claimed = Number(req.headers['content-length']);
@@ -419,9 +439,13 @@ export function createAgentService({ root, dataRoot = root, port }) {
           await destination.close(); destination = null;
           if (Number.isFinite(claimed) && size !== claimed) fail(400, 'INCOMPLETE_UPLOAD', 'The upload ended before its declared length.');
           await rename(temporary, filePath(id));
-          const file = { id, name, size, mime, createdAt: now(), lastAccess: now() };
-          await atomic(path.join(fileDirectory, id + '.json'), file);
-          await mutate(async () => { files.set(id, file); json(res, 201, publicFile(file)); });
+          await mutate(async () => {
+            const connected = [...sessions.values()].filter(s => !s.closed && now() - s.lastSeen <= STALE);
+            const sessionId = explicitSessionId ? explicitSessionId.toLowerCase() : connected.length === 1 ? connected[0].id : undefined;
+            const file = { id, name, size, mime, createdAt: now(), lastAccess: now(), ...(sessionId ? { sessionId } : {}) };
+            await atomic(path.join(fileDirectory, id + '.json'), file);
+            files.set(id, file); json(res, 201, publicFile(file));
+          });
         } catch (error) { await destination?.close().catch(() => {}); await unlink(temporary).catch(() => {}); await unlink(filePath(id)).catch(() => {}); throw error; }
         finally { await mutate(async () => { uploadReservations -= reservation; activeUploads -= 1; }); }
         return true;
@@ -435,6 +459,24 @@ export function createAgentService({ root, dataRoot = root, port }) {
         file.lastAccess = now(); await atomic(path.join(fileDirectory, id + '.json'), file);
         res.writeHead(200, { 'Content-Type': file.mime, 'Content-Length': file.size, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name).replaceAll("'", '%27')}` });
         const stream = createReadStream(filePath(id)); stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return true;
+      }
+      if (fileMatch && req.method === 'DELETE') {
+        const id = fileMatch[1].toLowerCase();
+        const explicitSessionId = url.searchParams.get('sessionId') || req.headers['x-session-id'];
+        if (explicitSessionId && !uuid(explicitSessionId)) fail(400, 'INVALID_PARAMS', 'sessionId must be a UUID.');
+        await mutate(async () => {
+          const file = uuid(id) ? files.get(id) : null;
+          if (!file) fail(404, 'FILE_NOT_FOUND', 'This uploaded or exported file is unavailable.');
+          const connected = [...sessions.values()].filter(s => !s.closed && now() - s.lastSeen <= STALE);
+          const callerSessionId = explicitSessionId ? explicitSessionId.toLowerCase() : connected.length === 1 ? connected[0].id : null;
+          if (!callerSessionId) fail(409, connected.length > 1 ? 'AMBIGUOUS_SESSION' : 'NO_CONNECTED_SESSION', connected.length > 1 ? 'More than one browser session is connected. Supply sessionId from GET /sessions.' : 'Supply sessionId or connect the owning browser session.', { sessions: connected.map(publicSession) });
+          if (!uuid(file.sessionId) || callerSessionId !== file.sessionId.toLowerCase()) fail(403, 'FORBIDDEN', 'Only the session that uploaded this file may delete it.');
+          if (collectProtectedFiles({ activeOnly: true }).has(id)) fail(409, 'FILE_IN_USE', 'This staged file is still referenced by a queued or running job or an open scene.');
+          files.delete(id);
+          await unlink(filePath(id)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+          await unlink(path.join(fileDirectory, id + '.json')).catch(error => { if (error.code !== 'ENOENT') throw error; });
+          json(res, 200, { deleted: true, ...publicFile(file) });
+        }); return true;
       }
       fail(404, 'ROUTE_NOT_FOUND', 'Unknown agent API route. Read GET /api/agent/schema.');
     } catch (error) { json(res, error instanceof ApiError ? error.status : 500, { error: errorObject(error) }); return true; }

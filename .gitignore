@@ -11,3 +11,24 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Credentials, local editor files, and imported user content
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+Thumbs.db
+.idea/
+*.still
+*.fbx
+*.glb
+!public/motions/*.glb
+*.gltf
+*.bvh
+*.blend
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx

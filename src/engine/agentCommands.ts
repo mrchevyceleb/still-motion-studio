@@ -1,14 +1,16 @@
-import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
+import { activeTrack, combinedInterpolation, combinedKeys, createAnimationTrack, createLayerSampler, editableKeys, fitEmptyTracks, putLayerKey, recordTrackKey, trackEditDuration, underlyingTrackSampler } from './tracks';
+import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter, swapCharacterLook } from './character';
+import { morphKeyData } from './morphs';
 import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
-import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
+import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
-import { listArchives, readArchive, saveLocal } from './project';
+import { listArchives, readArchive } from './project';
 import { DEFAULT_SETTINGS } from '../types';
-import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind } from '../types';
+import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, TrackState } from '../types';
 
-export interface AgentStudio {
+export interface AgentStudio extends TrackState {
   title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration;
   duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind;
 }
@@ -21,6 +23,7 @@ export interface AgentEditor {
   snapshot(): Record<string, unknown>;
   document(): ProjectDocument;
   archive(): Promise<void>;
+  save(): Promise<void>;
   restore(document: unknown, signal: AbortSignal): Promise<void>;
   replace(asset: CharacterAsset, studio: AgentStudio, time?: number): void;
   commit(studio: AgentStudio): void;
@@ -32,15 +35,20 @@ export interface AgentEditor {
   progress(message: string, progress: number): void;
 }
 
-export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'keys.list', 'clips.list']);
+export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'keys.list', 'clips.list', 'tracks.list']);
 const copy = <T,>(value: T): T => structuredClone(value);
+const generationReport = (generation: MotionGeneration | undefined) => {
+  if (!generation) return null;
+  const { comparison: _comparison, ...report } = generation;
+  return report;
+};
 const uid = () => crypto.randomUUID();
 const number = (value: unknown, label: string, min: number, max: number): number => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) throw new Error(`${label} must be between ${min} and ${max}.`);
   return value;
 };
 const kindOf = (value: unknown): RigKind => {
-  if (value !== 'humanoid' && value !== 'quadruped') throw new Error('Choose humanoid or quadruped.');
+  if (value !== 'humanoid' && value !== 'quadruped' && value !== 'creature') throw new Error('Choose humanoid, quadruped or creature.');
   return value;
 };
 const nameOf = (value: unknown, fallback: string): string => {
@@ -53,32 +61,66 @@ const nameOf = (value: unknown, fallback: string): string => {
 export async function executeAgentCommand(editor: AgentEditor, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>> {
   signal.throwIfAborted();
   const { asset, studio } = editor;
-  const sequence = studio.generated ?? studio.keys;
-  const mode: InterpolationMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const baseSequence = studio.generated ?? studio.keys;
+  const baseMode: InterpolationMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const sequence = combinedKeys(studio, asset.restPose, asset.restMorphs, editor.fps);
+  const mode = combinedInterpolation(studio);
+  const layer = activeTrack(studio), editKeys = editableKeys(studio);
+  const sample = createLayerSampler(studio, asset.restPose, asset.restMorphs);
   const atTime = () => number(params.time ?? editor.time, 'Time', 0, studio.duration);
-  const poseAt = (time: number) => samplePose(sequence, time, mode);
+  const poseAt = (time: number) => sample(time).pose;
   const requireRig = () => { if (!asset.rigged || !asset.bones.length) throw new Error('Add a rig before editing poses or exporting animation.'); };
   const fullPose = (value: unknown): Pose => {
     if (!Array.isArray(value) || value.length !== asset.bones.length) throw new Error(`Pose must contain exactly ${asset.bones.length} bone transforms, in skeleton index order.`);
     return validateAgentPose(asset, value);
   };
-  const commit = (next: AgentStudio) => { signal.throwIfAborted(); editor.commit(next); };
+  const commit = (next: AgentStudio) => { signal.throwIfAborted(); editor.commit(fitEmptyTracks(next)); };
+  const commitKeys = (keys: PoseKey[], capture = false, interpolation?: InterpolationMode) => {
+    if (layer?.muted || !layer && studio.baseTrackMuted) throw new Error('Unmute the selected track before editing it.');
+    if (!layer) { commit({ ...studio, keys, sourceClip: null, ...(interpolation ? { settings: { ...studio.settings, interpolation } } : {}) }); return; }
+    let next = { ...layer, keys, ...(interpolation ? { interpolation } : {}) };
+    if (capture) for (const key of keys) next = recordTrackKey(next, key, sample(key.time), underlyingTrackSampler(studio, layer.id, asset.restPose, asset.restMorphs));
+    commit({ ...studio, tracks: studio.tracks!.map(t => t.id === layer.id ? next : t) });
+  };
   const put = (time: number, pose: Pose, label?: string) => {
-    const old = studio.keys.find(key => Math.abs(key.time - time) < 1e-7);
-    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose' };
-    commit({ ...studio, sourceClip: null, keys: [...studio.keys.filter(item => item.id !== old?.id), key].sort((a, b) => a.time - b.time) });
+    const old = editKeys.find(key => Math.abs(key.time - time) < 1e-7);
+    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', morphs: sample(time).morphs };
+    commit(putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs));
     editor.timeline(key.time);
-    return { key: copy(key) };
+    return { activeTrackId: layer?.id ?? null, key: copy(key) };
   };
   const artifact = async (blob: Blob, name: string) => ({ ...await uploadAgentFile(blob, name, signal) });
 
   switch (method) {
-    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, generation: studio.generation ?? null };
+    case 'tracks.list': return { activeTrackId: layer?.id ?? null, base: { id: null, name: studio.baseTrackName ?? 'Base motion', muted: !!studio.baseTrackMuted }, tracks: copy(studio.tracks ?? []) };
+    case 'tracks.add': {
+      if ((studio.tracks?.length ?? 0) >= 31) throw new Error('Use up to 32 tracks per scene.');
+      const name = nameOf(params.name, `Track ${(studio.tracks?.length ?? 0) + 2}`).slice(0, 80);
+      const track = createAnimationTrack(name, studio, asset.restPose, asset.restMorphs);
+      commit({ ...studio, tracks: [...studio.tracks ?? [], track], activeTrackId: track.id });
+      return { track: copy(track) };
+    }
+    case 'tracks.select': {
+      if (params.id !== null && !studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist.');
+      commit({ ...studio, activeTrackId: params.id as string | null }); return editor.snapshot();
+    }
+    case 'tracks.update': {
+      const track = studio.tracks?.find(t => t.id === params.id);
+      if (params.id !== null && !track) throw new Error('That track does not exist.');
+      const patch = { ...(params.name !== undefined ? { name: nameOf(params.name, '').slice(0, 80) } : {}), ...(params.muted !== undefined ? { muted: params.muted === true } : {}) };
+      commit(track ? { ...studio, tracks: studio.tracks!.map(t => t.id === track.id ? { ...t, ...patch } : t) } : { ...studio, ...(patch.name !== undefined ? { baseTrackName: patch.name } : {}), ...(patch.muted !== undefined ? { baseTrackMuted: patch.muted } : {}) });
+      return editor.snapshot();
+    }
+    case 'tracks.delete': {
+      if (!studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist. The base track stays in the scene.');
+      commit({ ...studio, tracks: studio.tracks.filter(t => t.id !== params.id), activeTrackId: studio.activeTrackId === params.id ? null : studio.activeTrackId }); return editor.snapshot();
+    }
+    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
       const document = editor.document();
-      await saveLocal(document); signal.throwIfAborted();
+      await editor.save(); signal.throwIfAborted();
       return artifact(new Blob([JSON.stringify(document)], { type: 'application/json' }), `${studio.title || 'Untitled'}.still`);
     }
     case 'scene.rename': commit({ ...studio, title: nameOf(params.name, studio.title) }); return editor.snapshot();
@@ -121,6 +163,21 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         return { ...editor.snapshot(), warnings: next.warnings };
       } finally { if (!adopted) disposeCharacter(next); }
     }
+    case 'character.swapLook': {
+      requireRig();
+      const file = await downloadAgentFile(String(params.fileId), signal);
+      const source = await importCharacter(file);
+      let next: CharacterAsset | undefined, adopted = false;
+      try {
+        signal.throwIfAborted();
+        next = swapCharacterLook(asset, source);
+        // The dressed take is a new scene; the original stays in the library untouched.
+        await editor.archive(); signal.throwIfAborted();
+        editor.replace(next, { ...studio, title: nameOf(params.name, studio.title) }, editor.time);
+        adopted = true;
+        return { ...editor.snapshot(), warnings: next.warnings };
+      } finally { disposeCharacter(source); if (next && !adopted) disposeCharacter(next); }
+    }
     case 'skeleton.inspect': return { ...inspectSkeleton(asset, poseAt(editor.time)) };
     case 'skeleton.kind': commit({ ...studio, rigKind: kindOf(params.kind), generated: undefined, generation: undefined }); return editor.snapshot();
     case 'skeleton.rig': {
@@ -128,10 +185,10 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const kind = kindOf(params.kind);
       await editor.archive(); signal.throwIfAborted();
       const next = autoRigCharacter(asset, kind);
-      editor.replace(next, { ...studio, keys: [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: studio.duration, pose: copy(next.restPose) }], generated: undefined, generation: undefined, sourceClip: null });
+      editor.replace(next, { ...studio, tracks: undefined, activeTrackId: null, baseTrackMuted: false, keys: [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: studio.duration, pose: copy(next.restPose) }], generated: undefined, generation: undefined, sourceClip: null });
       return { ...editor.snapshot(), warning: 'Template rig fitted; unusual anatomy may need manual cleanup.' };
     }
-    case 'pose.get': { const time = atTime(); return { time, pose: poseAt(time) }; }
+    case 'pose.get': { const time = atTime(); return { activeTrackId: layer?.id ?? null, time, pose: poseAt(time) }; }
     case 'pose.reset': requireRig(); return put(atTime(), copy(asset.restPose));
     case 'pose.set':
     case 'keys.put': {
@@ -141,10 +198,11 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     }
     case 'pose.move': {
       requireRig(); const time = atTime();
-      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number]);
+      const follow = params.follow === undefined ? undefined : number(params.follow, 'Follow feel', 0, 1);
+      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number], follow);
       return { ...put(time, result.pose), boneIndex: result.boneIndex, target: result.target, achieved: result.achieved, error: result.error };
     }
-    case 'keys.list': return { keys: params.includePoses ? copy(studio.keys) : studio.keys.map(({ id, time, label }) => ({ id, time, label })) };
+    case 'keys.list': return { activeTrackId: layer?.id ?? null, keys: params.includePoses ? copy(editKeys) : editKeys.map(({ id, time, label }) => ({ id, time, label })) };
     case 'keys.replace': {
       requireRig();
       if (!Array.isArray(params.keys) || params.keys.length < 2 || params.keys.length > 72001) throw new Error('Provide between 2 and 72001 complete pose keys.');
@@ -155,25 +213,25 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         times.add(time);
         return { id: uid(), time, pose: fullPose(key.pose), label: key.label as string | undefined };
       }).sort((a, b) => a.time - b.time);
-      commit({ ...studio, keys, sourceClip: null });
-      return { keys: keys.map(({ id, time, label }) => ({ id, time, label })) };
+      commitKeys(keys, true);
+      return { activeTrackId: layer?.id ?? null, keys: keys.map(({ id, time, label }) => ({ id, time, label })) };
     }
     case 'keys.delete': {
-      if (studio.keys.length <= 2) throw new Error('Keep at least two pose keys.');
-      if (!studio.keys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
-      commit({ ...studio, sourceClip: null, keys: studio.keys.filter(key => key.id !== params.id) }); return editor.snapshot();
+      if (editKeys.length <= 2) throw new Error('Keep at least two pose keys.');
+      if (!editKeys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
+      commitKeys(editKeys.filter(key => key.id !== params.id)); return editor.snapshot();
     }
     case 'keys.move': {
       const time = atTime();
-      if (!studio.keys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
-      if (studio.keys.some(key => key.id !== params.id && Math.abs(key.time - time) < 1e-7)) throw new Error('There is already a pose at that time.');
-      commit({ ...studio, sourceClip: null, keys: studio.keys.map(key => key.id === params.id ? { ...key, time } : key).sort((a, b) => a.time - b.time) });
+      if (!editKeys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
+      if (editKeys.some(key => key.id !== params.id && Math.abs(key.time - time) < 1e-7)) throw new Error('There is already a pose at that time.');
+      commitKeys(editKeys.map(key => key.id === params.id ? { ...key, time } : key).sort((a, b) => a.time - b.time));
       editor.timeline(time); return editor.snapshot();
     }
     case 'keys.simplify': {
       const count = number(params.count ?? 6, 'Pose count', 2, 120);
       if (!Number.isInteger(count)) throw new Error('Pose count must be an integer.');
-      commit({ ...studio, keys: simplifyKeys(studio.keys, count), sourceClip: null, settings: { ...studio.settings, interpolation: 'smooth' } });
+      commitKeys(simplifyKeys(editKeys, count, asset.restMorphs), false, 'smooth');
       return editor.snapshot();
     }
     case 'clips.list': return { clips: asset.clips.map((clip, index) => ({ index, name: clip.name, duration: clip.duration })), selected: studio.sourceClip ?? null };
@@ -181,7 +239,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const index = number(params.index, 'Clip index', 0, asset.clips.length - 1);
       if (!Number.isInteger(index)) throw new Error('Clip index must be an integer.');
       const clip = asset.clips[index], keys = sampleClip(asset, clip);
-      commit({ ...studio, keys, duration: Math.max(clip.duration, 1 / editor.fps), sourceClip: index, settings: { ...studio.settings, interpolation: 'linear' } });
+      commit({ ...studio, baseMotionName: (clip.name || 'Imported animation').slice(0, 200), keys, duration: trackEditDuration({ ...studio, activeTrackId: null }, Math.max(clip.duration, 1 / editor.fps)), sourceClip: index, settings: { ...studio.settings, interpolation: 'linear' } });
       editor.timeline(0); return editor.snapshot();
     }
     case 'timeline.set': {
@@ -191,15 +249,19 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const retime = params.retime !== false;
       const time = number(params.time ?? Math.min(duration, editor.time * (retime ? duration / studio.duration : 1)), 'Time', 0, duration);
       if (duration !== studio.duration) {
-        if (!retime && studio.keys.some(key => key.time > duration)) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
+        if (!retime && [studio.keys, ...studio.tracks?.map(t => t.keys) ?? []].some(keys => keys.some(key => key.time > duration))) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
         const keys = studio.keys.map(key => ({ ...key, time: retime ? key.time * duration / studio.duration : key.time }));
-        commit({ ...studio, duration, keys, sourceClip: null });
+        commit({ ...studio, duration, keys, tracks: studio.tracks?.map(t => ({ ...t, keys: t.keys.map(k => ({ ...k, time: retime ? k.time * duration / studio.duration : k.time })) })), sourceClip: null });
       }
       editor.timeline(time, fps); return editor.snapshot();
     }
     case 'playback.set': editor.play(params.playing === true); return editor.snapshot();
     case 'settings.set': {
       const patch = params as Partial<MotionSettings>;
+      if (layer && patch.interpolation) {
+        const { interpolation, ...settings } = patch;
+        commit({ ...studio, settings: { ...studio.settings, ...settings }, tracks: studio.tracks!.map(t => t.id === layer.id ? { ...t, interpolation: interpolation! } : t) }); return editor.snapshot();
+      }
       commit({ ...studio, ...(patch.interpolation ? { generated: undefined, generation: undefined } : {}), settings: { ...studio.settings, ...patch } });
       return editor.snapshot();
     }
@@ -222,7 +284,6 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       finally { applyPose(asset, editor.pose); }
       return editor.snapshot();
     }
-    case 'motion.recover': await recoverNativeEngine(); return { engine: await getEngineStatus() };
     case 'motion.run': {
       requireRig();
       const engine = await getEngineStatus(); signal.throwIfAborted();
@@ -231,16 +292,16 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (provider.limits?.humanoidOnly && asset.kind !== 'humanoid' || provider.limits?.quadrupedOnly && asset.kind !== 'quadruped') throw new Error('This provider does not support the current rig category.');
       if (provider.limits?.maxDuration && studio.duration > provider.limits.maxDuration) throw new Error(`This provider supports up to ${provider.limits.maxDuration} seconds.`);
       const count = params.simplifyCount ?? (studio.keys.length > 24 ? 6 : undefined);
-      const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120));
-      const settings = { ...studio.settings, interpolation: mode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
-      const request = makeMotionRequest(asset, sequence, anchors, studio.duration, settings, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
+      const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120), asset.restMorphs);
+      const settings = { ...studio.settings, interpolation: baseMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
+      const request = makeMotionRequest(asset, baseSequence, anchors, studio.duration, settings, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
       try {
         const result = await generateMotion(request, editor.progress, signal); signal.throwIfAborted();
-        const generated = restoreEngineFrames(asset, sequence, anchors, result, mode, studio.duration, provider.learned);
-        const keys = provider.learned ? anchors : anchors.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
-        const generation = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [] };
+        const generated = restoreEngineFrames(asset, baseSequence, anchors, result, baseMode, studio.duration, provider.learned);
+        const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
+        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: copy(baseSequence), interpolation: baseMode } } : {}) };
         commit({ ...studio, keys, generated, generation, sourceClip: null });
-        return { ...editor.snapshot(), generation, generatedFrames: generated.length };
+        return { ...editor.snapshot(), generation: generationReport(generation), generatedFrames: generated.length };
       } finally { applyPose(asset, editor.pose); }
     }
     case 'export': {
@@ -256,11 +317,13 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (format !== 'glb' && format !== 'unreal') throw new Error('Export format must be glb, still, unreal, or png.');
       const fps = params.fps ?? editor.fps;
       if (format === 'unreal' && ![24, 30, 60].includes(fps as number)) throw new Error('Unreal export needs 24, 30, or 60 fps. Set fps explicitly for this export.');
+      if (format === 'unreal' && params.retarget === 'skeleton' && !asset.referenceFbx?.byteLength) throw new Error('Import the original character FBX with scene.import or still_import_file before exporting onto an existing Unreal Skeleton. Saved Still projects do not retain that FBX.');
       try {
         const clip = buildAnimationClip(asset, sequence, studio.duration, { ...studio.settings, interpolation: mode });
         const binary = await exportCharacterGLB(asset, clip); signal.throwIfAborted();
         if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: studio.generation ?? null };
-        const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | undefined, targetMesh: params.targetMesh as string | undefined }, editor.progress, signal);
+        const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | 'skeleton' | undefined, targetMesh: params.targetMesh as string | undefined, targetSkeleton: params.targetSkeleton as string | undefined, ...(params.retarget === 'skeleton' ? { referenceFbx: asset.referenceFbx } : {}) }, editor.progress, signal);
+        if (!result.package) throw new Error('The Unreal package could not be downloaded.');
         return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: studio.generation ?? null };
       } finally { applyPose(asset, editor.pose); }
     }

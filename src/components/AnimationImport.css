@@ -1,0 +1,28 @@
+.character-import-actions { display: grid; gap: 6px; }
+.character-import-actions .animation-import-button { margin-top: 0; }
+.animation-import-target { display: flex; gap: 10px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-size: 12px; }
+.animation-import-target > svg { color: var(--accent); flex-shrink: 0; }
+.animation-import-target span { min-width: 0; overflow-wrap: anywhere; }
+.animation-import small { display: block; color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 4px; }
+.animation-import > label { display: block; margin: 14px 0; font-size: 12px; }
+.animation-import select, .animation-import input[type=number] { display: block; width: 100%; padding: 10px; margin-top: 7px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); }
+.animation-import-modes { border: 0; padding: 0; margin: 18px 0; }
+.animation-import-modes legend { font-size: 12px; font-weight: 600; margin-bottom: 9px; }
+.animation-import-modes label { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin: 7px 0; cursor: pointer; font-size: 12px; }
+.animation-import-modes label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--paper)); }
+.animation-import-modes input { accent-color: var(--accent); margin-top: 2px; }
+.animation-import .animation-import-file { overflow-wrap: anywhere; font-size: 12px; }
+.animation-import .animation-import-error { border: 1px solid var(--line); border-radius: 6px; padding: 10px; color: var(--ink); font-size: 12px; }
+.animation-import .animation-import-footnote { font-size: 11px; margin-bottom: 0; }
+.animation-sources { margin: 16px 0; font-size: 12px; }
+.animation-sources summary, .animation-mapping summary { cursor: pointer; font-weight: 600; }
+.animation-sources > div { display: grid; gap: 8px; }
+.animation-sources > div > a { display: block; padding: 11px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink); text-decoration: none; }
+.animation-sources strong { display: flex; justify-content: space-between; }
+.animation-sources small, .animation-sources span { display: block; margin-top: 5px; line-height: 1.5; }
+.animation-sources small { color: var(--muted); }
+.animation-mapping { margin: 14px 0; font-size: 12px; }
+.animation-mapping-list { max-height: 260px; overflow: auto; margin-top: 10px; }
+.animation-mapping-list label { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; overflow-wrap: anywhere; }
+.animation-mapping-list select { min-width: 0; }
+@media (max-width: 720px) { .character-import-actions { flex-shrink: 0; } .character-import-actions .import-button { width: 100%; } }

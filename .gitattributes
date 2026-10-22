@@ -1,0 +1,2 @@
+# The motion catalog is checked byte for byte at build time; keep it identical on every OS.
+public/motions/catalog.json text eol=lf

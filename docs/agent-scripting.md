@@ -40,6 +40,8 @@ await still.exportFile('glb', './edited-motion.glb', {
 });
 ```
 
+Pass `follow` (0 to 1) on `pose.move` to drag a head's whole neck, tail or tentacle after it, up to where chains meet: 0 bends it in one smooth snaky curve, 1 bends it at a few stiff robotic hinges, and the moved joint keeps its world aim. It matches the editor's Follow tool (F). Limbs keep the four-ancestor IK.
+
 `pose.move` targets use the editor's world coordinates: approximately meters, +Y up and +Z forward. Full poses and `pose.set` bone edits use **native local bone units**, which may differ on imported skeletons. Quaternions are `[x,y,z,w]`; `rotationDegrees` is local XYZ Euler rotation. Prefer bone indices from `skeleton.inspect`: duplicate bone names cannot identify an unambiguous joint. A pose array contains one transform per bone, in that inspection order.
 
 Every command result includes `revision`. Pass the last observed revision as `expectedRevision` on dependent edits or exports. A concurrent user edit fails that command rather than allowing a stale script to replace newer work. Read the scene again before deciding how to continue; do not blindly retry a revision conflict.
@@ -55,7 +57,7 @@ Every command result includes `revision`. Pass the last observed revision as `ex
 | `downloadFile(fileId, path, options)` | Save a staged file locally. |
 | `exportFile(format, path, options)` | Export `glb`, `still`, `unreal` ZIP, or viewport `png`, then save it. |
 
-`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Native cleanup may finish afterward, so inspect the job until terminal before assuming cancellation completed.
+`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Inspect the job until terminal before assuming cancellation completed.
 
 The client never automatically retries a mutation. An uncertain network outcome includes `error.details.jobId`; inspect that job. If resubmission is appropriate, reuse its **same UUID, session, method, and parameters**, including revision. A new UUID means a new command. Application failures use `StillError` with `code` and `details`.
 
@@ -100,7 +102,7 @@ Configure an MCP client to launch Node with an absolute script path. A typical s
   "mcpServers": {
     "still": {
       "command": "node",
-      "args": ["C:/DEV-PROJECTS/personal-projects/still-motion-studio/scripts/still-mcp.mjs"]
+      "args": ["C:/path/to/still-motion-studio/scripts/still-mcp.mjs"]
     }
   }
 }
@@ -118,4 +120,12 @@ The live editor check also passed: the CLI example authored six keys with distin
 
 `scene.inspect` includes camera limits. `view.set` accepts coordinates between -10000 and 10000, a 10–100 degree field of view, and a position-to-target distance of 1.2–15 world units.
 
-For Unreal exports, `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"manny"})` adds a gameplay root and prepares automatic target retargeting during Unreal import. `targetMesh` is an optional `/Game/...` SkeletalMesh object path; use it to select a particular MetaHuman body. The same fields can be passed in SDK `exportFile` settings.
+For Unreal exports, `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"manny"})` adds a gameplay root and prepares automatic target retargeting during Unreal import. `targetMesh` is an optional `/Game/...` SkeletalMesh object path; use it to select a particular MetaHuman body. With `retarget:"none"`, pass a matching Skeleton or SkeletalMesh path in `targetMesh` to import animation directly onto an existing character. Use `rootMotion:"preserve"` unless the target has the same added root bone. The same fields can be passed in SDK `exportFile` settings.
+
+For the existing character's own bone names and rest pose, import its original binary FBX in the current session, then use `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"skeleton", targetSkeleton:"/Game/KarateBear/SKEL_KarateBear.SKEL_KarateBear"})`. The reference FBX defaults to the imported asset's bytes; `scene.inspect` reports availability as `hasReferenceFbx`; saved `.still` projects do not retain them. `targetSkeleton` also works in SDK `exportFile` settings and the `still_export_file` MCP tool.
+
+## Layered tracks
+
+Use `tracks.add` with an optional `name` (for example `Blinks`). It selects the new track. `pose.set`, `pose.move`, and key editing commands now edit the selected track and automatically capture only changed properties. Other tracks keep playing. Use `tracks.select` with `id: null` for the base motion; `tracks.list` returns layer IDs in bottom-to-top order. `tracks.update` renames or mutes a track, and `tracks.delete` removes an overlay with Undo support. Higher tracks override lower tracks only where they animate the same property. Scene saves retain separate tracks; GLB and Unreal exports combine enabled tracks into one animation.
+
+Pose and key read/write results identify the selected row with `activeTrackId` (`null` means the base). Select the intended row explicitly when resuming a saved scene. Whole-scene Repeat requires animated tracks to span the full timeline; shifted tracks must be extended first. Muted authored tracks keep their timing so unmuting restores the complete motion; empty tracks do not prevent shortening the scene.

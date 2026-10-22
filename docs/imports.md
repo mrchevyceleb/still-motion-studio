@@ -14,7 +14,22 @@ Exported GLB nodes include a small joint marker in standard glTF extras. This al
 
 ## Starter rigs
 
-An unrigged mesh can receive a humanoid or quadruped template and four normalized weights per vertex based on distance to bone segments. This is a geometric starting point, not trained AI auto-rigging. Humanoids should be upright and in a T-pose; quadrupeds should be standing, Y-up, and facing +Z. Unusual proportions, clothing, closed poses, tails, and intersecting limbs can need better fitting or hand-authored weights. Existing rigs bypass this operation entirely.
+An unrigged mesh can receive a humanoid, quadruped, or editable creature-chain template and four normalized weights per vertex based on distance to bone segments. Humanoid fitting includes five fingers per hand by default: three bend joints and an endpoint for each digit. A placement preview lets you inspect both hands, drag individual landmarks, or enter their coordinates before binding. Neighboring finger branches receive separate weight families and finer distance falloff. Exposed fingertip components are found from the mesh samples; missing or ambiguous digits remain flagged estimates. Use open hands with separated fingers, and check every estimated joint. Gloves and fused fingers cannot gain separate mesh geometry from rigging alone. Body-only fitting remains available. Finger joints can be shown in the editor; Rotate edits them individually, and fingertip IK stops at the palm instead of moving the arm. Saved projects and original-skeleton exports preserve all finger joints.
+
+Creature presets include hydra heads with separate jaws, a serpent chain, and tentacles, with 1–8 chains and 2–10 joints per chain. They have a placement preview and require no feet. See [creature workflow](creature-animation.md).
+
+This is a geometric starting point, not trained AI auto-rigging. Humanoids should be upright and in an A-pose or T-pose; quadrupeds should be standing, Y-up, and facing +Z. Unusual proportions, clothing, closed poses, tails, and intersecting limbs can need better fitting or hand-authored weights. Existing rigs bypass this operation entirely; the practice humanoid keeps its original body-only skeleton so older saved scenes remain compatible.
+
+## Apply a separate animation
+
+1. Use **Import a character** to load your rigged character. Download its initial Mixamo FBX with **With Skin** if you need the mesh too.
+2. In Mixamo, choose the animation for the same character and download an FBX. **Without Skin** includes the animated skeleton; **With Skin** also works.
+3. Choose **Import animation** under **Your character**, then select that animation file. Select its clip if it has several.
+4. Choose **Apply to character** to replace the current motion, or **Append after current motion** to add it to the end. Set the transition duration for an append; zero makes a cut.
+
+The existing character and skin are retained; only editable motion keys change. One Undo restores the previous take. Saved scenes, GLB and Unreal exports use the imported or combined motion. Review contacts after blending.
+
+**Matching rig** uses compatible-skeleton transfer. **Retarget with joint mapping** also accepts different rigs and BVH; it transfers rotations and optional scaled root travel, keeping target proportions. See [creature rigs and animation sources](creature-animation.md) for workflow and limits. In matching-rig mode, Matching joints may have different Mixamo namespaces or file order, but the animated joints, ancestry, bind transforms and fixed parent coordinate frames must agree. Missing or ambiguous joints and incompatible rigs are rejected without changing the scene. For a differently rigged character, choose joint mapping, or retarget externally before importing. **Import a character** and a file dropped onto the workspace open a new scene; they do not apply motion to the current character.
 
 ## Verified paths
 

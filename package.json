@@ -1,26 +1,28 @@
 {
   "name": "still-motion-studio",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.24",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "engine": "node server/engine.mjs",
-    "build": "tsc -b && vite build",
+    "build": "npm run motions:verify && tsc -b && vite build && node scripts/dependency-notices.mjs",
+    "motions:catalog": "node scripts/prepare-motion-library.mjs",
+    "motions:verify": "node scripts/prepare-motion-library.mjs --check",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "vitest run",
+    "test": "vitest run && node --test desktop/updates.node-test.cjs",
     "desktop": "electron .",
     "desktop:prepare": "npm run build && node scripts/prepare-desktop.mjs",
     "desktop:pack": "npm run desktop:prepare && electron-builder --dir",
-    "desktop:dist": "npm run desktop:prepare && electron-builder --win nsis --publish never",
-    "desktop:release": "npm run desktop:dist && node scripts/release-desktop.mjs"
+    "desktop:dist": "npm run desktop:prepare && node scripts/build-desktop.mjs",
+    "desktop:release": "gh workflow run release.yml --ref main"
   },
   "dependencies": {
     "electron-updater": "6.8.9",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "three": "^0.180.0"
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
@@ -32,7 +34,21 @@
     "electron-builder": "^26.15.3",
     "typescript": "~5.8.3",
     "vite": "^8.3.4",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.4"
   },
-  "main": "desktop/main.cjs"
+  "main": "desktop/main.cjs",
+  "description": "A local character animation editor with posing, motion tools, physics, Unreal export, and agent scripting.",
+  "license": "MIT",
+  "author": "Matt Johnston",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrchevyceleb/still-motion-studio.git"
+  },
+  "homepage": "https://github.com/mrchevyceleb/still-motion-studio#readme",
+  "bugs": {
+    "url": "https://github.com/mrchevyceleb/still-motion-studio/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

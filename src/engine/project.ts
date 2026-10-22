@@ -1,9 +1,13 @@
 import type { CharacterAsset, ProjectDocument } from '../types';
+import { characterEntry, characterFingerprint } from './characterLibrary';
+import type { CharacterEntry, SavedCharacter } from './characterLibrary';
 
 const DATABASE = 'still-motion-studio';
 const STORE = 'projects';
 let saveQueue = Promise.resolve();
 export interface ArchiveEntry { id: string; name: string; updatedAt: number }
+export interface SceneEntry extends ArchiveEntry { createdAt: number; duration: number; keyCount: number; kind: CharacterAsset['kind']; characterId?: string; thumbnail?: string; revision?: number }
+export interface SceneWriteToken { id: string; revision: number }
 
 function database(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -14,23 +18,196 @@ function database(): Promise<IDBDatabase> {
   });
 }
 
-export function saveLocal(document: ProjectDocument): Promise<void> {
-  const task = saveQueue.catch(() => {}).then(() => writeLocal(document));
-  saveQueue = task;
+function enqueue<T>(write: () => Promise<T>): Promise<T> {
+  const task = saveQueue.catch(() => {}).then(write);
+  saveQueue = task.then(() => {}, () => {});
   return task;
 }
 
-async function writeLocal(document: ProjectDocument): Promise<void> {
+async function withStore<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore, result: (value: T) => void) => void): Promise<T> {
   const db = await database();
   try {
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(STORE, 'readwrite');
-      transaction.objectStore(STORE).put(document, 'current');
-      transaction.oncomplete = () => resolve();
+    return await new Promise<T>((resolve, reject) => {
+      const transaction = db.transaction(STORE, mode);
+      let result: T;
+      transaction.oncomplete = () => resolve(result);
       transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error ?? new Error('The scene could not be saved.'));
+      try { action(transaction.objectStore(STORE), value => { result = value; }); }
+      catch (error) { transaction.abort(); reject(error); }
     });
   } finally { db.close(); }
+}
+
+function readValue<T>(key: string): Promise<T> {
+  return withStore('readonly', (store, done) => {
+    const request = store.get(key);
+    request.onsuccess = () => done(request.result);
+  });
+}
+
+function sceneEntry(document: ProjectDocument, id: string, previous?: SceneEntry, thumbnail?: string): SceneEntry {
+  return { id, name: document.name.trim() || 'Untitled', createdAt: previous?.createdAt ?? Date.now(), updatedAt: Date.now(), duration: document.duration, keyCount: document.keys.length, kind: document.character.kind, characterId: document.characterId, thumbnail: thumbnail ?? previous?.thumbnail };
+}
+
+/** Idempotent migration in one transaction. Original scenes and recovery backups remain portable. */
+export function initializeCharacterLibrary(): Promise<void> {
+  return enqueue(() => withStore<void>('readwrite', (store, done) => {
+    const index = store.get('scene-index'), characters = store.get('character-index'), current = store.get('current-scene-id');
+    current.onsuccess = () => {
+      const entries: SceneEntry[] = index.result ?? [];
+      const saved: CharacterEntry[] = characters.result ?? [];
+      let pending = entries.length;
+      if (!pending) { done(); return; }
+      for (const entry of entries) {
+        const request = store.get(`scene:${entry.id}`);
+        request.onsuccess = () => {
+          const document: ProjectDocument | undefined = request.result;
+          if (document?.boneNames.length && !saved.some(character => character.id === entry.characterId)) {
+            const fingerprint = characterFingerprint(document.character, document.boneNames);
+            let character = saved.find(value => value.fingerprint === fingerprint);
+            if (!character) {
+              const record = characterEntry(document, crypto.randomUUID(), entry.thumbnail);
+              const { model: _model, boneNames: _bones, ...metadata } = record;
+              saved.push(metadata); character = metadata;
+              store.put(record, `character:${record.id}`);
+            }
+            entry.characterId = character.id;
+            document.characterId = character.id;
+            store.put(document, `scene:${entry.id}`);
+            if (current.result === entry.id) store.put(document, 'current');
+          }
+          if (!--pending) { store.put(entries, 'scene-index'); store.put(saved, 'character-index'); done(undefined); }
+        };
+      }
+    };
+  }));
+}
+
+export async function listCharacters(): Promise<CharacterEntry[]> {
+  return await readValue<CharacterEntry[] | undefined>('character-index') ?? [];
+}
+
+export async function readCharacter(id: string): Promise<SavedCharacter> {
+  const character = await readValue<SavedCharacter | undefined>(`character:${id}`);
+  if (!character) throw new Error('This character is no longer in your library.');
+  return character;
+}
+
+/** Renaming changes the label only. The model and rig are immutable. */
+export function renameCharacter(id: string, name: string): Promise<void> {
+  const title = name.trim();
+  if (!title || title.length > 200) return Promise.reject(new Error('Give this character a name of 1–200 characters.'));
+  return enqueue(() => withStore<void>('readwrite', (store, done) => {
+    const index = store.get('character-index'), character = store.get(`character:${id}`);
+    character.onsuccess = () => {
+      if (!character.result) { store.transaction.abort(); return; }
+      store.put({ ...character.result, name: title }, `character:${id}`);
+      store.put((index.result as CharacterEntry[]).map(entry => entry.id === id ? { ...entry, name: title } : entry), 'character-index');
+      done(undefined);
+    };
+  }));
+}
+
+/** Current recovery slot and permanent library entry commit together, or neither does. */
+export function saveLocal(document: ProjectDocument, sceneId?: string, thumbnail?: string, token?: SceneWriteToken): Promise<{ id: string; revision: number; forked: boolean; characterId?: string }> {
+  const fingerprint = characterFingerprint(document.character, document.boneNames);
+  const snapshot = structuredClone(document);
+  return enqueue(async () => {
+    const result = await withStore<{ id: string; revision: number; forked: boolean; characterId?: string }>('readwrite', (store, done) => {
+    const current = store.get('current-scene-id');
+    current.onsuccess = () => {
+      const index = store.get('scene-index');
+      const characters = store.get('character-index');
+      characters.onsuccess = () => {
+        const entries: SceneEntry[] = index.result ?? [];
+        const requestedId = token?.id ?? sceneId ?? current.result ?? crypto.randomUUID();
+        const previous = entries.find(entry => entry.id === requestedId);
+        const forked = !!token && (previous?.revision ?? 0) !== token.revision;
+        const id = forked ? crypto.randomUUID() : requestedId;
+        const revision = forked ? 1 : (previous?.revision ?? 0) + 1;
+        const saved: CharacterEntry[] = characters.result ?? [];
+        // Unrigged imports are drafts until binding succeeds; never advertise them as locked characters.
+        if (snapshot.boneNames.length) {
+          let character = saved.find(value => value.id === snapshot.characterId && value.fingerprint === fingerprint)
+            ?? saved.find(value => value.fingerprint === fingerprint);
+          if (!character) {
+            const record = characterEntry(snapshot, crypto.randomUUID(), thumbnail);
+            const { model: _model, boneNames: _bones, ...metadata } = record;
+            character = metadata; saved.push(metadata);
+            store.put(record, `character:${record.id}`);
+          }
+          snapshot.characterId = character.id;
+          store.put(saved, 'character-index');
+        } else delete snapshot.characterId;
+        store.put(snapshot, 'current');
+        store.put(id, 'current-scene-id');
+        store.put(snapshot, `scene:${id}`);
+        store.put([{ ...sceneEntry(snapshot, id, forked ? undefined : previous, thumbnail), revision }, ...entries.filter(entry => entry.id !== id)], 'scene-index');
+        done({ id, revision, forked, characterId: snapshot.characterId });
+      };
+    };
+    });
+    // Tokens follow a conflict copy so already-queued writes from this window stay together.
+    if (token) { token.id = result.id; token.revision = result.revision; }
+    return result;
+  });
+}
+
+export async function loadSession(): Promise<{ document?: ProjectDocument; sceneId: string; revision: number }> {
+  return withStore('readonly', (store, done) => {
+    const document = store.get('current');
+    const id = store.get('current-scene-id');
+    const index = store.get('scene-index');
+    index.onsuccess = () => done({ document: document.result, sceneId: id.result ?? crypto.randomUUID(), revision: (index.result as SceneEntry[] | undefined)?.find(entry => entry.id === id.result)?.revision ?? 0 });
+  });
+}
+
+export async function listScenes(): Promise<SceneEntry[]> {
+  return (await readValue<SceneEntry[] | undefined>('scene-index') ?? []).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function readScene(id: string): Promise<{ document: ProjectDocument; revision: number }> {
+  const result = await withStore<{ document: unknown; revision: number }>('readonly', (store, done) => {
+    const document = store.get(`scene:${id}`), index = store.get('scene-index');
+    index.onsuccess = () => done({ document: document.result, revision: (index.result as SceneEntry[] | undefined)?.find(entry => entry.id === id)?.revision ?? 0 });
+  });
+  return { document: validateProject(result.document), revision: result.revision };
+}
+
+/** Change a saved scene without loading it into the editor. */
+export function editScene(id: string, change: 'rename' | 'duplicate' | 'delete', name?: string): Promise<number | undefined> {
+  const title = name?.trim();
+  if (change === 'rename' && (!title || title.length > 200)) return Promise.reject(new Error('Give this scene a name of 1–200 characters.'));
+  return enqueue(() => withStore<number | undefined>('readwrite', (store, done) => {
+    const index = store.get('scene-index');
+    const current = store.get('current-scene-id');
+    const document = store.get(`scene:${id}`);
+    document.onsuccess = () => {
+      const entries: SceneEntry[] = index.result ?? [];
+      const previous = entries.find(entry => entry.id === id);
+      if (!previous || !document.result) { store.transaction.abort(); return; }
+      if (change === 'delete') {
+        store.delete(`scene:${id}`);
+        store.put(entries.filter(entry => entry.id !== id), 'scene-index');
+        if (current.result === id) { store.delete('current'); store.delete('current-scene-id'); }
+      } else {
+        const nextId = change === 'duplicate' ? crypto.randomUUID() : id;
+        const next = { ...document.result, name: title ?? `${previous.name.slice(0, 193)} (copy)` };
+        const revision = change === 'duplicate' ? 1 : (previous.revision ?? 0) + 1;
+        store.put(next, `scene:${nextId}`);
+        store.put([{ ...sceneEntry(next, nextId, change === 'duplicate' ? undefined : previous, previous.thumbnail), revision }, ...entries.filter(entry => entry.id !== nextId)], 'scene-index');
+        if (current.result === id && change === 'rename') store.put(next, 'current');
+        done(revision);
+      }
+    };
+  }));
+}
+
+export function archiveLocal(document: ProjectDocument): Promise<void> {
+  const task = saveQueue.catch(() => {}).then(() => writeArchive(document));
+  saveQueue = task;
+  return task;
 }
 
 export async function loadLocal(): Promise<ProjectDocument | undefined> {
@@ -56,8 +233,7 @@ export async function listArchives(): Promise<ArchiveEntry[]> {
 }
 
 /** Keep the last five replaced scenes, independently of the current recovery slot. */
-export function archiveLocal(document: ProjectDocument): Promise<void> {
-  const task = saveQueue.catch(() => {}).then(async () => {
+async function writeArchive(document: ProjectDocument): Promise<void> {
     const db = await database();
     try {
       await new Promise<void>((resolve, reject) => {
@@ -77,9 +253,6 @@ export function archiveLocal(document: ProjectDocument): Promise<void> {
         transaction.onabort = () => reject(transaction.error);
       });
     } finally { db.close(); }
-  });
-  saveQueue = task;
-  return task;
 }
 
 export async function readArchive(id: string): Promise<ProjectDocument> {
@@ -109,7 +282,7 @@ export function validateProject(input: unknown): ProjectDocument {
       (data.sourceClip != null && (!Number.isInteger(data.sourceClip) || data.sourceClip < 0)) ||
       !Array.isArray(data.keys) || !data.keys.length || data.keys.length > 72001 ||
       !data.character || !['demo', 'embedded'].includes(data.character.type) ||
-      !['humanoid', 'quadruped'].includes(data.character.kind) || !data.settings ||
+      !['humanoid', 'quadruped', 'creature'].includes(data.character.kind) || (data.character.type === 'demo' && data.character.kind === 'creature') || !data.settings ||
       !['smooth', 'linear', 'stepped'].includes(data.settings.interpolation) ||
       typeof data.settings.floorContact !== 'boolean' ||
       !Number.isFinite(data.settings.gravity) || data.settings.gravity < 0 || data.settings.gravity > 30 ||
@@ -118,10 +291,28 @@ export function validateProject(input: unknown): ProjectDocument {
   }
   if (data.generated !== undefined && (!Array.isArray(data.generated) || data.generated.length < 2 || data.generated.length > 72001)) throw new Error('This project contains invalid generated motion.');
   if (data.generation !== undefined && (!data.generation || typeof data.generation.name !== 'string' || !['inbetween', 'physics'].includes(data.generation.kind) || !data.generation.metrics || typeof data.generation.metrics !== 'object' || !Array.isArray(data.generation.warnings) || !data.generation.warnings.every(w => typeof w === 'string'))) throw new Error('This project contains invalid generation details.');
-  for (const sequence of [data.keys, ...(data.generated ? [data.generated] : [])]) {
+  const comparison = data.generation?.comparison;
+  if (comparison !== undefined && (!comparison || data.generation?.kind !== 'physics' || !data.generated || !Array.isArray(comparison.before) || comparison.before.length < 1 || comparison.before.length > 72001 || !['smooth', 'linear', 'stepped'].includes(comparison.interpolation))) throw new Error('This project contains an invalid physics comparison.');
+  if (data.baseMotionName !== undefined && (typeof data.baseMotionName !== 'string' || data.baseMotionName.length > 200)) throw new Error('This project contains an invalid motion name.');
+  if (data.baseTrackName !== undefined && (typeof data.baseTrackName !== 'string' || !data.baseTrackName.trim() || data.baseTrackName.length > 80) || data.baseTrackMuted !== undefined && typeof data.baseTrackMuted !== 'boolean') throw new Error('This project contains invalid track details.');
+  if (data.tracks !== undefined) {
+    if (!Array.isArray(data.tracks) || data.tracks.length > 31) throw new Error('This project contains too many animation tracks.');
+    const ids = new Set<string>();
+    for (const track of data.tracks) {
+      if (!track || typeof track.id !== 'string' || !track.id || ids.has(track.id) || typeof track.name !== 'string' || !track.name.trim() || track.name.length > 80 || typeof track.muted !== 'boolean' || !['smooth', 'linear', 'stepped'].includes(track.interpolation) || !Array.isArray(track.keys) || track.keys.length < 2 || track.keys.length > 72001 || !Array.isArray(track.channels) || !Array.isArray(track.morphs) || track.morphs.some(name => typeof name !== 'string' || !name) || track.channels.some(c => !c || !Number.isInteger(c.bone) || c.bone < 0 || c.bone >= data.boneNames!.length || !['position', 'quaternion', 'scale'].includes(c.property))) throw new Error('This project contains an invalid animation track.');
+      ids.add(track.id);
+    }
+  }
+  if (data.activeTrackId != null && !data.tracks?.some(t => t.id === data.activeTrackId)) throw new Error('This project selects a missing animation track.');
+  for (const sequence of [data.keys, ...(data.tracks ?? []).map(t => t.keys), ...(data.generated ? [data.generated] : []), ...(comparison ? [comparison.before] : [])]) {
    const times = new Set<number>();
    const ids = new Set<string>();
    for (const key of sequence) {
+    if (!key || typeof key !== 'object') throw new Error('This project contains invalid pose data.');
+    if (key.morphs !== undefined && (!key.morphs || typeof key.morphs !== 'object' || Array.isArray(key.morphs) ||
+        Object.entries(key.morphs).some(([name, value]) => !name || typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('This project contains invalid morph values.');
+    }
     if (typeof key.id !== 'string' || ids.has(key.id) || !Number.isFinite(key.time) || key.time < 0 || key.time > data.duration + 0.001 ||
         times.has(key.time) || !Array.isArray(key.pose) || key.pose.length !== data.boneNames.length ||
         key.pose.some(bone => !bone || ![bone.position, bone.quaternion, bone.scale].every((a, i) =>
@@ -131,7 +322,7 @@ export function validateProject(input: unknown): ProjectDocument {
     ids.add(key.id); times.add(key.time);
    }
   }
-  return { ...data, keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined };
+  return { ...data, tracks: data.tracks?.map(t => ({ ...t, keys: [...t.keys].sort((a, b) => a.time - b.time) })), keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined, generation: comparison ? { ...data.generation!, comparison: { ...comparison, before: [...comparison.before].sort((a, b) => a.time - b.time) } } : data.generation };
 }
 
 export function downloadFile(contents: BlobPart, filename: string, type: string): void {

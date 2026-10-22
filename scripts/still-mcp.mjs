@@ -24,11 +24,12 @@ const tools = [
     wait: { type: 'boolean', default: true },
   }, ['method']),
   tool('still_job', 'Read an existing command job, including completion, error, cancellation, or result.', { id: string }, ['id'], true),
-  tool('still_cancel', 'Request cancellation of a command job. Cancellation may remain pending while native cleanup finishes.', { id: string }, ['id']),
+  tool('still_cancel', 'Request cancellation of a command job. Poll the job until cancellation is acknowledged.', { id: string }, ['id']),
   tool('still_import_file', 'Upload a local FBX, GLB, or Still project file and import it into the selected tab. This replaces the scene. Server-side arbitrary paths are not accepted.', { path: string, ...shared }, ['path']),
   tool('still_export_file', 'Export the selected scene to a local file. Refuses an existing path unless overwrite=true. Unreal produces a ZIP; png captures the viewport.', {
     format: { type: 'string', enum: ['glb', 'still', 'unreal', 'png'] }, path: string,
     name: string, fps: { type: 'integer', enum: [24, 30, 60] }, overwrite: { type: 'boolean', default: false }, ...shared,
+    rootMotion: { type: 'string', enum: ['preserve', 'extract', 'in-place'] }, retarget: { type: 'string', enum: ['none', 'manny', 'metahuman', 'skeleton'] }, targetMesh: string, targetSkeleton: string,
   }, ['format', 'path']),
 ];
 const config = {};

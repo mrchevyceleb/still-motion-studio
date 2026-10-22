@@ -11,6 +11,5 @@ try {
   const request = makeMotionRequest(asset, keys, keys, 4, DEFAULT_SETTINGS, 'inbetween', 42);
   await mkdir('.local/ai-motion', { recursive: true });
   await writeFile('.local/ai-motion/request-demo.json', JSON.stringify(request));
-  await writeFile('.local/native-demo-request.json', JSON.stringify({ ...request, provider: 'cascadeur' }));
   console.log(`Wrote ${request.frames.length} frames, ${request.anchors.length} anchors, ${request.rig.names.length} bones`);
 } finally { await server.close(); }

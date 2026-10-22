@@ -1,13 +1,19 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('stillDesktop', {
+  pickFolder: () => ipcRenderer.invoke('still:pick-folder'),
+  openExternal: url => ipcRenderer.invoke('still:open-external', url),
+  meshyKey: {
+    get: () => ipcRenderer.invoke('still:meshy-key:get'),
+    set: key => ipcRenderer.invoke('still:meshy-key:set', key),
+    clear: () => ipcRenderer.invoke('still:meshy-key:clear'),
+  },
   setTheme: theme => {
     if (theme === 'light' || theme === 'dark') ipcRenderer.send('still:theme', theme);
   },
   updates: {
     state: () => ipcRenderer.invoke('still:updates:state'),
     check: () => ipcRenderer.invoke('still:updates:check'),
-    connect: () => ipcRenderer.invoke('still:updates:connect'),
     install: () => ipcRenderer.invoke('still:updates:install'),
     onState: callback => {
       const listener = (_event, state) => callback(state);
