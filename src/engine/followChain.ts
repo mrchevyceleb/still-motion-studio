@@ -78,6 +78,67 @@ export function solveFollow(asset: CharacterAsset, boneIndex: number, target: TH
   const rotation = (x: number[], i: number) => turn(new THREE.Vector3(x[0], x[1], x[2])).multiply(turn(new THREE.Vector3(x[3], x[4], x[5]).multiplyScalar(turns[i])));
   const tip = (x: number[]) => segments.reduce((at, s, i) => at.add(s.clone().applyQuaternion(rotation(x, i))), points[0].clone());
   const miss = (x: number[]) => tip(x).sub(target);
+  // How much each bone rolls around its own axis compared with the bone before it.
+  // Zero everywhere means the chain bends without wringing the model.
+  const twistCost = (x: number[]) => {
+    const baseQuat = turn(new THREE.Vector3(x[0], x[1], x[2]));
+    const bend = new THREE.Vector3(x[3], x[4], x[5]);
+    const frame = (i: number) => baseQuat.clone().multiply(turn(bend.clone().multiplyScalar(turns[i])));
+    let cost = 0;
+    for (let i = 0; i < segments.length; i++) {
+      const axis = segments[i].clone().applyQuaternion(frame(i)).normalize();
+      // A fixed probe across the rest segment, carried by each frame, so the roll
+      // it measures stays comparable along the whole chain.
+      let probe = new THREE.Vector3(0, 0, 1);
+      const restAxis = segments[i].clone().normalize();
+      if (Math.abs(probe.dot(restAxis)) > .9) probe.set(0, 1, 0);
+      probe.addScaledVector(restAxis, -probe.dot(restAxis)).normalize();
+      const before = probe.clone().applyQuaternion(i === 0 ? baseQuat : frame(i - 1));
+      const after = probe.clone().applyQuaternion(frame(i));
+      before.addScaledVector(axis, -before.dot(axis)); after.addScaledVector(axis, -after.dot(axis));
+      if (before.lengthSq() < 1e-9 || after.lengthSq() < 1e-9) continue;
+      before.normalize(); after.normalize();
+      const roll = Math.atan2(before.clone().cross(after).dot(axis), before.dot(after));
+      cost += roll * roll;
+    }
+    return cost;
+  };
+  // Walk the bend downhill on twist alone, projected so the tip stays where the solver put it.
+  const reduceTwist = (seed: number[]): number[] => {
+    let x = clamp(seed);
+    let error = miss(x).length(), twist = twistCost(x);
+    const allowed = Math.max(error, tolerance);
+    for (let iteration = 0; iteration < 24 && twist > 1e-10; iteration++) {
+      const columns: THREE.Vector3[] = [], gradient: number[] = [];
+      for (let k = 0; k < 6; k++) {
+        const plus = x.slice(), minus = x.slice(); plus[k] += 1e-5; minus[k] -= 1e-5;
+        columns.push(miss(plus).sub(miss(minus)).divideScalar(2e-5));
+        gradient.push((twistCost(plus) - twistCost(minus)) / 2e-5);
+      }
+      const system = new THREE.Matrix3().set(0, 0, 0, 0, 0, 0, 0, 0, 0), e = system.elements;
+      for (let k = 0; k < 6; k++) {
+        const c = columns[k].toArray();
+        for (let r = 0; r < 3; r++) for (let s = 0; s < 3; s++) e[s * 3 + r] += c[r] * c[s];
+      }
+      const damping = Math.max(e[0], e[4], e[8], 1e-12) * 1e-9;
+      e[0] += damping; e[4] += damping; e[8] += damping;
+      if (Math.abs(system.determinant()) < 1e-24) break;
+      const reach3 = new THREE.Vector3(
+        columns.reduce((sum, c, k) => sum + c.x * gradient[k], 0),
+        columns.reduce((sum, c, k) => sum + c.y * gradient[k], 0),
+        columns.reduce((sum, c, k) => sum + c.z * gradient[k], 0)).applyMatrix3(system.invert());
+      const projected = gradient.map((g, k) => g - columns[k].dot(reach3));
+      const biggest = Math.max(...projected.map(Math.abs));
+      if (biggest < 1e-9) break;
+      let improved = false;
+      for (let scale = .1 / biggest; scale > 1e-4 / biggest && !improved; scale /= 2) {
+        const trial = clamp(x.map((v, k) => v - projected[k] * scale)), trialError = miss(trial).length(), trialTwist = twistCost(trial);
+        if (trialError <= allowed && trialTwist < twist) { x = trial; error = trialError; twist = trialTwist; improved = true; }
+      }
+      if (!improved) break;
+    }
+    return x;
+  };
   // No more than one full coil along the chain.
   const limit = 2 * Math.PI / total;
   const clamp = (x: number[]) => { const bend = new THREE.Vector3(x[3], x[4], x[5]); if (bend.length() > limit) bend.setLength(limit); return [x[0], x[1], x[2], bend.x, bend.y, bend.z]; };
@@ -144,6 +205,9 @@ export function solveFollow(asset: CharacterAsset, boneIndex: number, target: TH
     const tried = [refine(curl(seedAngle)), refine([0, 0, 0, 0, 0, 0]), ...(warm ? [warm] : [])];
     best = tried.reduce((a, b) => (b.error < a.error - tolerance || (Math.abs(b.error - a.error) <= tolerance && price(b.x) < price(a.x)) ? b : a));
   }
+  // Same reach, least wrung-out shape: spend the solver's spare freedom on untwisting.
+  best = { ...best, x: reduceTwist(best.x) };
+  best.error = miss(best.x).length();
   if (memory) memory.solution = best.x;
 
   const saved = [...chain, effector].map(bone => bone.quaternion.clone());

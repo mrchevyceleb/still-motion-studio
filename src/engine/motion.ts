@@ -275,22 +275,81 @@ export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.
     if (!(parent.parent instanceof THREE.Bone)) break;
     parent = parent.parent;
   }
+  // Drags should bend joints, never wring them: keep every joint's roll around its
+  // own bone, relative to its parent, where the drag found it. Without this a long
+  // pull flips the limb's roll past a half-turn and the model visibly corkscrews.
   const jointPosition = new THREE.Vector3(), endPosition = new THREE.Vector3();
+  const boneAxisOf = (joint: THREE.Bone): THREE.Vector3 | null => {
+    const children = joint.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone);
+    if (children.length !== 1) return null;
+    const axis = children[0].getWorldPosition(new THREE.Vector3()).sub(joint.getWorldPosition(new THREE.Vector3()));
+    return axis.lengthSq() < 1e-12 ? null : axis.normalize();
+  };
+  const startBones = new Map<THREE.Bone, { axis: THREE.Vector3; local: THREE.Quaternion }>();
+  const dampTwist = () => {
+    // Unwind from the base outward: an outboard untwist cannot feed a twist back
+    // into a joint nearer the body, so one pass settles the whole chain.
+    for (const joint of [...chain].reverse()) {
+      const start = startBones.get(joint);
+      if (!start) continue;
+      const axis = boneAxisOf(joint);
+      if (!axis) continue;
+      const savedQuat = joint.quaternion.clone();
+      const beforeDist = effector.getWorldPosition(new THREE.Vector3()).distanceToSquared(target);
+      // Swing-twist of this drag's LOCAL rotation about the bone's own local axis:
+      // the parent's motion never enters it, so ancestor bends can't fake a twist.
+      // The axis is the bone's own direction in the joint's frame, so the signed
+      // angle comes from the raw delta components.
+      const localNow = start.local.clone().invert().multiply(joint.quaternion);
+      const localAxis = joint.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone)[0].position.clone().normalize();
+      const vector = new THREE.Vector3(localNow.x, localNow.y, localNow.z);
+      const along = vector.dot(localAxis);
+      let roll = 2 * Math.atan2(along, localNow.w);
+      if (roll > Math.PI) roll -= 2 * Math.PI; else if (roll < -Math.PI) roll += 2 * Math.PI;
+      if (Math.abs(roll) < 1e-9 || Math.hypot(along, localNow.w) < 1e-9) continue;
+      // Counter-rotate about the bone's own local axis: the bone direction and
+      // everything beyond it stay put, so the tip stays where CCD put it.
+      joint.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(localAxis, -roll * .85)).normalize();
+      asset.root.updateMatrixWorld(true);
+      // Untwisting a bent joint can still swing its subtree; keep a joint's
+      // correction only when the hand did not move farther from the pull.
+      if (effector.getWorldPosition(new THREE.Vector3()).distanceToSquared(target) > beforeDist + 1e-9) {
+        joint.quaternion.copy(savedQuat);
+        asset.root.updateMatrixWorld(true);
+      }
+    }
+  };
+  chain.forEach(joint => {
+    const axis = boneAxisOf(joint);
+    if (!axis) return;
+    startBones.set(joint, { axis, local: joint.quaternion.clone() });
+  });
+  // Joint nearest the body first, hands last: each joint unwinds only its own turn.
+  const baseFirst = [...chain].reverse();
   for (let iteration = 0; iteration < 14; iteration++) {
     if (effector.getWorldPosition(endPosition).distanceToSquared(target) < 1e-6) break;
-    for (const joint of chain) {
+    for (const joint of baseFirst) {
       joint.getWorldPosition(jointPosition);
       const from = effector.getWorldPosition(endPosition).sub(jointPosition), to = target.clone().sub(jointPosition);
       if (from.lengthSq() < 1e-12 || to.lengthSq() < 1e-12) continue;
-      const rotation = new THREE.Quaternion().setFromUnitVectors(from.normalize(), to.normalize());
-      const angle = 2 * Math.acos(Math.min(1, Math.abs(rotation.w)));
-      if (angle > .45) rotation.slerp(new THREE.Quaternion(), 1 - .45 / angle);
+      from.normalize(); to.normalize();
+      const cross = from.clone().cross(to), dot = Math.max(-1, Math.min(1, from.dot(to)));
+      // The short way around can still spin a joint past a half-turn in one step; cap each swing so the limb bends instead of flipping.
+      const swingAngle = Math.acos(dot);
+      // Near a half-turn the cross product vanishes; pick any axis across the bone instead of stalling on world X.
+      const fallback = Math.abs(from.y) < .9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const axis = cross.lengthSq() > 1e-12 ? cross.normalize() : new THREE.Vector3().crossVectors(from, fallback).normalize();
+      const rotation = new THREE.Quaternion().setFromAxisAngle(axis, Math.min(swingAngle, .45));
       const parentRotation = joint.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
       const localRotation = parentRotation.clone().invert().multiply(rotation).multiply(parentRotation);
       joint.quaternion.premultiply(localRotation).normalize();
       asset.root.updateMatrixWorld(true);
+      dampTwist();
     }
   }
+  // Once the hand is on target, a few more unwind passes settle any roll the last
+  // swings introduced. Each pass is reach-guarded, so the hand cannot drift off.
+  if (chain.length) for (let round = 0; round < 8; round++) dampTwist();
 }
 
 function feet(asset: CharacterAsset): number[] {

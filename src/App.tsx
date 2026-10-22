@@ -988,6 +988,51 @@ export default function App() {
     finally { setBusy(null); }
   };
 
+  const exportSavedScene = async (id: string, format: 'glb' | 'unreal' | 'still') => {
+    if (busy) return;
+    if (id === sceneId) {
+      if (format === 'still') { saveProject(); return; }
+      if (format === 'glb') { await exportGLB(); return; }
+      if (!asset.rigged) { setError('Fit a rig before Unreal export. Open the scene and choose Add a rig.'); return; }
+      const capability = await getUnrealExportCapability();
+      if (!capability.available) { setError(capability.reason || 'Start Still with its launcher to enable Unreal export.'); return; }
+      setRootMotion(readExportPreference('root-motion') === 'preserve' || readExportPreference('root-motion') === 'in-place' ? readExportPreference('root-motion') as typeof rootMotion : 'extract');
+      setDialog('export');
+      return;
+    }
+    setBusy(format === 'still' ? 'Preparing your scene file…' : 'Packing your character and motion…'); setPlaying(false);
+    let source: CharacterAsset | undefined;
+    try {
+      const { document } = await readScene(id);
+      if (format === 'still') {
+        downloadFile(JSON.stringify(document), `${document.name.trim() || 'Untitled'}.still`, 'application/json');
+        notify('Editable scene saved with its character included.');
+        return;
+      }
+      source = document.character.type === 'demo' ? createDemoCharacter(document.character.kind) : await restoreCharacter(document.character.object, document.character.kind, document.character.name);
+      if (!source.rigged) throw new Error('This saved scene has no rig yet. Open it and choose Add a rig before exporting.');
+      if (source.bones.length !== document.boneNames.length || source.bones.some((bone, i) => bone.name !== document.boneNames[i])) throw new Error('The saved skeleton does not match its pose data. Open the scene to check it before exporting.');
+      const sceneStudio: Studio = { title: document.name, keys: document.keys, generated: document.generated, generation: document.generation, duration: document.duration, settings: document.settings, sourceClip: document.sourceClip ?? null, tracks: document.tracks, baseTrackName: document.baseTrackName, baseTrackMuted: document.baseTrackMuted, activeTrackId: document.activeTrackId, baseMotionName: document.baseMotionName };
+      const keys = combinedKeys(sceneStudio, source.restPose, source.restMorphs, document.fps);
+      const mode = combinedInterpolation(sceneStudio);
+      const clip = buildAnimationClip(source, keys, document.duration, { ...document.settings, interpolation: mode });
+      const binary = await exportCharacterGLB(source, clip);
+      const name = document.name.trim() || 'Animation';
+      if (format === 'glb') {
+        downloadFile(binary, `${name}.glb`, 'model/gltf-binary');
+        notify('Animated GLB exported. Ready for Blender, game engines, and the web.');
+        return;
+      }
+      const capability = await getUnrealExportCapability();
+      if (!capability.available) throw new Error(capability.reason || 'Start Still with its launcher to enable Unreal export.');
+      const result = await exportUnrealPackage(binary, { name, fps: document.fps, rootMotion: 'extract', retarget: 'none' }, message => setBusy(message), new AbortController().signal);
+      if (result.package) downloadFile(result.package, `${name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}-Unreal.zip`, 'application/zip');
+      const notes = [result.savedTo ? `Saved to ${result.savedTo}` : result.saveError || 'Unreal package downloaded. Unzip it and follow the included import guide.', ...result.warnings.map(warning => `Note: ${warning}`)];
+      notify(notes.join(' '));
+    } catch (e) { setError(e instanceof Error ? e.message : 'That saved scene could not be exported.'); }
+    finally { if (source && source !== asset) disposeCharacter(source); setBusy(null); }
+  };
+
   const exportGLB = async () => {
     setBusy('Packing your character and motion…'); setPlaying(false);
     try {
@@ -1364,7 +1409,7 @@ export default function App() {
     <dialog ref={dialogRef} className={`modal ${dialog === 'help' ? 'help-modal' : ''} ${dialog === 'rig' && rigDraft ? 'hand-rig-modal' : ''} ${dialog === 'physics' ? 'physics-report-modal' : ''} ${dialog === 'library' ? 'scene-library-modal' : ''}`} onCancel={e => { if (busy || exportRunning || updateState?.status === 'installing' || !hasActiveScene) { e.preventDefault(); if (!busy && !hasActiveScene) setDialog('library'); } else setDialog(null); }} onClick={e => { if (e.target === e.currentTarget && !busy && !exportRunning && updateState?.status !== 'installing' && hasActiveScene) setDialog(null); }}><div className="modal-inner"><button className="icon-button modal-close" aria-label="Close dialog" disabled={!!busy || exportRunning || updateState?.status === 'installing' || !hasActiveScene && dialog === 'library'} onClick={() => setDialog(hasActiveScene ? null : 'library')}><X size={19}/></button>
       {dialog === 'viewport' && <><span className="modal-icon"><Settings2 size={25}/></span><h2>Viewport settings.</h2><div className="viewport-zoom-setting"><div><strong>Zoom to mouse position</strong><p>Keep the point under your pointer in place when you zoom. Turn off to zoom toward the center of the view.</p></div><Switch label="Zoom to mouse position" checked={zoomToCursor} onChange={() => setZoomToCursor(value => !value)}/></div><p className="micro-copy">Saved on this device for every scene.</p></>}
       {dialog === 'shortcuts' && <><span className="modal-icon"><Keyboard size={25}/></span><div className="eyebrow">KEEP YOUR HANDS ON THE KEYS</div><h2>Keyboard shortcuts.</h2><p>Press S to switch between selecting keyframes and regular editing. Esc brings you back to regular mode.</p><dl className="keyboard-shortcuts">{SHORTCUTS.map(([keys, action]) => <div key={keys}><dt>{action}</dt><dd><kbd>{keys}</kbd></dd></div>)}</dl><p className="micro-copy">Shortcuts pause while you type in a field or use a dialog. On Mac, use Command instead of Ctrl.</p></>}
-      {dialog === 'library' && <SceneLibrary characters={characters} scenes={scenes} archives={archives} activeId={hasActiveScene ? sceneId : ''} initialCharacterId={libraryCharacterId} recovering={!storageReady} onOpen={id => void openSavedScene(id)} onNew={id => void createCharacterScene(id)} onAddCharacter={() => setDialog('new')} onRenameCharacter={changeCharacterName} onRename={(id, name) => changeSavedScene(id, 'rename', name)} onDuplicate={id => void changeSavedScene(id, 'duplicate')} onDelete={id => changeSavedScene(id, 'delete')} onRecover={id => void openArchive(id)}/>}
+      {dialog === 'library' && <SceneLibrary characters={characters} scenes={scenes} archives={archives} activeId={hasActiveScene ? sceneId : ''} initialCharacterId={libraryCharacterId} recovering={!storageReady} onOpen={id => void openSavedScene(id)} onNew={id => void createCharacterScene(id)} onAddCharacter={() => setDialog('new')} onRenameCharacter={changeCharacterName} onRename={(id, name) => changeSavedScene(id, 'rename', name)} onDuplicate={id => void changeSavedScene(id, 'duplicate')} onExport={(id, format) => void exportSavedScene(id, format)} onDelete={id => changeSavedScene(id, 'delete')} onRecover={id => void openArchive(id)}/>}
       {dialog === 'physics' && studio.generation?.kind === 'physics' && <PhysicsComparison generation={studio.generation} onCompare={comparePhysics} onKeep={() => setDialog(null)} onRestoreOriginal={restoreBeforePhysics} onSaveReport={() => { const { comparison: _comparison, ...report } = studio.generation!; downloadFile(JSON.stringify(report, null, 2), 'physics-comparison-report.json', 'application/json'); }}/>}
       {dialog === 'updates' && <UpdatesDialog state={updateState} canInstall={hydrated && storageReady && !busy && !engine?.busy && !agentController.current && !exportOperation.current && !keyDrag.current} onInstall={() => void installDownloadedUpdate()}/>}
       {dialog === 'agent' && <><span className="modal-icon"><Keyboard size={25}/></span><div className="eyebrow">YOUR AGENT. YOUR ANIMATION.</div><h2>Make moves<br/>with a little code.</h2><p>Give an AI agent control of this scene through local scripts or MCP. It can inspect joints, edit poses, run AI and physics, save projects, and export to Unreal.</p><div className="modal-tip"><span className="status-dot"/><span><strong>{agentConnection.connected ? 'Ready for scripts' : 'Waiting for the local service'}</strong><br/>{agentConnection.connected ? 'This tab can stay in the background while your agent works.' : agentConnection.error || 'Start Still with its launcher to connect.'}</span></div>{agentConnection.sessionId && <p className="agent-session">Session: {agentConnection.sessionId}</p>}<p>Start in the project folder:</p><pre className="agent-command">node scripts/still-agent.mjs sessions{`\n`}node scripts/still-agent.mjs schema</pre><p>Give your agent <strong>docs/agent-scripting.md</strong>. For MCP, launch <strong>node scripts/still-mcp.mjs</strong> from your agent’s MCP configuration.</p><div className="agent-actions"><button className="button secondary" onClick={() => { void navigator.clipboard.writeText(`Use Still's local agent API to work on my animation. Read docs/agent-scripting.md in the Still project. Target session ${agentConnection.sessionId || '(list sessions first)'}. Inspect the scene and schema before changing it, use expectedRevision for edits, and save a .still backup before replacing my work.`).then(() => notify('Instructions copied for your agent.')).catch(() => notify('Select the session ID and use docs/agent-scripting.md.')); }}><Copy size={15}/>Copy agent instructions</button></div><div className="agent-last">{agentActivity ? <><strong>{agentActivity.status === 'done' ? 'Completed' : agentActivity.status === 'error' ? 'Needs attention' : agentActivity.status === 'cancelled' ? 'Stopped' : 'Working'} · {agentActivity.method}</strong>{agentActivity.message && <p>{agentActivity.message}</p>}</> : 'Pose edits use Undo. Replacing a scene keeps a Recent scenes backup. Access stays on this computer.'}</div></>}
