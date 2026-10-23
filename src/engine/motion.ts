@@ -276,6 +276,7 @@ const LIMB_BASE = /hip|pelvis|spine|chest|torso|root/i;
 // The end of a two-bone limb: a hand, foot or claw (toes, fingers and end markers bend inside it).
 const LIMB_END = /hand|foot|wrist|ankle|hoof|paw|claw/i;
 const NOT_LIMB_END = /toe|finger|thumb|end$|tip$/i;
+const LIMB_HELPER = /twist|roll|helper|corrective|\bik\b|_ik|ik_|pole|target/i;
 const boneChildren = (bone: THREE.Object3D) => bone.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone);
 const isLimbEnd = (bone: THREE.Bone) => LIMB_END.test(bone.name) && !NOT_LIMB_END.test(bone.name) && !isFingerBone(bone.name);
 
@@ -305,6 +306,12 @@ function twoBoneLimb(effector: THREE.Bone): { upper: THREE.Bone; lower: THREE.Bo
   const lower = effector.parent, upper = lower?.parent;
   if (!isLimbEnd(effector) || !(lower instanceof THREE.Bone) || !(upper instanceof THREE.Bone)) return null;
   if (LIMB_BASE.test(lower.name) || LIMB_BASE.test(upper.name)) return null;
+  // A twist, roll or helper joint between the hand and the elbow (or one sitting on a joint) is not the forearm:
+  // solving it as one would bend the wrong pair, so those rigs keep the chain drag.
+  if ([effector, lower, upper].some(bone => LIMB_HELPER.test(bone.name))) return null;
+  const a = upper.getWorldPosition(new THREE.Vector3()), b = lower.getWorldPosition(new THREE.Vector3()), c = effector.getWorldPosition(new THREE.Vector3());
+  const upperLength = a.distanceTo(b), lowerLength = b.distanceTo(c);
+  if (Math.min(upperLength, lowerLength) < .2 * Math.max(upperLength, lowerLength)) return null;
   return { upper, lower };
 }
 
@@ -329,16 +336,21 @@ function solveTwoBone(asset: CharacterAsset, effector: THREE.Bone, upper: THREE.
   const a = upper.getWorldPosition(new THREE.Vector3()), b = lower.getWorldPosition(new THREE.Vector3()), c = effector.getWorldPosition(new THREE.Vector3());
   const upperLength = a.distanceTo(b), lowerLength = b.distanceTo(c);
   const reachNow = c.clone().sub(a), toTarget = target.clone().sub(a);
-  if (upperLength < 1e-6 || lowerLength < 1e-6 || reachNow.lengthSq() < 1e-12 || toTarget.lengthSq() < 1e-12) return false;
+  if (upperLength < 1e-6 || lowerLength < 1e-6 || reachNow.lengthSq() < 1e-12) return false;
   reachNow.normalize();
-  const direction = toTarget.clone().normalize();
+  // A pointer on the shoulder or hip itself has no direction: fold toward it along the limb's current reach.
+  const direction = toTarget.lengthSq() < 1e-12 ? reachNow.clone() : toTarget.clone().normalize();
   const handWorld = effector.getWorldQuaternion(new THREE.Quaternion());
   // Where the knee sits off the hip-to-foot line now; a straight limb folds the way its kind does.
   let bend = b.clone().sub(a);
   bend.addScaledVector(reachNow, -bend.dot(reachNow));
   bend = bend.lengthSq() > 1e-8 * upperLength * upperLength ? bend.normalize() : foldDirection(asset, effector, reachNow);
   // Carry the bend plane round with the reach's own swing, so the knee keeps facing the same way relative to it.
-  bend.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(reachNow, direction));
+  // A pointer that jumps across the shoulder has no shortest swing; turn over inside the bend plane instead.
+  const across = reachNow.dot(direction) < -.999;
+  bend.applyQuaternion(across
+    ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().crossVectors(reachNow, bend).normalize(), Math.acos(THREE.MathUtils.clamp(reachNow.dot(direction), -1, 1)))
+    : new THREE.Quaternion().setFromUnitVectors(reachNow, direction));
   bend.addScaledVector(direction, -bend.dot(direction));
   bend = bend.lengthSq() > 1e-12 ? bend.normalize() : foldDirection(asset, effector, direction);
   const distance = THREE.MathUtils.clamp(toTarget.length(), Math.abs(upperLength - lowerLength) + 1e-5, upperLength + lowerLength - 1e-5);
