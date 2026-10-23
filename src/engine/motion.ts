@@ -189,6 +189,23 @@ export function sampleClip(asset: CharacterAsset, clip: THREE.AnimationClip): Po
   }
 }
 
+/**
+ * q and -q are the same turn, but a tool that blends quaternion components (Unreal's import, Blender's bake, a game
+ * engine's own sampler) swings a full turn the long way between two samples of opposite sign: keep every sample on
+ * the previous one's side so an exported joint never spins round between frames.
+ */
+export function continuousQuaternions(samples: Quat[]): number[] {
+  const out: number[] = [];
+  let previous: Quat | null = null;
+  for (const sample of samples) {
+    const flip = previous && previous[0] * sample[0] + previous[1] * sample[1] + previous[2] * sample[2] + previous[3] * sample[3] < 0;
+    const kept = (flip ? sample.map(value => -value) : [...sample]) as Quat;
+    out.push(...kept);
+    previous = kept;
+  }
+  return out;
+}
+
 export function buildAnimationClip(asset: CharacterAsset, keys: PoseKey[], duration: number, settings: MotionSettings): THREE.AnimationClip {
   if (!keys.length || !asset.bones.length) throw new Error('Add a character and at least one pose before exporting.');
   const end = Math.max(0, duration);
@@ -200,7 +217,7 @@ export function buildAnimationClip(asset: CharacterAsset, keys: PoseKey[], durat
   asset.bones.forEach((bone, index) => {
     const fallback = asset.restPose[index];
     tracks.push(new THREE.VectorKeyframeTrack(`${bone.uuid}.position`, sortedTimes, poses.flatMap(p => (p[index] ?? fallback).position), interpolation));
-    tracks.push(new THREE.QuaternionKeyframeTrack(`${bone.uuid}.quaternion`, sortedTimes, poses.flatMap(p => (p[index] ?? fallback).quaternion), interpolation));
+    tracks.push(new THREE.QuaternionKeyframeTrack(`${bone.uuid}.quaternion`, sortedTimes, continuousQuaternions(poses.map(p => (p[index] ?? fallback).quaternion)), interpolation));
     tracks.push(new THREE.VectorKeyframeTrack(`${bone.uuid}.scale`, sortedTimes, poses.flatMap(p => (p[index] ?? fallback).scale), interpolation));
   });
   tracks.push(...morphAnimationTracks(asset, keys, sortedTimes, settings.interpolation));
@@ -254,6 +271,114 @@ export function simplifyKeys(keys: PoseKey[], count: number, restMorphs: MorphVa
   return [...kept].sort((a, b) => a - b).map(index => ({ ...sorted[index], pose: copyPose(sorted[index].pose) }));
 }
 
+const LIMB = /hand|arm|leg|foot|toe|hoof|paw|wrist|ankle|knee|elbow/i;
+const LIMB_BASE = /hip|pelvis|spine|chest|torso|root/i;
+// The end of a two-bone limb: a hand, foot or claw (toes, fingers and end markers bend inside it).
+const LIMB_END = /hand|foot|wrist|ankle|hoof|paw|claw/i;
+const NOT_LIMB_END = /toe|finger|thumb|end$|tip$/i;
+const boneChildren = (bone: THREE.Object3D) => bone.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone);
+const isLimbEnd = (bone: THREE.Bone) => LIMB_END.test(bone.name) && !NOT_LIMB_END.test(bone.name) && !isFingerBone(bone.name);
+
+/** Turns joint the shortest way so a point it carries moves from one world spot toward another (a swing, never a roll). */
+function aimJoint(asset: CharacterAsset, joint: THREE.Bone, from: THREE.Vector3, to: THREE.Vector3): void {
+  const origin = joint.getWorldPosition(new THREE.Vector3());
+  const a = from.clone().sub(origin), b = to.clone().sub(origin);
+  if (a.lengthSq() < 1e-12 || b.lengthSq() < 1e-12) return;
+  a.normalize(); b.normalize();
+  const swing = a.dot(b) < -1 + 1e-9
+    ? new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().crossVectors(a, Math.abs(a.y) < .9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize(), Math.PI)
+    : new THREE.Quaternion().setFromUnitVectors(a, b);
+  const parentRotation = joint.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
+  joint.quaternion.premultiply(parentRotation.clone().invert().multiply(swing).multiply(parentRotation)).normalize();
+  asset.root.updateMatrixWorld(true);
+}
+
+/** Holds a bone's world orientation after its parents moved (an IK handle keeps the hand or foot's angle). */
+function keepWorldRotation(asset: CharacterAsset, bone: THREE.Bone, world: THREE.Quaternion): void {
+  const parentRotation = bone.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
+  bone.quaternion.copy(parentRotation.invert().multiply(world)).normalize();
+  asset.root.updateMatrixWorld(true);
+}
+
+/** The limb a hand or foot ends, as upper and lower bones, when it is a real two-bone limb. */
+function twoBoneLimb(effector: THREE.Bone): { upper: THREE.Bone; lower: THREE.Bone } | null {
+  const lower = effector.parent, upper = lower?.parent;
+  if (!isLimbEnd(effector) || !(lower instanceof THREE.Bone) || !(upper instanceof THREE.Bone)) return null;
+  if (LIMB_BASE.test(lower.name) || LIMB_BASE.test(upper.name)) return null;
+  return { upper, lower };
+}
+
+/** Which way a straight limb should fold: knees forward, elbows back, in the character's own frame. */
+function foldDirection(asset: CharacterAsset, effector: THREE.Bone, reach: THREE.Vector3): THREE.Vector3 {
+  const frame = asset.root.getWorldQuaternion(new THREE.Quaternion());
+  const leg = /leg|thigh|knee|calf|shin|foot|ankle|hoof|paw/i.test(`${effector.name} ${effector.parent?.name ?? ''}`);
+  for (const local of [new THREE.Vector3(0, 0, leg ? 1 : -1), new THREE.Vector3(0, leg ? -1 : 1, 0), new THREE.Vector3(1, 0, 0)]) {
+    const fold = local.applyQuaternion(frame);
+    fold.addScaledVector(reach, -fold.dot(reach));
+    if (fold.lengthSq() > 1e-6) return fold.normalize();
+  }
+  return new THREE.Vector3(0, 0, 1);
+}
+
+/**
+ * Analytic two-bone IK, as an animator's limb handle: the upper and lower bones only swing, inside the limb's own
+ * bend plane carried round with the reach, so the knee or elbow never swivels or flips and no bone rolls; the hand
+ * or foot keeps its world angle. A target out of reach straightens the limb toward it.
+ */
+function solveTwoBone(asset: CharacterAsset, effector: THREE.Bone, upper: THREE.Bone, lower: THREE.Bone, target: THREE.Vector3): boolean {
+  const a = upper.getWorldPosition(new THREE.Vector3()), b = lower.getWorldPosition(new THREE.Vector3()), c = effector.getWorldPosition(new THREE.Vector3());
+  const upperLength = a.distanceTo(b), lowerLength = b.distanceTo(c);
+  const reachNow = c.clone().sub(a), toTarget = target.clone().sub(a);
+  if (upperLength < 1e-6 || lowerLength < 1e-6 || reachNow.lengthSq() < 1e-12 || toTarget.lengthSq() < 1e-12) return false;
+  reachNow.normalize();
+  const direction = toTarget.clone().normalize();
+  const handWorld = effector.getWorldQuaternion(new THREE.Quaternion());
+  // Where the knee sits off the hip-to-foot line now; a straight limb folds the way its kind does.
+  let bend = b.clone().sub(a);
+  bend.addScaledVector(reachNow, -bend.dot(reachNow));
+  bend = bend.lengthSq() > 1e-8 * upperLength * upperLength ? bend.normalize() : foldDirection(asset, effector, reachNow);
+  // Carry the bend plane round with the reach's own swing, so the knee keeps facing the same way relative to it.
+  bend.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(reachNow, direction));
+  bend.addScaledVector(direction, -bend.dot(direction));
+  bend = bend.lengthSq() > 1e-12 ? bend.normalize() : foldDirection(asset, effector, direction);
+  const distance = THREE.MathUtils.clamp(toTarget.length(), Math.abs(upperLength - lowerLength) + 1e-5, upperLength + lowerLength - 1e-5);
+  const cosine = THREE.MathUtils.clamp((upperLength * upperLength + distance * distance - lowerLength * lowerLength) / (2 * upperLength * distance), -1, 1);
+  const knee = a.clone().addScaledVector(direction, upperLength * cosine).addScaledVector(bend, upperLength * Math.sqrt(1 - cosine * cosine));
+  aimJoint(asset, upper, b, knee);
+  aimJoint(asset, lower, effector.getWorldPosition(new THREE.Vector3()), a.clone().addScaledVector(direction, distance));
+  keepWorldRotation(asset, effector, handWorld);
+  return true;
+}
+
+/**
+ * The limb's pole handle: dragging a knee or elbow swings it round the hip-to-foot line toward the pointer while the
+ * hand or foot stays planted, its angle held. Returns false for any joint that is not the middle of a two-bone limb.
+ */
+export function swingLimbPole(asset: CharacterAsset, boneIndex: number, target: THREE.Vector3): boolean {
+  const knee = asset.bones[boneIndex];
+  const ends = knee ? boneChildren(knee).filter(isLimbEnd) : [];
+  if (ends.length !== 1 || twoBoneLimb(ends[0])?.lower !== knee || !target.toArray().every(Number.isFinite)) return false;
+  const foot = ends[0], upper = knee.parent as THREE.Bone;
+  asset.root.updateMatrixWorld(true);
+  const a = upper.getWorldPosition(new THREE.Vector3()), b = knee.getWorldPosition(new THREE.Vector3()), c = foot.getWorldPosition(new THREE.Vector3());
+  const axis = c.clone().sub(a);
+  if (axis.lengthSq() < 1e-12) return true;
+  axis.normalize();
+  const have = b.clone().sub(a), want = target.clone().sub(a);
+  have.addScaledVector(axis, -have.dot(axis)); want.addScaledVector(axis, -want.dot(axis));
+  // A straight limb or a pointer on the line has no direction to swing toward.
+  if (have.lengthSq() < 1e-10 || want.lengthSq() < 1e-10) return true;
+  have.normalize(); want.normalize();
+  const angle = Math.atan2(new THREE.Vector3().crossVectors(have, want).dot(axis), have.dot(want));
+  const footWorld = foot.getWorldQuaternion(new THREE.Quaternion());
+  const parentRotation = upper.parent?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
+  const swivel = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+  upper.quaternion.premultiply(parentRotation.clone().invert().multiply(swivel).multiply(parentRotation)).normalize();
+  asset.root.updateMatrixWorld(true);
+  keepWorldRotation(asset, foot, footWorld);
+  return true;
+}
+
 /** CCD rotations preserve every bone's local translation and scale. Root drags translate. */
 export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.Vector3): void {
   const effector = asset.bones[boneIndex];
@@ -264,13 +389,15 @@ export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.
     asset.root.updateMatrixWorld(true);
     return;
   }
-  const limb = /hand|arm|leg|foot|toe|hoof|paw|wrist|ankle|knee|elbow/i.test(effector.name);
+  const limbBones = twoBoneLimb(effector);
+  if (limbBones && solveTwoBone(asset, effector, limbBones.upper, limbBones.lower, target)) return;
+  const limb = LIMB.test(effector.name);
   const finger = isFingerBone(effector.name);
   const chain: THREE.Bone[] = [];
   let parent = effector.parent;
   while (parent instanceof THREE.Bone && chain.length < 4) {
     if (finger && !isFingerBone(parent.name)) break;
-    if (limb && /hip|pelvis|spine|chest|torso|root/i.test(parent.name)) break;
+    if (limb && LIMB_BASE.test(parent.name)) break;
     chain.push(parent);
     if (!(parent.parent instanceof THREE.Bone)) break;
     parent = parent.parent;
@@ -279,10 +406,16 @@ export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.
   // own bone, relative to its parent, where the drag found it. Without this a long
   // pull flips the limb's roll past a half-turn and the model visibly corkscrews.
   const jointPosition = new THREE.Vector3(), endPosition = new THREE.Vector3();
+  // Each joint's bone runs to its child along the chain, so a branch joint (a body under three necks, a head
+  // with a jaw, a hand with fingers) still has one bone to unwind about.
+  const chainChild = (joint: THREE.Bone): THREE.Bone | null => {
+    const index = chain.indexOf(joint);
+    return index < 0 ? null : index === 0 ? effector : chain[index - 1];
+  };
   const boneAxisOf = (joint: THREE.Bone): THREE.Vector3 | null => {
-    const children = joint.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone);
-    if (children.length !== 1) return null;
-    const axis = children[0].getWorldPosition(new THREE.Vector3()).sub(joint.getWorldPosition(new THREE.Vector3()));
+    const child = chainChild(joint);
+    if (!child) return null;
+    const axis = child.getWorldPosition(new THREE.Vector3()).sub(joint.getWorldPosition(new THREE.Vector3()));
     return axis.lengthSq() < 1e-12 ? null : axis.normalize();
   };
   const startBones = new Map<THREE.Bone, { axis: THREE.Vector3; local: THREE.Quaternion }>();
@@ -301,7 +434,7 @@ export function solveIK(asset: CharacterAsset, boneIndex: number, target: THREE.
       // The axis is the bone's own direction in the joint's frame, so the signed
       // angle comes from the raw delta components.
       const localNow = start.local.clone().invert().multiply(joint.quaternion);
-      const localAxis = joint.children.filter((child): child is THREE.Bone => child instanceof THREE.Bone)[0].position.clone().normalize();
+      const localAxis = chainChild(joint)!.position.clone().normalize();
       const vector = new THREE.Vector3(localNow.x, localNow.y, localNow.z);
       const along = vector.dot(localAxis);
       let roll = 2 * Math.atan2(along, localNow.w);
