@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
-import { solveIK } from '../engine/motion';
+import { solveIK, swingLimbPole } from '../engine/motion';
 import { solveFollow, type FollowMemory } from '../engine/followChain';
 import { isFingerBone } from '../engine/handRig';
 import { offsetPose, propertyValues } from '../engine/poseProperties';
@@ -346,7 +346,10 @@ export default function Viewport(props: ViewportProps) {
             // Placement moves one landmark; neighboring markers stay on the mesh.
             for (const { child, position } of children) child.position.copy(bone.worldToLocal(position));
             asset.root.updateMatrixWorld(true);
-          } else if (latest.current.follow == null || !solveFollow(asset, drag.index, target, latest.current.follow, drag.memory)) solveIK(asset, drag.index, target);
+          } else if (latest.current.follow == null || !solveFollow(asset, drag.index, target, latest.current.follow, drag.memory)) {
+            // A knee or elbow is its limb's pole: it swings the bend round while the hand or foot stays planted.
+            if (!swingLimbPole(asset, drag.index, target)) solveIK(asset, drag.index, target);
+          }
         }
       } else {
         const bone = asset.bones[drag.index];
