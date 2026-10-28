@@ -6,7 +6,8 @@ import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
-import { listArchives, readArchive } from './project';
+import { editScene, listArchives, listScenes, readArchive, saveSceneCopy } from './project';
+import { sceneThumbnail } from './sceneThumbnail';
 import { DEFAULT_SETTINGS } from '../types';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, TrackState } from '../types';
 
@@ -39,7 +40,7 @@ export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.a
 const copy = <T,>(value: T): T => structuredClone(value);
 const generationReport = (generation: MotionGeneration | undefined) => {
   if (!generation) return null;
-  const { comparison: _comparison, ...report } = generation;
+  const { comparison: _comparison, source: _source, ...report } = generation;
   return report;
 };
 const uid = () => crypto.randomUUID();
@@ -85,7 +86,9 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
   const put = (time: number, pose: Pose, label?: string) => {
     const old = editKeys.find(key => Math.abs(key.time - time) < 1e-7);
     const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', morphs: sample(time).morphs };
-    commit(putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs));
+    const next = putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs);
+    if (!next.generated && studio.generation?.source) next.generation = { ...studio.generation, comparison: undefined };
+    commit(next);
     editor.timeline(key.time);
     return { activeTrackId: layer?.id ?? null, key: copy(key) };
   };
@@ -115,7 +118,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (!studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist. The base track stays in the scene.');
       commit({ ...studio, tracks: studio.tracks.filter(t => t.id !== params.id), activeTrackId: studio.activeTrackId === params.id ? null : studio.activeTrackId }); return editor.snapshot();
     }
-    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
+    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), hasMotionGuide: !!studio.generation?.source, warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generated ? studio.generation : undefined) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
@@ -250,8 +253,20 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const time = number(params.time ?? Math.min(duration, editor.time * (retime ? duration / studio.duration : 1)), 'Time', 0, duration);
       if (duration !== studio.duration) {
         if (!retime && [studio.keys, ...studio.tracks?.map(t => t.keys) ?? []].some(keys => keys.some(key => key.time > duration))) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
-        const keys = studio.keys.map(key => ({ ...key, time: retime ? key.time * duration / studio.duration : key.time }));
-        commit({ ...studio, duration, keys, tracks: studio.tracks?.map(t => ({ ...t, keys: t.keys.map(k => ({ ...k, time: retime ? k.time * duration / studio.duration : k.time })) })), sourceClip: null });
+        const transform = (frames: PoseKey[], interpolation: InterpolationMode): PoseKey[] => {
+          if (retime) return frames.map(key => ({ ...key, time: key.time * duration / studio.duration }));
+          const kept = frames.filter(key => key.time <= duration).map(key => ({ ...key }));
+          if (duration < studio.duration && (!kept.length || kept[0].time > 0)) kept.unshift({ id: uid(), time: 0, pose: samplePose(frames, 0, interpolation), ...morphKeyData(frames, 0, interpolation, asset.restMorphs) });
+          if (duration < studio.duration && !kept.some(key => Math.abs(key.time - duration) < 1e-9)) kept.push({ id: uid(), time: duration, pose: samplePose(frames, duration, interpolation), ...morphKeyData(frames, duration, interpolation, asset.restMorphs) });
+          return kept;
+        };
+        const keys = retime ? transform(studio.keys, studio.settings.interpolation) : studio.keys;
+        const oldGuide = studio.generation?.source;
+        const guide = oldGuide ? transform(oldGuide.before, oldGuide.interpolation) : undefined;
+        const generated = studio.generated ? transform(studio.generated, 'linear') : undefined;
+        const warning = 'Clip timing changed after generation. Review playback and rerun physics to refresh its measurements.';
+        const generation = studio.generation ? { ...studio.generation, comparison: undefined, source: oldGuide && guide && guide.length >= 2 ? { ...oldGuide, before: guide } : undefined, metrics: { originalClipBackupId: studio.generation.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+        commit({ ...studio, duration, keys, generated, generation, tracks: studio.tracks?.map(t => ({ ...t, keys: retime ? transform(t.keys, t.interpolation) : t.keys })), sourceClip: null });
       }
       editor.timeline(time, fps); return editor.snapshot();
     }
@@ -293,16 +308,45 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (provider.limits?.maxDuration && studio.duration > provider.limits.maxDuration) throw new Error(`This provider supports up to ${provider.limits.maxDuration} seconds.`);
       const count = params.simplifyCount ?? (studio.keys.length > 24 ? 6 : undefined);
       const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120), asset.restMorphs);
-      const settings = { ...studio.settings, interpolation: baseMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
-      const request = makeMotionRequest(asset, baseSequence, anchors, studio.duration, settings, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
+      if (provider.id === 'motionbricks') {
+        if (anchors.length < 2 || Math.abs(anchors[0].time) > 1e-6 || Math.abs(anchors[anchors.length - 1].time - studio.duration) > 1e-5) throw new Error('Add a pose at the beginning and at the clip end before generating with MotionBricks.');
+        if (anchors.some((key, i) => i > 0 && key.time - anchors[i - 1].time < 1 / 30 - 1e-6)) throw new Error('Space your key poses at least one frame apart (1/30 second) before generating.');
+      }
+      let originalClipBackupId = (provider.id === 'motionbricks' || !provider.learned) && studio.generation?.source && typeof studio.generation.metrics.originalClipBackupId === 'string' ? studio.generation.metrics.originalClipBackupId : undefined;
+      if (originalClipBackupId && !(await listScenes()).some(scene => scene.id === originalClipBackupId)) originalClipBackupId = undefined;
+      let source = baseSequence, sourceMode = baseMode;
+      let sourceWarning: string | undefined;
+      if (provider.id === 'motionbricks' && (studio.generated || studio.generation?.source)) {
+        if (studio.generation?.source) { source = studio.generation.source.before; sourceMode = studio.generation.source.interpolation; }
+        else if (studio.generation?.name === 'MotionBricks') {
+          source = studio.keys; sourceMode = studio.settings.interpolation;
+          sourceWarning = 'This older take has no original motion guide. Your authored poses guide this new take.';
+        }
+      }
+      signal.throwIfAborted();
+      const settings = { ...studio.settings, interpolation: sourceMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
+      const request = makeMotionRequest(asset, source, anchors, studio.duration, { ...settings, interpolation: sourceMode }, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
+      let createdBackupId: string | undefined;
+      let committed = false;
       try {
         const result = await generateMotion(request, editor.progress, signal); signal.throwIfAborted();
-        const generated = restoreEngineFrames(asset, baseSequence, anchors, result, baseMode, studio.duration, provider.learned);
+        const generated = restoreEngineFrames(asset, source, anchors, result, sourceMode, studio.duration, provider.learned);
+        if (provider.id === 'motionbricks' && anchors.length < studio.keys.length) {
+          try { originalClipBackupId = await saveSceneCopy(editor.document(), `${studio.title.slice(0, 180)} · original clip`, await sceneThumbnail(editor.viewport?.capture)); createdBackupId = originalClipBackupId; }
+          catch (error) { throw new Error(error instanceof Error && error.name === 'QuotaExceededError' ? 'There isn’t enough storage to keep your original clip safe. Export a .still copy and free some space, then generate again. Your animation is unchanged.' : 'Your original clip could not be saved. Export a .still copy before trying again. Your animation is unchanged.'); }
+          signal.throwIfAborted();
+        }
         const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
-        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: copy(baseSequence), interpolation: baseMode } } : {}) };
-        commit({ ...studio, keys, generated, generation, sourceClip: null });
+        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings, ...(originalClipBackupId ? { originalClipBackupId } : {}) }, ...(provider.id === 'motionbricks' ? { source: { before: copy(source), interpolation: sourceMode } } : !provider.learned && studio.generation?.source ? { source: copy(studio.generation.source) } : {}), warnings: [...result.warnings ?? [], ...(sourceWarning ? [sourceWarning] : []), ...(originalClipBackupId ? ['Your full original clip is saved as a separate scene in Scenes.'] : [])], ...(!provider.learned ? { comparison: { before: copy(baseSequence), interpolation: baseMode } } : {}) };
+        commit({ ...studio, keys, generated, generation, sourceClip: null }); committed = true;
         return { ...editor.snapshot(), generation: generationReport(generation), generatedFrames: generated.length };
-      } finally { applyPose(asset, editor.pose); }
+      } finally {
+        applyPose(asset, editor.pose);
+        if (createdBackupId && !committed) {
+          try { await editScene(createdBackupId, 'delete'); }
+          catch { throw new Error('Generation stopped without changing your animation. The safety copy could not be removed and is still in Scenes.'); }
+        }
+      }
     }
     case 'export': {
       const format = params.format;
@@ -321,10 +365,10 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       try {
         const clip = buildAnimationClip(asset, sequence, studio.duration, { ...studio.settings, interpolation: mode });
         const binary = await exportCharacterGLB(asset, clip); signal.throwIfAborted();
-        if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: studio.generation ?? null };
+        if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: generationReport(studio.generated ? studio.generation : undefined) };
         const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | 'skeleton' | undefined, targetMesh: params.targetMesh as string | undefined, targetSkeleton: params.targetSkeleton as string | undefined, ...(params.retarget === 'skeleton' ? { referenceFbx: asset.referenceFbx } : {}) }, editor.progress, signal);
         if (!result.package) throw new Error('The Unreal package could not be downloaded.');
-        return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: studio.generation ?? null };
+        return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: generationReport(studio.generated ? studio.generation : undefined) };
       } finally { applyPose(asset, editor.pose); }
     }
     default: throw new Error(`Unknown scripting command: ${method}`);

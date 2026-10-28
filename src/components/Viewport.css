@@ -14,3 +14,4 @@
 .viewport-split-labels > span + span { border-left: 1px solid var(--line); }
 .viewport-split-label { display: inline-block; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
 .viewport-split-labels strong { display: block; margin-bottom: 3px; color: var(--ink); font-size: 12px; }
+.viewport-shell .viewport-label { left: 76px; max-width: calc(100% - 96px); }

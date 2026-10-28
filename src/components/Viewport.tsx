@@ -242,8 +242,11 @@ export default function Viewport(props: ViewportProps) {
       const box = new THREE.Box3().setFromObject(asset.root);
       const center = box.isEmpty() ? new THREE.Vector3(0, 1.2, 0) : box.getCenter(new THREE.Vector3());
       const size = box.isEmpty() ? new THREE.Vector3(1, 2.4, 1) : box.getSize(new THREE.Vector3());
-      const height = Math.max(size.y, 1.7);
-      const distance = Math.max(height * 1.7, Math.max(size.x, size.z) * 1.4, height / Math.max(camera.aspect, 0.45) * 1.15);
+      // A crouched frame must leave room for the character to stand while playing.
+      const height = Math.max(size.y, asset.height, 1.7);
+      if (!box.isEmpty() && asset.kind === 'humanoid') center.y = box.min.y + Math.max(size.y, asset.height) / 2;
+      const halfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const distance = Math.max(height / (2 * halfFov), Math.max(size.x, size.z) / (2 * halfFov * Math.max(camera.aspect, .45))) * 1.18 + Math.max(size.x, size.z) / 2;
       orbit.target.copy(center);
       if (view === 'front') camera.position.copy(center).add(new THREE.Vector3(0, 0.08, distance));
       else if (view === 'side') camera.position.copy(center).add(new THREE.Vector3(distance, 0.08, 0));

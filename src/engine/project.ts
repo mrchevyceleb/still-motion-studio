@@ -210,6 +210,21 @@ export function archiveLocal(document: ProjectDocument): Promise<void> {
   return task;
 }
 
+/** A permanent copy without switching the active scene or its recovery pointer. */
+export function saveSceneCopy(document: ProjectDocument, name: string, thumbnail?: string): Promise<string> {
+  const snapshot = structuredClone(validateProject({ ...document, name }));
+  const id = crypto.randomUUID();
+  return enqueue(() => withStore<string>('readwrite', (store, done) => {
+    const request = store.get('scene-index');
+    request.onsuccess = () => {
+      const entries: SceneEntry[] = request.result ?? [];
+      store.put(snapshot, `scene:${id}`);
+      store.put([{ ...sceneEntry(snapshot, id, undefined, thumbnail), revision: 1 }, ...entries], 'scene-index');
+      done(id);
+    };
+  }));
+}
+
 export async function loadLocal(): Promise<ProjectDocument | undefined> {
   const db = await database();
   try {
@@ -293,6 +308,16 @@ export function validateProject(input: unknown): ProjectDocument {
   if (data.generation !== undefined && (!data.generation || typeof data.generation.name !== 'string' || !['inbetween', 'physics'].includes(data.generation.kind) || !data.generation.metrics || typeof data.generation.metrics !== 'object' || !Array.isArray(data.generation.warnings) || !data.generation.warnings.every(w => typeof w === 'string'))) throw new Error('This project contains invalid generation details.');
   const comparison = data.generation?.comparison;
   if (comparison !== undefined && (!comparison || data.generation?.kind !== 'physics' || !data.generated || !Array.isArray(comparison.before) || comparison.before.length < 1 || comparison.before.length > 72001 || !['smooth', 'linear', 'stepped'].includes(comparison.interpolation))) throw new Error('This project contains an invalid physics comparison.');
+  let source = data.generation?.source;
+  let outdatedSource = false;
+  if (source !== undefined) {
+    try {
+      if (!source || !Array.isArray(source.before) || source.before.length < 2 || source.before.length > 72001 || !['smooth', 'linear', 'stepped'].includes(source.interpolation)) throw new Error('Invalid guide.');
+      // Validate this optional guide with the same rules as authored keys. A bad
+      // guide must never prevent recovering the user's actual animation.
+      validateProject({ ...data, keys: source.before, generated: undefined, generation: undefined, tracks: undefined, activeTrackId: undefined });
+    } catch { source = undefined; outdatedSource = true; }
+  }
   if (data.baseMotionName !== undefined && (typeof data.baseMotionName !== 'string' || data.baseMotionName.length > 200)) throw new Error('This project contains an invalid motion name.');
   if (data.baseTrackName !== undefined && (typeof data.baseTrackName !== 'string' || !data.baseTrackName.trim() || data.baseTrackName.length > 80) || data.baseTrackMuted !== undefined && typeof data.baseTrackMuted !== 'boolean') throw new Error('This project contains invalid track details.');
   if (data.tracks !== undefined) {
@@ -322,7 +347,7 @@ export function validateProject(input: unknown): ProjectDocument {
     ids.add(key.id); times.add(key.time);
    }
   }
-  return { ...data, tracks: data.tracks?.map(t => ({ ...t, keys: [...t.keys].sort((a, b) => a.time - b.time) })), keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined, generation: comparison ? { ...data.generation!, comparison: { ...comparison, before: [...comparison.before].sort((a, b) => a.time - b.time) } } : data.generation };
+  return { ...data, tracks: data.tracks?.map(t => ({ ...t, keys: [...t.keys].sort((a, b) => a.time - b.time) })), keys: [...data.keys].sort((a, b) => a.time - b.time), generated: data.generated ? [...data.generated].sort((a, b) => a.time - b.time) : undefined, generation: data.generation ? { ...data.generation, ...(comparison ? { comparison: { ...comparison, before: [...comparison.before].sort((a, b) => a.time - b.time) } } : {}), source: source ? { ...source, before: [...source.before].sort((a, b) => a.time - b.time) } : undefined, ...(outdatedSource ? { warnings: [...data.generation.warnings, 'The original motion guide could not be restored and was removed. Your authored poses and generated animation are preserved.'] } : {}) } : undefined };
 }
 
 export function downloadFile(contents: BlobPart, filename: string, type: string): void {

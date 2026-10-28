@@ -1,4 +1,4 @@
-const { mkdir, readFile, writeFile, cp, access, rename, unlink, rm, lstat, realpath } = require('node:fs/promises');
+const { mkdir, readFile, writeFile, cp, access, rename, unlink, rm, lstat, realpath, stat } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
@@ -118,6 +118,51 @@ async function prepareRuntimes(bundle, dataRoot, runtimeRoot) {
         activated = true;
       } finally { if (repair && !activated) await discardRepair(repair.directory); }
     }
+  }
+  const motionbricks = expanded.get('motionbricks/runtime.json');
+  if (motionbricks) {
+    const file = path.join(dataRoot, '.local/motionbricks/runtime.json');
+    await checkedDirectory(path.dirname(file), true);
+    const model = path.join(runtimeRoot, 'local/motionbricks/mmm_v6_soma_fp32.onnx');
+    const unavailableFile = path.join(path.dirname(file), 'unavailable.json');
+    try {
+      const expected = '856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb';
+      if (path.resolve(motionbricks.config?.modelPath || '') !== path.resolve(model) || motionbricks.config.modelSha256 !== expected) throw new Error('The model configuration does not match this release.');
+      for (const required of motionbricks.requiredFiles) await access(required);
+      if (!Number.isSafeInteger(motionbricks.config.modelSize) || (await stat(model)).size !== motionbricks.config.modelSize) throw new Error('The model file is incomplete.');
+      // Hashes are checked during assembly and before every inference. Avoid
+      // reading 723 MiB before opening the editor on every startup.
+      const { id } = JSON.parse(await readFile(path.join(bundle, 'runtime.json'), 'utf8'));
+      const probeFile = path.join(path.dirname(file), 'probe.json');
+      const key = `${id}|${model}|${python}`;
+      if ((await readExisting(probeFile))?.key !== key) {
+        await run(python, ['-B', '-c', 'from backend.motionbricks import load_onnxruntime; load_onnxruntime()'], { cwd: path.join(bundle, 'app'), windowsHide: true, timeout: 120000 });
+        await atomicJSON(probeFile, { key });
+      }
+      await atomicJSON(file, { ...motionbricks, python });
+      await unlink(unavailableFile).catch(() => {});
+    } catch (error) {
+      const message = 'MotionBricks could not start. Reinstall the full Setup to restore it; your scenes and the editor remain available.';
+      try {
+        const previous = await readExisting(file);
+        const oldModel = previous?.config?.modelPath;
+        const relative = oldModel ? path.relative(path.dirname(runtimeRoot), path.resolve(oldModel)) : '';
+        if (!oldModel || relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) await quarantine(file);
+      } catch { /* An optional provider must not block editor startup. */ }
+      await atomicJSON(unavailableFile, { message }).catch(() => {});
+      console.warn(message, error.message);
+    }
+  }
+  if (!motionbricks) {
+    const file = path.join(dataRoot, '.local/motionbricks/runtime.json');
+    try {
+      const oldModel = (await readExisting(file))?.config?.modelPath;
+      if (oldModel) {
+        const relative = path.relative(path.dirname(runtimeRoot), path.resolve(oldModel));
+        if (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)) await quarantine(file);
+      }
+    } catch { /* Preserve editor startup and externally installed providers. */ }
+    await unlink(path.join(dataRoot, '.local/motionbricks/unavailable.json')).catch(() => {});
   }
   const physicsFile = path.join(dataRoot, '.local', 'physics-proof/runtime.json');
   await checkedDirectory(path.dirname(physicsFile), true);

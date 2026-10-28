@@ -43,6 +43,8 @@ env:
   # the release (uv's defaults are a 30 second timeout and 3 retries).
   UV_HTTP_TIMEOUT: 120
   UV_HTTP_RETRIES: 10
+  # Public vendor model, pinned and verified by setup before packaging/inference.
+  STILL_BUNDLE_MOTIONBRICKS: '1'
 
 jobs:
   plan:
@@ -163,8 +165,22 @@ jobs:
       - name: Carry approved models from the latest release
         run: node scripts/fetch-release-models.mjs
 
+      - name: Restore the pinned MotionBricks model
+        id: motionbricks-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/motionbricks/mmm_v6_soma_fp32.onnx
+          key: motionbricks-soma-856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb
+
       - name: Build both installers
         run: npm run desktop:dist
+
+      - name: Cache the verified MotionBricks model
+        if: steps.motionbricks-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/motionbricks/mmm_v6_soma_fp32.onnx
+          key: motionbricks-soma-856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb
 
       - name: Verify the release
         run: node scripts/release-desktop.mjs "${{ steps.notes.outputs.notes }}" --dry-run

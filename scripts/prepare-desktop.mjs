@@ -5,6 +5,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { prepareMsvc } from './prepare-msvc.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const localRoot = path.join(root, '.local');
@@ -69,6 +70,7 @@ try {
     await cp(await realpath(path.dirname(base)), cache, { recursive: true, dereference: true, filter: filename => !filename.includes('site-packages') && !filename.endsWith('__pycache__') });
   }
   execFileSync('uv', ['pip', 'install', '--exact', '--break-system-packages', '--python', python, '-r', path.join(root, 'requirements-desktop.txt'), '--extra-index-url', 'https://download.pytorch.org/whl/cpu', '--index-strategy', 'unsafe-best-match'], { stdio: 'inherit', windowsHide: true });
+  await prepareMsvc(cache, path.join(localRoot, 'desktop-cache'));
   execFileSync(python, ['-c', 'import torch,numpy,scipy,safetensors,mujoco; assert torch.version.cuda is None; print("Offline CPU runtime verified")'], { stdio: 'inherit', windowsHide: true });
   const deps = path.join(bundle, 'deps');
   await cp(cache, path.join(deps, 'python'), { recursive: true, dereference: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
@@ -89,6 +91,23 @@ try {
   const rights = JSON.parse(await readFile(path.join(root, 'backend/model-rights.json'), 'utf8'));
   const runtimes = [];
   const omitted = [];
+  const motionbricksFile = 'motionbricks/runtime.json';
+  if (process.env.STILL_BUNDLE_MOTIONBRICKS === '1') {
+    console.log('Bundling the pinned MotionBricks CPU model (723 MiB).');
+    // This verifies the pinned bytes and runs actual inference using the same
+    // Python 3.10 CPU runtime that the installed app will use.
+    execFileSync(python, ['-B', 'scripts/setup_motionbricks.py', '--data-root', root], { cwd: root, stdio: 'inherit', windowsHide: true });
+    const runtime = JSON.parse(await readFile(path.join(root, '.local', motionbricksFile), 'utf8'));
+    const directory = path.join(local, 'motionbricks');
+    await mkdir(directory);
+    const names = ['mmm_v6_soma_fp32.onnx', 'MODEL-LICENSE.md', 'NVIDIA-Open-Model-Agreement.pdf'];
+    for (const name of names) await cp(path.join(root, '.local/motionbricks', name), path.join(directory, name));
+    if (await fileHash(path.join(directory, names[0])) !== runtime.config.modelSha256) throw new Error('The copied MotionBricks model failed verification.');
+    runtime.python = '$RUNTIME/python/python.exe';
+    runtime.config.modelPath = '$RUNTIME/local/motionbricks/' + names[0];
+    runtime.requiredFiles = names.map(name => '$RUNTIME/local/motionbricks/' + name);
+    runtimes.push({ file: motionbricksFile, runtime });
+  } else omitted.push({ provider: 'motionbricks', reason: 'Optional MotionBricks model is not installed. See docs/motionbricks.md.' });
   const relative = absolute => {
     const rel = path.relative(root, absolute).replaceAll('\\', '/');
     if (!rel.startsWith('.local/') || rel.includes('../')) throw new Error('A model path escaped the local model directory.');

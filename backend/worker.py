@@ -68,7 +68,7 @@ def progress(message, fraction=0):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--provider', required=True, choices=['inbetween', 'physics', 'owned_humanoid', 'quadruped'])
+    parser.add_argument('--provider', required=True, choices=['motionbricks', 'inbetween', 'physics', 'owned_humanoid', 'quadruped'])
     parser.add_argument('--input', required=True)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()

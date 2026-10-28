@@ -19,7 +19,7 @@ export interface TrackState {
   baseTrackMuted?: boolean;
   baseMotionName?: string;
 }
-export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[]; comparison?: { before: PoseKey[]; interpolation: InterpolationMode } }
+export interface MotionGeneration { name: string; kind: 'inbetween' | 'physics'; metrics: Record<string, unknown>; warnings: string[]; comparison?: { before: PoseKey[]; interpolation: InterpolationMode }; source?: { before: PoseKey[]; interpolation: InterpolationMode } }
 export type InterpolationMode = 'smooth' | 'linear' | 'stepped';
 export interface MotionSettings { interpolation: InterpolationMode; floorContact: boolean; gravity: number; strength: number }
 export interface CharacterAsset {

@@ -2,7 +2,7 @@
 
 ## Install and use
 
-Download the full **Still-Motion-Studio-Setup** installer from [Releases](https://github.com/mrchevyceleb/still-motion-studio/releases). It targets Windows x64 and includes CPU Python, MuJoCo and Blender; no separate Node installation or GPU is needed. Learned models are included only when locally available and approved at build time. A source-only build can omit them.
+Download the full **Still-Motion-Studio-Setup** installer from [Releases](https://github.com/mrchevyceleb/still-motion-studio/releases). It targets Windows x64 and includes CPU Python, MuJoCo and Blender; no separate Node installation or GPU is needed. Official releases include the pinned NVIDIA MotionBricks human model and approved carried animal models. Source-only builds can omit unavailable models; install MotionBricks with `scripts/setup-motionbricks.ps1` or set `STILL_BUNDLE_MOTIONBRICKS=1` when building.
 
 Install the full **0.2.23 Setup** once to move from the old private-repository updater to public updates without sign-in. Windows installers are unsigned; verify their origin and the published `SHA256SUMS.txt`.
 
@@ -30,7 +30,7 @@ $env:STILL_BLENDER_DIRECTORY = 'C:/Program Files/Blender Foundation/Blender 5.2'
 npm run desktop:dist
 ```
 
-This downloads the pinned CPU Python dependencies, builds the UI, retains third-party notices and copies Blender into a fresh staging directory. Output is in ignored `.local/installers/`. `npm run desktop:pack` creates an unpacked executable; after preparation, `npm run desktop` opens it.
+Local Windows builds require a validly licensed Visual Studio installation with the C++ tools component for CRT redistribution. This downloads the pinned CPU Python dependencies, builds the UI, retains third-party notices and copies Blender into a fresh staging directory. Output is in ignored `.local/installers/`. `npm run desktop:pack` creates an unpacked executable; after preparation, `npm run desktop` opens it.
 
 There is no requirement for the maintainer's `.local` folder. Physics configuration is generated from defaults. Missing learned models are listed as omitted in `catalog.json`; installed models must pass existing rights, provenance, hash and quality gates. Invalid installed models cause a build failure, not a silent bypass. Models are never downloaded from a private location.
 
@@ -47,3 +47,5 @@ To run every release check on a local Windows build without publishing, download
 The workflow checks both installers' metadata and hashes and the matching Blender version header, then uploads installers, blockmaps, the update feed, Blender source archive, notices, checksums and source-commit metadata to a draft release. It publishes only after GitHub confirms every uploaded size and hash. A failed upload remains a draft and re-running the job resumes it. Source/archive version checks do not replace auditing a custom binary or its dependencies.
 
 Never upload `latest.yml` without its matching installer. Preserve published corresponding source for as long as binaries are offered. Code signing is not configured by this project.
+
+The desktop build includes app-local Microsoft CRT binaries under the publisher’s applicable Visual Studio Distributable Code rights and [Microsoft’s REDIST list](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution). The publishing machine must have a validly licensed Visual Studio installation (the hosted Windows release runner includes Visual Studio). The runtime EULA is for recipients; it is not the publisher’s standalone redistribution grant. Both the end-user license and redistribution-source reference accompany the DLLs.

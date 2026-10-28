@@ -18,6 +18,7 @@ Still is a free, open-source character animation editor built with React, Three.
 - Trim, blend, repeat and reverse clips. Keep a local character library with independent scenes and backups.
 - Export portable `.still` projects, animated GLB, and Unreal FBX packages with optional root motion and body retargeting.
 - Drive the editor through a local authenticated SDK or MCP server.
+- Generate humanoid in-betweens locally with [NVIDIA MotionBricks](docs/motionbricks.md), preserving your authored poses and character.
 - Add optional MuJoCo physics and a small learned animal-motion prior. Optionally connect your own Meshy account for preset or generated motion.
 
 ## Download for Windows
@@ -58,7 +59,7 @@ Pushes to `main` build and publish a new Windows release automatically through [
 
 Still is under active development. Review generated motion and exported assets before using them in production.
 
-The animal prior is a small model trained from scratch on documented CC0 motion; its measured improvement over interpolation is modest. No standalone humanoid candidate currently meets the release quality gate. Neither model weights nor training characters are in Git. CondMDI weights are excluded and its research provider is disabled by default because rights remain unresolved.
+The animal prior is a small model trained from scratch on documented CC0 motion; its measured improvement over interpolation is modest. No standalone owned humanoid candidate currently meets the release quality gate. NVIDIA MotionBricks supplies a separately licensed pretrained human inbetweening model. Neither model weights nor training characters are in Git. CondMDI weights are excluded and its research provider is disabled by default because rights remain unresolved.
 
 Difficult acrobatics, hand/prop contacts, moving platforms and unusual anatomy need manual review. Automatic rigging estimates anatomy; it cannot reliably infer hidden or fused fingers. Unreal materials, facial rigs, cloth and gameplay integration remain project-specific. See [motion rights and quality](docs/motion-model-rights.md).
 

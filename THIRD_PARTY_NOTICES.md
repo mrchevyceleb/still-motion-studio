@@ -23,6 +23,14 @@ Blender is a separate executable invoked for exports. Its combined binary is dis
 
 For every newly published full installer, the release process requires a matching Blender source archive and copies its identity and SHA-256 into `blender-source.json`. The archive is uploaded beside the installer and included in `SHA256SUMS.txt`. Preserve Blender's installed license directory and provide the corresponding source and build instructions for any modified redistribution. A link to this project's MIT license alone is not a license notice for Blender. Review additional bundled dependency obligations before distributing a custom runtime.
 
+The desktop also includes app-local Microsoft Visual C++ 14.44.35211 runtime DLLs, extracted without modification from the hash-pinned official Microsoft redistributable. Its complete license is included as `python/MICROSOFT-VC-RUNTIME-LICENSE.rtf` alongside the binaries.
+
+## NVIDIA MotionBricks
+
+Official Windows releases include NVIDIA MotionBricks SOMA RP v1 ONNX weights, pinned to source revision `54fc563aeaaf819a753d72cc9fdc6713989cdd43` and SHA-256 `856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb`. The model is separately licensed under the [NVIDIA Open Model Agreement](backend/assets/NVIDIA-Open-Model-Agreement.pdf); its full agreement and upstream model notice accompany the installed weights. Licensed by NVIDIA Corporation under the NVIDIA Open Model Agreement.
+
+The adapted SOMA feature codec and canonical skeleton retain upstream Apache-2.0 notices in [backend/assets/motionbricks-LICENSE.txt](backend/assets/motionbricks-LICENSE.txt). No NVIDIA evaluation sample motion is shipped. ONNX Runtime (MIT), FlatBuffers (Apache-2.0), packaging (Apache-2.0/BSD) and protobuf (BSD) retain their installed distribution notices. The model is not relicensed under Still's MIT license.
+
 ## Motion and character rights
 
 - The offline Motion Library includes Quaternius Universal Animation Library 1 and 2 and selected Mesh2Motion rigs and animation packs under CC0 1.0 Universal. Source versions, individual hashes, and attribution details are retained in [`public/motions/NOTICE.txt`](public/motions/NOTICE.txt) and [`public/motions/catalog.json`](public/motions/catalog.json). The Carnegie Mellon derived mocap pack is excluded.

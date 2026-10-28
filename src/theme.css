@@ -212,6 +212,10 @@
   .header-right { gap: 12px; }
 }
 @media (max-width: 720px) {
+  .topbar { height: auto; min-height: 62px; flex-wrap: wrap; padding: 12px 15px; gap: 10px; }
+  .project-heading { order: 3; flex: 1 0 100%; }
+  .project-heading input { flex: 1; min-width: 0; width: 0; font-size: 16px; }
+  .project-heading .library-button { flex-shrink: 0; }
   .header-right { gap: 5px; }
   .theme-toggle { width: 28px; height: 28px; }
 }

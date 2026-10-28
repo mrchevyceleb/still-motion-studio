@@ -41,7 +41,7 @@ import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames
 import type { EngineProvider, EngineStatus } from './engine/assistance';
 import { exportUnrealPackage, getUnrealExportCapability, isUnrealAssetPath, readExportPreference, rememberExportPreference } from './engine/unrealExport';
 import type { UnrealExportCapability } from './engine/unrealExport';
-import { archiveLocal, downloadFile, editScene, embedCharacter, initializeCharacterLibrary, listArchives, listCharacters, listScenes, loadSession, readArchive, readCharacter, readScene, renameCharacter, saveLocal, validateProject } from './engine/project';
+import { archiveLocal, downloadFile, editScene, embedCharacter, initializeCharacterLibrary, listArchives, listCharacters, listScenes, loadSession, readArchive, readCharacter, readScene, renameCharacter, saveLocal, saveSceneCopy, validateProject } from './engine/project';
 import type { ArchiveEntry, SceneEntry, SceneWriteToken } from './engine/project';
 import type { CharacterEntry } from './engine/characterLibrary';
 import { characterFingerprint } from './engine/characterLibrary';
@@ -127,7 +127,7 @@ export default function App() {
   const [rigDraft, setRigDraft] = useState<{ preview: CharacterAsset; initial: AnatomicalFit; fit: AnatomicalFit; source: CharacterAsset } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [engine, setEngine] = useState<EngineStatus | null>(null);
-  const [engineChoice, setEngineChoice] = useState<EngineProvider['id']>('owned_humanoid');
+  const [engineChoice, setEngineChoice] = useState<EngineProvider['id']>('motionbricks');
   const [physicsChoice, setPhysicsChoice] = useState<EngineProvider['id']>('physics');
   const [progress, setProgress] = useState<number | null>(null);
   const engineOperation = useRef<AbortController | null>(null);
@@ -232,9 +232,11 @@ export default function App() {
   const compatible = (provider: EngineProvider) => asset.kind !== 'creature' && !(provider.limits?.humanoidOnly && asset.kind !== 'humanoid') && !(provider.limits?.quadrupedOnly && asset.kind !== 'quadruped');
   const learnedProviders = engine?.providers.filter(provider => provider.kind !== 'physics' && provider.learned && compatible(provider)) ?? [];
   const learnedProvider = learnedProviders.find(provider => provider.id === engineChoice) ?? learnedProviders[0];
+  const learnedDurationLimit = learnedProvider?.limits?.maxDuration;
+  const learnedClipTooLong = learnedDurationLimit !== undefined && studio.duration > learnedDurationLimit;
   const physicsProviders = engine?.providers.filter(provider => (provider.kind === 'physics' || provider.id === 'physics') && compatible(provider)) ?? [];
   const physicsProvider = physicsProviders.find(provider => provider.id === physicsChoice) ?? physicsProviders[0];
-  const needsReview = (studio.generation?.metrics.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
+  const needsReview = !!studio.generated && (studio.generation?.metrics.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
   const selectedKey = poseKeys.find(key => Math.abs(key.time - time) < 0.5 / fps);
   useEffect(() => { setMovingKey(null); }, [sceneId, selectedKey?.id]);
   useEffect(() => { setPoseReference(null); }, [asset.root, sceneId]);
@@ -311,7 +313,7 @@ export default function App() {
     next = fitEmptyTracks(next);
     setLibraryPreview(null);
     // Editing a key invalidates its generated in-betweens, keeping the simple pose timeline.
-    if (next.keys !== studio.keys && next.generated === studio.generated) next = { ...next, generated: undefined, generation: undefined };
+    if (next.keys !== studio.keys && next.generated === studio.generated) next = { ...next, generated: undefined, generation: next.sourceClip === null && next.generation?.source ? { ...next.generation, comparison: undefined } : undefined };
     history.current.past.push(clone({ ...studio, rigKind: asset.kind }));
     if (history.current.past.length > 60) history.current.past.shift();
     history.current.future = [];
@@ -319,7 +321,8 @@ export default function App() {
     setComparisonView('after');
     setHistoryVersion(v => v + 1); setStudio(next);
     if (next.rigKind) setAsset(current => current.kind === next.rigKind ? current : { ...current, kind: next.rigKind! });
-    if (message) notify(message);
+    if (studio.generated && !next.generated && studio.generation?.kind === 'inbetween') notify(`${message ? `${message} ` : ''}AI take cleared. Generate again for your current poses, or Undo to restore it.`);
+    else if (message) notify(message);
   }, [studio, asset.kind, notify]);
 
   const commitEditingKeys = useCallback((keys: PoseKey[], message?: string, duration = studio.duration, captureChanges = false, interpolation?: InterpolationMode, captureBefore = editKeys) => {
@@ -555,7 +558,7 @@ export default function App() {
     return () => controller.abort();
   }, [dialog]);
 
-  const writePose = useCallback((pose: Pose) => {
+  const writePose = useCallback((pose: Pose, message?: string) => {
     if (libraryPreview || trackMuted) return;
     setPlaying(false);
     const snapped = Math.min(studio.duration, Math.round(timeRef.current * fps) / fps);
@@ -563,9 +566,10 @@ export default function App() {
     const before = sampleLayers(timeRef.current);
     const nextKey: PoseKey = { id: existing?.id ?? uid(), time: existing?.time ?? snapped, pose: clone(pose), label: existing?.label ?? 'New pose', morphs: before.morphs };
     const next = putLayerKey(studio, nextKey, before, asset.restPose, asset.restMorphs);
+    if (!next.generated && studio.generation?.source) next.generation = { ...studio.generation, comparison: undefined };
     const storedPose = editableKeys(next).find(k => k.id === nextKey.id)!.pose;
     setPoseReference(previous => ({ storedPose, keyId: nextKey.id, time: nextKey.time, before: previous?.keyId === nextKey.id && JSON.stringify(previous.after) === JSON.stringify(currentPose) ? previous.before : clone(currentPose), after: clone(pose), bone: selectedBone }));
-    commit(next); setTime(nextKey.time);
+    commit(next, message); setTime(nextKey.time);
   }, [studio, fps, commit, currentPose, selectedBone, editKeys, sampleLayers, libraryPreview, trackMuted, asset]);
 
   const applyProperty = (property: PoseProperty, axes: PropertyAxes, mode: 'offset' | 'match') => {
@@ -592,10 +596,11 @@ export default function App() {
       const physics = studio.generation?.kind === 'physics' ? studio.generation : undefined;
       const warning = 'Animation moved after physics. Run physics again to refresh floor and contact measurements.';
       const generation = physics ? { ...physics,
-        metrics: { quality: { requiresReview: true, reasons: [warning] } },
+        metrics: { originalClipBackupId: studio.generation?.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } },
         warnings: [...new Set([...physics.warnings, warning])],
         comparison: physics.comparison ? { ...physics.comparison, before: offsetKeyframes(asset, physics.comparison.before, delta) } : undefined,
-      } : studio.generation;
+      } : studio.generation ? { ...studio.generation } : undefined;
+      if (generation?.source) generation.source = { ...generation.source, before: offsetKeyframes(asset, generation.source.before, delta) };
       commit({ ...studio, sourceClip: null, keys, generated, generation, tracks: studio.tracks?.map(t => ({ ...t, keys: offsetKeyframes(asset, t.keys, delta) })) }, 'Entire animation moved, including generated frames. One Undo restores it.');
       setPlaying(false);
       return true;
@@ -609,7 +614,9 @@ export default function App() {
       const authored = editMotion(asset, { keys: studio.keys, duration: studio.duration, interpolation: studio.settings.interpolation }, edit, fps);
       const take = studio.generated ? editMotion(asset, activeMotion(), edit, fps) : undefined;
       const warning = 'Clip edited after generation. Review contacts and rerun physics to refresh its measurements.';
-      const generation = take && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+      const original = studio.generation?.source;
+      const editedSource = original ? editMotion(asset, { keys: original.before, duration: studio.duration, interpolation: original.interpolation }, edit, fps) : undefined;
+      const generation = (take || editedSource) && studio.generation ? { ...studio.generation, source: editedSource ? { before: editedSource.keys, interpolation: editedSource.interpolation } : undefined, comparison: undefined, metrics: { originalClipBackupId: studio.generation?.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
       const tracks = studio.tracks?.flatMap(track => { const edited = editAnimationTrack(asset, track, studio.duration, edit, fps); return edited ? [edited] : []; });
       commit({ ...studio, tracks, activeTrackId: tracks?.some(t => t.id === studio.activeTrackId) ? studio.activeTrackId : null, keys: authored.keys, generated: take?.keys, generation, duration: authored.duration, sourceClip: null, settings: { ...studio.settings, interpolation: authored.interpolation } }, 'Clip edited. One Undo restores the entire motion. Review playback and contacts.');
       setTime(edit.kind === 'trim' ? Math.max(0, Math.min(authored.duration, time - edit.start)) : edit.kind === 'speed' ? time / edit.factor : edit.kind === 'speed-range' ? rangeSpeedTime(edit, time) : edit.kind === 'reverse' ? studio.duration - time : Math.min(time, authored.duration));
@@ -661,7 +668,7 @@ export default function App() {
     finally { if (source) disposeCharacter(source); setBusy(null); }
   };
 
-  const addKey = useCallback(() => { if (trackMuted) { notify('Unmute this track to edit it.'); return; } writePose(currentPose); notify(selectedKey ? 'Pose updated. The motion follows automatically.' : 'New pose added. The motion follows automatically.'); }, [writePose, currentPose, selectedKey, notify, trackMuted]);
+  const addKey = useCallback(() => { if (trackMuted) { notify('Unmute this track to edit it.'); return; } writePose(currentPose, selectedKey ? 'Pose updated. The motion follows automatically.' : 'New pose added. The motion follows automatically.'); }, [writePose, currentPose, selectedKey, notify, trackMuted]);
   const duplicateKey = useCallback(() => {
     if (!selectedKey || keyDrag.current) return;
     const duplicate = duplicateMoment(editKeys, selectedKey, studio.duration, fps);
@@ -718,7 +725,7 @@ export default function App() {
     const retainedIds = new Set(keys.map(key => key.id));
     const trailingOnly = studio.keys.filter(key => !retainedIds.has(key.id)).every(key => key.time > end);
     let generated: PoseKey[] | undefined;
-    if (trailingOnly && end > 0 && (studio.generated || studio.settings.interpolation === 'smooth')) {
+    if (trailingOnly && end > 0 && (studio.generated || studio.settings.interpolation === 'smooth' && !studio.generation?.source)) {
       if (studio.generated) {
         generated = studio.generated.filter(key => key.time <= end);
         if (!generated.length) generated.push({ id: uid(), time: 0, pose: samplePose(studio.generated, 0, 'linear'), ...morphKeyData(studio.generated, 0, 'linear', asset.restMorphs) });
@@ -726,7 +733,7 @@ export default function App() {
       } else generated = editMotion(asset, { keys: studio.keys, duration: studio.duration, interpolation: studio.settings.interpolation }, { kind: 'trim', start: 0, end }, fps).keys;
     }
     const warning = 'Ending keyframes removed. Retained playback is preserved; rerun physics to refresh measurements.';
-    const generation = generated && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+    const generation = (generated || studio.generation?.source) && studio.generation ? { ...studio.generation, comparison: undefined, metrics: { originalClipBackupId: studio.generation?.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
     commit({ ...studio, keys, generated, generation, sourceClip: null }, `${message} Remaining keyframes keep their timing.${trailingOnly ? ' Use Remove empty tail to end the clip here.' : ''}`);
   }, [studio, asset, fps, commit, trackMuted, editingTrack, commitEditingKeys]);
   const deleteKey = useCallback(() => {
@@ -1113,20 +1120,54 @@ export default function App() {
     const controller = new AbortController(); engineOperation.current = controller;
     setBusy(provider.learned ? 'Preparing your key moments…' : 'Preparing the physical character…'); setProgress(0);
     await new Promise(resolve => setTimeout(resolve, 40));
+    let createdBackupId: string | undefined;
     try {
       controller.signal.throwIfAborted();
       const anchors = studio.keys.length > 24 ? simplifyKeys(studio.keys, 6) : studio.keys;
-      const settings = { ...studio.settings, interpolation: basePlaybackMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
-      const request = makeMotionRequest(asset, baseMotionKeys, anchors, studio.duration, settings, provider.id, seed.current++);
+      if (provider.id === 'motionbricks') {
+        if (anchors.length < 2 || Math.abs(anchors[0].time) > 1e-6 || Math.abs(anchors[anchors.length - 1].time - studio.duration) > 1e-5) throw new Error('Add a pose at the beginning and at the clip end before generating with MotionBricks.');
+        if (anchors.some((key, i) => i > 0 && key.time - anchors[i - 1].time < 1 / 30 - 1e-6)) throw new Error('Space your key poses at least one frame apart (1/30 second) before generating.');
+      }
+      let originalClipBackupId = (provider.id === 'motionbricks' || !provider.learned) && studio.generation?.source && typeof studio.generation.metrics.originalClipBackupId === 'string' ? studio.generation.metrics.originalClipBackupId : undefined;
+      if (originalClipBackupId && !(await listScenes()).some(scene => scene.id === originalClipBackupId)) originalClipBackupId = undefined;
+      let source = baseMotionKeys, sourceMode = basePlaybackMode;
+      let sourceWarning: string | undefined;
+      if (provider.id === 'motionbricks' && (studio.generated || studio.generation?.source)) {
+        if (studio.generation?.source) { source = studio.generation.source.before; sourceMode = studio.generation.source.interpolation; }
+        else if (studio.generation?.name === 'MotionBricks') {
+          source = studio.keys; sourceMode = studio.settings.interpolation;
+          sourceWarning = 'This older take has no original motion guide. Your authored poses guide this new take.';
+        }
+      }
+      const settings = { ...studio.settings, interpolation: sourceMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
+      const request = makeMotionRequest(asset, source, anchors, studio.duration, { ...settings, interpolation: sourceMode }, provider.id, seed.current++);
       const result = await generateMotion(request, (message, fraction) => { setBusy(message); setProgress(fraction); }, controller.signal);
       controller.signal.throwIfAborted();
-      const generated = restoreEngineFrames(asset, baseMotionKeys, anchors, result, basePlaybackMode, studio.duration, provider.learned);
+      const generated = restoreEngineFrames(asset, source, anchors, result, sourceMode, studio.duration, provider.learned);
+      if (provider.id === 'motionbricks' && anchors.length < studio.keys.length) {
+        setBusy('Keeping your original clip safe in Scenes…');
+        try {
+          originalClipBackupId = await saveSceneCopy(documentFor(), `${studio.title.slice(0, 180)} · original clip`, await sceneThumbnail(viewportAPI.current?.capture));
+          createdBackupId = originalClipBackupId;
+        } catch (error) { throw new Error(error instanceof Error && error.name === 'QuotaExceededError' ? 'There isn’t enough storage to keep your original clip safe. Export a .still copy and free some space, then generate again. Your animation is unchanged.' : 'Your original clip could not be saved. Export a .still copy before trying again. Your animation is unchanged.'); }
+        controller.signal.throwIfAborted();
+        setScenes(await listScenes());
+      }
+      controller.signal.throwIfAborted();
       // Physics adjusts poses without discarding authored key identities or timing.
       const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
       const review = (result.metrics?.quality as { requiresReview?: boolean } | undefined)?.requiresReview === true;
-      commit({ ...studio, keys, generated, generation: { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: clone(baseMotionKeys), interpolation: basePlaybackMode } } : {}) }, sourceClip: null }, provider.learned ? 'AI motion is ready. Your key poses are preserved. Play it, or Undo to compare.' : review ? 'Physics applied, but needs review. Open the pass details before exporting.' : 'Dynamics correction is ready. Play it, or Undo to compare.');
+      commit({ ...studio, keys, generated, generation: { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings, ...(originalClipBackupId ? { originalClipBackupId } : {}) }, ...(provider.id === 'motionbricks' ? { source: { before: clone(source), interpolation: sourceMode } } : !provider.learned && studio.generation?.source ? { source: clone(studio.generation.source) } : {}), warnings: [...result.warnings ?? [], ...(sourceWarning ? [sourceWarning] : []), ...(originalClipBackupId ? ['Your full original clip is saved as a separate scene in Scenes.'] : [])], ...(!provider.learned ? { comparison: { before: clone(baseMotionKeys), interpolation: basePlaybackMode } } : {}) }, sourceClip: null }, provider.learned ? 'AI motion is ready. Your key poses are preserved. Play it, or Undo to compare.' : review ? 'Physics applied, but needs review. Open the pass details before exporting.' : 'Dynamics correction is ready. Play it, or Undo to compare.');
     } catch (e) {
-      if (controller.signal.aborted) notify('Cancelled. Your animation is unchanged.');
+      let cleanupFailed = false;
+      if (createdBackupId) {
+        try { await editScene(createdBackupId, 'delete'); setScenes(await listScenes()); }
+        catch { cleanupFailed = true; }
+      }
+      if (controller.signal.aborted) {
+        notify('Cancelled. Your animation is unchanged.');
+        if (cleanupFailed) setError('The safety copy could not be removed. Your original clip is still in Scenes; your animation is unchanged.');
+      }
       else setError(e instanceof Error ? e.message : 'The motion engine could not finish. Your animation is unchanged.');
     } finally { applyPose(asset, currentPose); engineOperation.current = null; setProgress(null); setBusy(null); void getEngineStatus().then(setEngine); }
   };
@@ -1210,7 +1251,7 @@ export default function App() {
     const keys = shortened ? trim(studio.keys, studio.settings.interpolation) : studio.keys;
     const generated = shortened && studio.generated ? trim(studio.generated, 'linear') : studio.generated;
     const warning = 'Clip end changed after generation. Review playback and rerun physics to refresh its measurements.';
-    const generation = studio.generation ? { ...studio.generation, comparison: undefined, metrics: { quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+    const generation = studio.generation ? { ...studio.generation, source: studio.generation.source ? { ...studio.generation.source, before: shortened ? trim(studio.generation.source.before, studio.generation.source.interpolation) : studio.generation.source.before } : undefined, comparison: undefined, metrics: { originalClipBackupId: studio.generation?.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
     const tracks = shortened ? studio.tracks?.flatMap(track => { const edited = editAnimationTrack(asset, track, studio.duration, { kind: 'trim', start: 0, end: value }, fps); return edited ? [edited] : []; }) : studio.tracks;
     commit({ ...studio, tracks, activeTrackId: tracks?.some(t => t.id === studio.activeTrackId) ? studio.activeTrackId : null, sourceClip: null, duration: value, keys, generated, generation }, shortened ? `Clip ends at ${value.toFixed(2)}s. Earlier keyframes keep their timing. Undo restores the trimmed end.` : `Clip extended to ${value.toFixed(2)}s. Your keyframe timing is unchanged.`);
     setPlaying(false); setTime(t => Math.min(value, t));
@@ -1345,7 +1386,7 @@ export default function App() {
 
           <aside className="assist-panel" inert={!!libraryPreview}><div className="assist-heading"><span className="assist-icon"><Sparkles size={19}/></span><span className="eyebrow">A LITTLE HELP</span><h2>You pose.<br/>We connect the dots.</h2><p>Good motion starts with a few good moments.</p></div>
             <FaceShapes key={`face:${sceneId}:${asset.root.uuid}`} asset={asset} keys={motionKeys} moments={editKeys} pose={currentPose} time={time} duration={studio.duration} fps={fps} interpolation={playbackMode} disabled={trackMuted || !!busy || !!dragPreview || !!selectionRange || !hydrated || viewingBefore} onPause={() => setPlaying(false)} onCommit={key => { if (trackMuted) return; commit(putLayerKey(studio, key, sampleLayers(time), asset.restPose, asset.restMorphs)); setPlaying(false); setTime(key.time); }}/>
-            {getAutoRigDiagnostics(asset) && <details className="assist-section generation-details"><summary>Rig fit checks</summary><p>{getAutoRigDiagnostics(asset)?.evidence === 'clear' ? 'Body landmarks found.' : 'Joint positions are estimates to review.'} Try a small bend before animating.</p>{getAutoRigDiagnostics(asset)?.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}<div className="assist-section ai-section"><div className="section-heading"><h3>AI in-betweening</h3><span className={`engine-tag ${learnedProvider ? 'ready' : ''}`}>{learnedProvider ? 'ON DEVICE' : 'NOT READY'}</span></div><p className="micro-copy">A trained motion model fills the space between your poses.</p>{learnedProviders.length > 1 && <select className="engine-select" aria-label="AI motion engine" value={learnedProvider?.id} onChange={e => setEngineChoice(e.target.value as EngineProvider['id'])}>{learnedProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<button className="button primary generate-button" disabled={!learnedProvider || !asset.rigged || !!busy} onClick={() => learnedProvider && void runMotionEngine(learnedProvider)}><Sparkles size={15}/>{studio.generated ? 'Generate another take' : studio.keys.length > 24 ? 'Find 6 poses & generate' : 'Generate motion'}<ArrowRight size={14}/></button><p className="engine-caption">{learnedProvider ? `${learnedProvider.name} · your key poses stay exact` : engine ? (asset.kind === 'creature' ? 'Creature rigs use imported clips and editable pose interpolation. Human and quadruped AI models do not support this anatomy.' : asset.kind === 'humanoid' ? 'No validated humanoid model is installed. Use curve interpolation or import an animation clip.' : 'No validated animal model is installed. Curve interpolation is available.') : 'Start the local engine to enable AI.'}{learnedProvider?.id === 'owned_humanoid' && ' · Limited motion coverage'}{learnedProvider?.id === 'inbetween' && ' · Commercial rights pending'}</p>{studio.generation?.kind === 'inbetween' && <details className={`generation-details ${needsReview ? 'needs-review' : ''}`}><summary><Check size={12}/>{needsReview ? 'Motion · review needed' : studio.generation.kind === 'inbetween' ? 'AI take ready' : 'Dynamics pass ready'}<span>{studio.generated?.length} frames</span></summary><p>{studio.generation.name}. Editing a pose returns to your key moments; generate again to update the motion.</p>{studio.generation.warnings.map((warning, i) => <p key={i}>{warning}</p>)}<button className="text-button" onClick={() => downloadFile(JSON.stringify(studio.generation, null, 2), 'motion-generation-report.json', 'application/json')}>Save generation report <ArrowDownToLine size={12}/></button></details>}</div>
+            {getAutoRigDiagnostics(asset) && <details className="assist-section generation-details"><summary>Rig fit checks</summary><p>{getAutoRigDiagnostics(asset)?.evidence === 'clear' ? 'Body landmarks found.' : 'Joint positions are estimates to review.'} Try a small bend before animating.</p>{getAutoRigDiagnostics(asset)?.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}<div className="assist-section ai-section"><div className="section-heading"><h3>AI in-betweening</h3><span className={`engine-tag ${learnedProvider ? 'ready' : ''}`}>{learnedProvider ? 'ON DEVICE' : 'NOT READY'}</span></div><p className="micro-copy">A trained motion model fills the space between your poses.</p>{studio.generation?.source && <p className="micro-copy">Following your original motion. <button className="text-button" disabled={!!busy || !hydrated || viewingBefore} onClick={() => commit({ ...studio, generated: undefined, generation: undefined }, studio.generated ? 'Original guide and generated take removed. Your authored poses are unchanged.' : 'Original guide removed. Your authored poses are unchanged.')}>Use only my poses</button></p>}{learnedProvider?.id === 'motionbricks' && studio.keys.length > 24 && <p className="micro-copy">We’ll keep your full original clip in Scenes before finding six key poses.</p>}{learnedProviders.length > 1 && <select className="engine-select" aria-label="AI motion engine" value={learnedProvider?.id} onChange={e => setEngineChoice(e.target.value as EngineProvider['id'])}>{learnedProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<button className="button primary generate-button" disabled={!learnedProvider || learnedClipTooLong || !asset.rigged || !!busy} onClick={() => learnedProvider && void runMotionEngine(learnedProvider)}><Sparkles size={15}/>{studio.generated ? (learnedProvider?.id === 'motionbricks' ? 'Regenerate motion' : 'Generate another take') : studio.keys.length > 24 ? 'Find 6 poses & generate' : 'Generate motion'}<ArrowRight size={14}/></button><p className="engine-caption">{learnedProvider ? (learnedClipTooLong ? `${learnedProvider.name} supports clips up to ${learnedDurationLimit} seconds. ${learnedProviders.some(provider => provider.id !== learnedProvider.id && (provider.limits?.maxDuration ?? Infinity) >= studio.duration) ? 'Choose another AI motion engine above.' : 'Shorten this clip to generate.'}` : `${learnedProvider.name} · your key poses stay exact`) : engine ? (asset.kind === 'creature' ? 'Creature rigs use imported clips and editable pose interpolation. Human and quadruped AI models do not support this anatomy.' : asset.kind === 'humanoid' ? (engine.unavailableProviders?.find(provider => provider.id === 'motionbricks')?.message ?? 'No human motion model is installed. Install MotionBricks or use pose interpolation and imported clips.') : 'No validated animal model is installed. Curve interpolation is available.') : 'Start the local engine to enable AI.'}{learnedProvider?.id === 'owned_humanoid' && ' · Limited motion coverage'}{learnedProvider?.id === 'inbetween' && ' · Commercial rights pending'}</p>{studio.generated && studio.generation?.kind === 'inbetween' && <details className={`generation-details ${needsReview ? 'needs-review' : ''}`}><summary><Check size={12}/>{needsReview ? 'Motion · review needed' : studio.generation.kind === 'inbetween' ? 'AI take ready' : 'Dynamics pass ready'}<span>{studio.generated?.length} frames</span></summary><p>{studio.generation.name}. Editing a pose returns to your key moments; generate again to update the motion.</p>{studio.generation.warnings.map((warning, i) => <p key={i}>{warning}</p>)}<button className="text-button" onClick={() => downloadFile(JSON.stringify(studio.generation, null, 2), 'motion-generation-report.json', 'application/json')}>Save generation report <ArrowDownToLine size={12}/></button></details>}</div>
 
             <div className="assist-section physics-section"><div className="section-heading"><h3>Physics correction</h3><span className={`engine-tag ${physicsProvider ? 'ready' : ''}`}>{physicsProvider ? 'DYNAMICS' : 'OFFLINE'}</span></div>{physicsProviders.length > 1 && <select className="engine-select" aria-label="Physics engine" value={physicsProvider?.id} onChange={e => setPhysicsChoice(e.target.value as EngineProvider['id'])}>{physicsProviders.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select>}<div className="setting-row"><div><Footprints size={15}/><span>Keep feet planted</span></div><Switch label="Floor contact" checked={physicsProvider?.limits?.requiresFloorContact || studio.settings.floorContact} disabled={asset.kind === 'creature' || physicsProvider?.limits?.requiresFloorContact} onChange={() => changeSettings({ floorContact: !studio.settings.floorContact })}/></div><div className="setting-row"><label htmlFor="gravity">Gravity</label><select id="gravity" disabled={physicsProvider?.limits?.earthGravityOnly} value={physicsProvider?.limits?.earthGravityOnly ? 9.81 : studio.settings.gravity} onChange={e => changeSettings({ gravity: Number(e.target.value) })}><option value="9.81">Earth</option><option value="1.62">Moon</option><option value="0">Weightless</option></select></div><div className="strength-label"><label htmlFor="strength">A helping hand</label><span>{Math.round(studio.settings.strength * 100)}%</span></div><input id="strength" type="range" min="0" max="1" step=".05" value={studio.settings.strength} onChange={e => changeSettings({ strength: Number(e.target.value) })}/><button className="button assist-button" disabled={!physicsProvider || !asset.rigged || !!busy} onClick={() => physicsProvider && void runMotionEngine(physicsProvider)}><Activity size={15}/>Correct with physics<ArrowRight size={14}/></button><p className="micro-copy physics-note">{physicsProvider ? 'Articulated dynamics, gravity, and contact forces. Poses may shift to improve balance.' : asset.kind === 'creature' ? 'These physics engines require human or quadruped anatomy. Creature poses use interpolation.' : 'Start the local engine to enable dynamics.'}</p>{studio.generated && studio.generation?.kind === 'physics' && !comparison && needsReview && <p className="micro-copy">Clip edited. Run physics again to refresh contact measurements and comparison.</p>}{studio.generated && studio.generation?.kind === 'physics' && (comparison || !needsReview) && <button className="button physics-report-button" onClick={() => setDialog('physics')}>{needsReview ? 'Review physics changes' : 'See physics changes'}<ArrowUpRight size={13}/></button>}<button className="text-button quick-ground" disabled={asset.kind === 'creature' || !asset.rigged || !!busy} onClick={() => void assistMotion()}>Quick ground pass <Footprints size={12}/></button></div>
             <details className="assist-section curve-section"><summary>Curve interpolation<span>{(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'Smooth' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'Direct' : 'Hold'}</span><ChevronDown size={12}/></summary><div className="blend-options">{(['smooth', 'linear', 'stepped'] as InterpolationMode[]).map(mode => <button key={mode} className={(editingTrack?.interpolation ?? studio.settings.interpolation) === mode ? 'active' : ''} onClick={() => changeSettings({ interpolation: mode })}>{mode === 'smooth' ? 'Smooth' : mode === 'linear' ? 'Direct' : 'Hold'}</button>)}</div><div className={`curve-preview ${(editingTrack?.interpolation ?? studio.settings.interpolation)}`}><svg viewBox="0 0 220 52" aria-hidden="true"><path className="curve-guide" d="M8 44H212M8 26H212M8 8H212"/><path className="curve-path" d={(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'M8 44C84 44 116 8 212 8' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'M8 44L212 8' : 'M8 44H110V8H212'}/><circle cx="8" cy="44" r="4"/><circle cx="212" cy="8" r="4"/></svg><span>POSE A</span><span>POSE B</span></div><p className="micro-copy">{(editingTrack?.interpolation ?? studio.settings.interpolation) === 'smooth' ? 'Soft starts. Natural arcs. Your poses stay yours.' : (editingTrack?.interpolation ?? studio.settings.interpolation) === 'linear' ? 'A direct, constant-speed blend between poses.' : 'Hold each pose until the next. Great for blocking.'}</p></details>

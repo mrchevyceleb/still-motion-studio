@@ -14,6 +14,7 @@ const dataRoot = path.resolve(process.env.STILL_DATA_ROOT || root);
 const port = Number(process.env.STILL_ENGINE_PORT || 5175);
 const jobs = new Map();
 const configurations = {
+  motionbricks: '.local/motionbricks/runtime.json',
   owned_humanoid: '.local/owned-humanoid/runtime.json',
   quadruped: '.local/quadruped/runtime.json',
   inbetween: '.local/ai-motion/runtime.json',
@@ -38,6 +39,13 @@ async function configuration(id) {
     for (const filename of config.requiredFiles || []) await access(filename);
     return config;
   } catch { return null; }
+}
+
+async function unavailableProviders() {
+  try {
+    const value = JSON.parse(await readFile(path.join(dataRoot, '.local/motionbricks/unavailable.json'), 'utf8'));
+    return typeof value.message === 'string' ? [{ id: 'motionbricks', message: value.message.slice(0, 500) }] : [];
+  } catch { return []; }
 }
 
 async function providers() {
@@ -144,7 +152,7 @@ const server = http.createServer(async (req, res) => {
     if (await exportsService.handle(req, res, url)) return;
     if (await handleMeshy(req, res, url)) return;
     if (req.method === 'GET' && url.pathname === '/api/engine') {
-      reply(res, 200, { application: 'still-engine', version: 1, providers: await providers(), busy: activeJob !== null }); return;
+      reply(res, 200, { application: 'still-engine', version: 1, providers: await providers(), unavailableProviders: await unavailableProviders(), busy: activeJob !== null }); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/engine/jobs') {
       if (stopping) { reply(res, 503, { error: 'The local motion engine is shutting down.' }); return; }

@@ -5,14 +5,14 @@ import { createMorphKeySampler } from './morphs';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey } from '../types';
 
 export interface EngineProvider {
-  id: 'inbetween' | 'physics' | 'owned_humanoid' | 'quadruped';
+  id: 'motionbricks' | 'inbetween' | 'physics' | 'owned_humanoid' | 'quadruped';
   kind: 'inbetween' | 'physics';
   name: string;
   learned: boolean;
   description: string;
   limits?: { maxDuration?: number; humanoidOnly?: boolean; quadrupedOnly?: boolean; earthGravityOnly?: boolean; requiresFloorContact?: boolean };
 }
-export interface EngineStatus { application: string; providers: EngineProvider[]; busy: boolean }
+export interface EngineStatus { application: string; providers: EngineProvider[]; unavailableProviders?: { id: 'motionbricks'; message: string }[]; busy: boolean }
 export interface MotionFrame { time: number; pose: Pose }
 export interface EngineResult { frames: MotionFrame[]; metrics?: Record<string, unknown>; warnings?: string[]; provider?: { id: string; name: string; learned: boolean } }
 export interface MotionRequest {
@@ -146,9 +146,25 @@ export async function generateMotion(request: MotionRequest, onProgress: (messag
     const job = await jsonResponse(await fetch('/api/engine/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request), signal: AbortSignal.timeout(15000) }));
     jobId = job.id;
     if (signal.aborted) { cancel(); throw new DOMException('Cancelled', 'AbortError'); }
+    let failedPolls = 0, lastProgress = 0;
     while (!signal.aborted) {
-      const status = await jsonResponse(await fetch(`/api/engine/jobs/${jobId}`, { signal }));
-      onProgress(status.message || 'Generating motion…', Number(status.progress) || 0);
+      let response: Response;
+      try {
+        response = await fetch(`/api/engine/jobs/${jobId}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof TypeError || error instanceof DOMException && error.name === 'TimeoutError')) throw error;
+        // A dropped status connection must not discard a completed or running take.
+        // Only retry reads; submitting a job twice could duplicate expensive work.
+        if (++failedPolls > 3) throw new Error('The connection to the local motion engine was interrupted. Your animation is unchanged. Try generating again.');
+        onProgress('Reconnecting to your local motion engine…', lastProgress);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        continue;
+      }
+      failedPolls = 0;
+      const status = await jsonResponse(response);
+      lastProgress = Number(status.progress) || 0;
+      onProgress(status.message || 'Generating motion…', lastProgress);
       if (status.status === 'done') return status.result;
       if (status.status === 'error') throw new Error(status.error || 'The motion engine stopped before finishing.');
       if (status.status === 'cancelled') throw new DOMException('Cancelled', 'AbortError');
