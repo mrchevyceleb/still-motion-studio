@@ -9,10 +9,11 @@ import AnimationSources from './AnimationSources';
 import type { CharacterAsset, PoseKey } from '../types';
 import './AnimationImport.css';
 
-export default function AnimationImport({ target, duration, fps, initialMode, initialFile, initialClipIndex = 0, onMappingSaved, onBusy, onApply }: {
+export default function AnimationImport({ target, duration, fps, initialMode, initialFile, initialClipIndex = 0, initialFitError, onMappingSaved, onBusy, onApply }: {
   target: CharacterAsset; duration: number; fps: number; initialMode: 'apply' | 'append';
   initialFile?: File | null;
   initialClipIndex?: number;
+  initialFitError?: string | null;
   onMappingSaved?: (source: CharacterAsset, mapping: number[]) => void;
   onBusy: (busy: boolean) => void;
   onApply: (keys: PoseKey[], duration: number, mode: 'apply' | 'append', blend: number, name: string) => void;
@@ -56,7 +57,8 @@ export default function AnimationImport({ target, duration, fps, initialMode, in
       setLibrarySource(file === initialFile);
       const initialMapping = file === initialFile ? saved ?? suggestLibraryMapping(target, next) : suggestBoneMapping(target, next);
       setMapping(initialMapping);
-      setMappingExpanded(file !== initialFile || !mappingReady(target, initialMapping));
+      setMappingExpanded(file !== initialFile || !!initialFitError || !mappingReady(target, initialMapping));
+      if (file === initialFile && initialFitError) setError(initialFitError);
       setTransfer(file === initialFile || file.name.toLowerCase().endsWith('.bvh') ? 'retarget' : 'matching');
       setBlend(String(Math.min(.15, duration / 2, next.clips[selectedIndex].duration / 2)));
     } catch (cause) {

@@ -39,7 +39,7 @@ function restWorld(asset: CharacterAsset) {
 }
 
 /** Rotation transfer retaining target lengths. Optional alignment corrects facing and rest directions. */
-export function retargetAnimation(target: CharacterAsset, source: CharacterAsset, clip: AnimationClip, mapping: number[], rootMotion = true, alignment?: { source: number[]; target: number[]; limbs: number[]; next: [number, number][] }): PoseKey[] {
+export function retargetAnimation(target: CharacterAsset, source: CharacterAsset, clip: AnimationClip, mapping: number[], rootMotion = true, alignment?: { source: number[]; target: number[]; limbs: number[]; next: [number, number][]; ends: number[] }): PoseKey[] {
   if (!target.rigged || !source.rigged || target === source) throw new Error('Load a rigged character and a separate skeletal animation.');
   if (mapping.length !== source.bones.length || mapping.some(i => !Number.isInteger(i) || i < -1 || i >= target.bones.length)) throw new Error('The joint mapping is invalid.');
   const mapped = mapping.filter(i => i >= 0);
@@ -83,29 +83,25 @@ export function retargetAnimation(target: CharacterAsset, source: CharacterAsset
         while (bone) { if (bone === asset.bones[parent]) return true; bone = boneParent(bone, asset); }
         return false;
       };
-      for (let sourceIndex = 0; sourceIndex < mapping.length; sourceIndex++) {
-        const targetIndex = mapping[sourceIndex];
-        if (targetIndex < 0 || !limbBones.has(targetIndex)) continue;
-        if (!boneParent(source.bones[sourceIndex], source) || !boneParent(target.bones[targetIndex], target)) continue;
-        const children = mapping.flatMap((mapped, i) => mapped >= 0 && nearestMappedParent(i, source, sourceMapped) === sourceIndex && nearestMappedParent(mapped, target, targetMapped) === targetIndex ? [i] : []);
+      for (const targetIndex of order) {
+        const sourceIndex = mapping.indexOf(targetIndex);
+        if (sourceIndex < 0 || !limbBones.has(targetIndex)) continue;
+        const parent = nearestMappedParent(targetIndex, target, targetMapped);
+        const correction = restCorrections.get(parent)?.clone() ?? new Quaternion();
         const expectedChild = nextByTarget.get(targetIndex);
         const preferred = expectedChild === undefined ? -1 : mapping.indexOf(expectedChild);
+        const helper = /twist|roll|helper|corrective|\bik\b|_ik|ik_|pole|target/i.test(target.bones[targetIndex].name);
+        const children = preferred < 0 && !alignment.ends.includes(targetIndex) && !helper ? mapping.flatMap((mapped, i) => mapped >= 0 && nearestMappedParent(i, source, sourceMapped) === sourceIndex && nearestMappedParent(mapped, target, targetMapped) === targetIndex ? [i] : []) : [];
         const child = preferred >= 0 && descendsFrom(preferred, sourceIndex, source) && descendsFrom(mapping[preferred], targetIndex, target) ? preferred : children.length === 1 ? children[0] : -1;
-        if (child < 0) continue;
+        if (child < 0) { restCorrections.set(targetIndex, correction); continue; }
         const sourceDirection = from.positions[child].clone().sub(from.positions[sourceIndex]).applyQuaternion(align);
-        const targetDirection = to.positions[mapping[child]].clone().sub(to.positions[targetIndex]);
+        const targetDirection = to.positions[mapping[child]].clone().sub(to.positions[targetIndex]).applyQuaternion(correction);
         if (sourceDirection.lengthSq() > 1e-10 && targetDirection.lengthSq() > 1e-10) {
           sourceDirection.normalize(); targetDirection.normalize();
           const dot = targetDirection.dot(sourceDirection);
-          restCorrections.set(targetIndex, dot >= -0.866 && dot < 0.99985 ? new Quaternion().setFromUnitVectors(targetDirection, sourceDirection) : new Quaternion());
+          if (dot >= -0.866 && dot < 0.99985) correction.premultiply(new Quaternion().setFromUnitVectors(targetDirection, sourceDirection));
         }
-      }
-      // Branches and end joints follow only their immediate corrected parent.
-      for (const targetIndex of order) {
-        if (!targetMapped.has(targetIndex) || !limbBones.has(targetIndex)) continue;
-        if (restCorrections.has(targetIndex) || !boneParent(target.bones[targetIndex], target)) continue;
-        const parent = nearestMappedParent(targetIndex, target, targetMapped);
-        if (parent >= 0 && restCorrections.has(parent)) restCorrections.set(targetIndex, restCorrections.get(parent)!.clone());
+        restCorrections.set(targetIndex, correction);
       }
     }
     const ratio = from.size > 1e-8 ? to.size / from.size : 1;
@@ -116,7 +112,7 @@ export function retargetAnimation(target: CharacterAsset, source: CharacterAsset
     for (const key of keys) for (let i = 0; i < mapping.length; i++) {
       if (mapping[i] < 0) continue;
       const p = key.pose[i], rest = source.restPose[i];
-      if (p.scale.some((v, a) => Math.abs(v - rest.scale[a]) > 1e-4) || !sourceRoots.has(i) && p.position.some((v, a) => Math.abs(v - rest.position[a]) > 1e-4 * Math.max(1, Math.abs(rest.position[a])))) throw new RetargetError(`This move changes ${source.bones[i].name} in a way that can't be fitted automatically. You can skip that joint in the fit settings.`, 'joint-translation');
+      if (p.scale.some((v, a) => Math.abs(v - rest.scale[a]) > 1e-4) || !sourceRoots.has(i) && p.position.some((v, a) => Math.abs(v - rest.position[a]) > 1e-4 * Math.max(1, Math.abs(rest.position[a])))) throw new RetargetError(`This move changes ${source.bones[i].name} in a way that can't be fitted automatically. In fit settings, set it to Follow parent.`, 'joint-translation');
     }
     return keys.map(key => {
       applyPose(source, key.pose); applyPose(target, target.restPose);

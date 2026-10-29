@@ -20,7 +20,7 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
   onPreview: (keys: PoseKey[], duration: number, name: string) => void;
   onClear: () => void;
   onApply: (keys: PoseKey[], duration: number, mode: 'apply' | 'append', blend: number, name: string) => void;
-  onNeedsMapping: (file: File, mode: 'apply' | 'append', clipIndex: number) => void;
+  onNeedsMapping: (file: File, mode: 'apply' | 'append', clipIndex: number, reason?: string) => void;
 }) {
   const [catalog, setCatalog] = useState<OfflineCatalog | null>(null);
   const [personal, setPersonal] = useState<PersonalMotion[]>([]);
@@ -148,7 +148,7 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
 
   function apply(mode: 'apply' | 'append') {
     if (!selected || !loaded || disabled || loading) return;
-    if (loaded.needsMapping) { onNeedsMapping(loaded.file, mode, selected.clipIndex); return; }
+    if (loaded.needsMapping) { onNeedsMapping(loaded.file, mode, selected.clipIndex, error ?? undefined); return; }
     const seconds = Math.min(Number(blend), loaded.duration / 2);
     if (mode === 'append' && (!Number.isFinite(seconds) || seconds < 0)) { setError('Enter a valid transition duration.'); return; }
     onApply(loaded.keys, loaded.duration, mode, mode === 'append' ? seconds : 0, selected.name);
