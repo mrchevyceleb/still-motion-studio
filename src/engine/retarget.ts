@@ -8,6 +8,8 @@ export class RetargetError extends Error {
   constructor(message: string, readonly reason: 'scale' | 'joint-translation') { super(message); }
 }
 
+export const isHelperBone = (name: string) => /twist|helper|corrective/i.test(name) || /(?:^|[_.:\s-])(roll|ik|pole|target)(?:\d+)?(?:left|right|[lr])?(?:[_.:\s-]|$)/i.test(name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').replace(/([a-z])([A-Z])/g, '$1_$2'));
+
 const canonical = (name: string) => name.replace(/^.*[|:]/, '').replace(/^(mixamorig\d*|cc_base|bip\d*|def)[_ -]?/i, '').replace(/[^a-z0-9]/gi, '').toLowerCase();
 
 /** Suggestions only: ambiguous names are left for the user to map explicitly. */
@@ -90,9 +92,9 @@ export function retargetAnimation(target: CharacterAsset, source: CharacterAsset
         const correction = restCorrections.get(parent)?.clone() ?? new Quaternion();
         const expectedChild = nextByTarget.get(targetIndex);
         const preferred = expectedChild === undefined ? -1 : mapping.indexOf(expectedChild);
-        const helper = /twist|roll|helper|corrective|\bik\b|_ik|ik_|pole|target/i.test(target.bones[targetIndex].name);
+        const helper = isHelperBone(target.bones[targetIndex].name);
         const preferredValid = preferred >= 0 && descendsFrom(preferred, sourceIndex, source) && descendsFrom(mapping[preferred], targetIndex, target);
-        const children = !preferredValid && !alignment.ends.includes(targetIndex) && !helper ? mapping.flatMap((mapped, i) => mapped >= 0 && !/twist|roll|helper|corrective|\bik\b|_ik|ik_|pole|target/i.test(target.bones[mapped].name) && nearestMappedParent(i, source, sourceMapped) === sourceIndex && nearestMappedParent(mapped, target, targetMapped) === targetIndex ? [i] : []) : [];
+        const children = !preferredValid && !alignment.ends.includes(targetIndex) && !helper ? mapping.flatMap((mapped, i) => mapped >= 0 && !isHelperBone(target.bones[mapped].name) && nearestMappedParent(i, source, sourceMapped) === sourceIndex && nearestMappedParent(mapped, target, targetMapped) === targetIndex ? [i] : []) : [];
         const child = preferredValid ? preferred : children.length === 1 ? children[0] : -1;
         if (child < 0) { restCorrections.set(targetIndex, correction); continue; }
         const sourceDirection = from.positions[child].clone().sub(from.positions[sourceIndex]).applyQuaternion(align);
@@ -100,18 +102,29 @@ export function retargetAnimation(target: CharacterAsset, source: CharacterAsset
         const handSide = alignment.handSides.find(([hand]) => hand === targetIndex);
         if (handSide) {
           const sourceSideA = mapping.indexOf(handSide[1]), sourceSideB = mapping.indexOf(handSide[2]);
-          if (sourceSideA >= 0 && sourceSideB >= 0) {
+          const depth = (boneIndex: number) => {
+            let bone = source.bones[boneIndex]?.parent, count = 1;
+            while (bone && bone !== source.bones[sourceIndex]) { bone = bone.parent; count++; }
+            return bone ? count : -1;
+          };
+          if (sourceSideA >= 0 && sourceSideB >= 0 && /middle/i.test(source.bones[child].name) && /index/i.test(source.bones[sourceSideA].name) && /pinky|little/i.test(source.bones[sourceSideB].name) && depth(sourceSideA) === depth(sourceSideB) && depth(sourceSideA) === depth(child) && depth(sourceSideA) > 0 && sourceDirection.lengthSq() > 1e-10 && targetDirection.lengthSq() > 1e-10 && sourceDirection.clone().normalize().dot(targetDirection.clone().normalize()) >= -0.866) {
             const frame = (forward: Vector3, side: Vector3) => {
               const x = forward.clone().normalize();
-              const y = side.clone().addScaledVector(x, -side.dot(x)).normalize();
-              if (x.lengthSq() < .5 || y.lengthSq() < .5) return null;
+              const y = side.clone().addScaledVector(x, -side.dot(x));
+              if (x.lengthSq() < .5 || side.lengthSq() < 1e-10 || y.lengthSq() < side.lengthSq() * .09) return null;
+              y.normalize();
               return new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(x, y, x.clone().cross(y).normalize()));
             };
             const sourceSide = from.positions[sourceSideA].clone().sub(from.positions[sourceSideB]).applyQuaternion(align);
             const targetSide = to.positions[handSide[1]].clone().sub(to.positions[handSide[2]]);
             const sourceFrame = frame(sourceDirection, sourceSide);
             const targetFrame = frame(to.positions[mapping[child]].clone().sub(to.positions[targetIndex]), targetSide);
-            if (sourceFrame && targetFrame) { restCorrections.set(targetIndex, sourceFrame.multiply(targetFrame.invert())); continue; }
+            if (sourceFrame && targetFrame) {
+              const swing = correction.clone().premultiply(new Quaternion().setFromUnitVectors(targetDirection.clone().normalize(), sourceDirection.clone().normalize()));
+              const full = sourceFrame.multiply(targetFrame.invert());
+              // A reversed palm landmark order is not a trustworthy hand frame.
+              if (swing.angleTo(full) <= 2 * Math.PI / 3) { restCorrections.set(targetIndex, full); continue; }
+            }
           }
         }
         if (sourceDirection.lengthSq() > 1e-10 && targetDirection.lengthSq() > 1e-10) {

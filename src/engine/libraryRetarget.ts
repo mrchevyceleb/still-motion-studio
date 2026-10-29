@@ -1,5 +1,5 @@
 import type { CharacterAsset } from '../types';
-import { suggestBoneMapping } from './retarget';
+import { isHelperBone, suggestBoneMapping } from './retarget';
 
 const unprefix = (name: string) => name.replace(/^.*[|:]/, '').replace(/^(?:(?:mixamorig\d*|cc_base)[_ -]?|bip\d+[_ -]?|def[_ -])/i, '');
 const key = (name: string) => unprefix(name).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -97,16 +97,21 @@ export function libraryAlignment(target: CharacterAsset, mapping: number[]): { s
   for (const side of ['Left', 'Right']) {
     const hand = roleIndex(side + 'Hand');
     if (hand < 0) continue;
-    const fingerFor = (part: string) => mapping.find(index => {
-      if (index < 0 || !target.bones[index].name.toLowerCase().includes(part) || /metacarpal|twist|helper/i.test(target.bones[index].name)) return false;
-      let parent = target.bones[index].parent;
-      while (parent) { if (parent === target.bones[hand]) return true; parent = parent.parent; }
-      return false;
-    });
-    const finger = fingerFor('middle');
-    if (finger !== undefined) next.push([hand, finger]);
-    const index = fingerFor('index'), pinky = fingerFor('pinky') ?? fingerFor('little');
-    if (finger !== undefined && index !== undefined && pinky !== undefined) handSides.push([hand, index, pinky]);
+    const fingerFor = (parts: string[]) => {
+      const candidates = mapping.flatMap(index => {
+        if (index < 0 || !parts.some(part => target.bones[index].name.toLowerCase().includes(part)) || (/metacarpal/i.test(target.bones[index].name) || isHelperBone(target.bones[index].name))) return [];
+        let parent = target.bones[index].parent, depth = 1;
+        while (parent && parent !== target.bones[hand]) { parent = parent.parent; depth++; }
+        return parent ? [{ index, depth }] : [];
+      });
+      return candidates.sort((a, b) => a.depth - b.depth);
+    };
+    const finger = fingerFor(['middle'])[0];
+    if (finger) next.push([hand, finger.index]);
+    const indexes = fingerFor(['index']), pinkies = fingerFor(['pinky', 'little']);
+    const index = indexes.find(candidate => candidate.depth === finger?.depth && pinkies.some(other => other.depth === candidate.depth));
+    const pinky = pinkies.find(candidate => candidate.depth === index?.depth);
+    if (finger && index && pinky) handSides.push([hand, index.index, pinky.index]);
   }
   const ends = ['LeftHand', 'RightHand', 'LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'].map(roleIndex).filter(index => index >= 0);
   return targetIndices.every(index => index >= 0) && sourceIndices.every(index => index >= 0) ? { source: sourceIndices, target: targetIndices, limbs, next, ends, handSides } : undefined;

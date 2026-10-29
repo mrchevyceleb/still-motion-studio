@@ -77,7 +77,9 @@ export default function AnimationImport({ target, duration, fps, initialMode, in
     try {
       const keys = transfer === 'retarget' ? retargetAnimation(target, source, clip, mapping, rootMotion, librarySource ? libraryAlignment(target, mapping) : undefined) : importAnimationOnRig(target, source, clip);
       if (transfer === 'retarget') onMappingSaved?.(source, mapping);
-      onApply(keys, Math.max(clip.duration, 1 / fps), mode, Number(blend), librarySource && clip.name ? clip.name.replace(/_/g, ' ') : filename);
+      const clipLabel = clip.name.replace(/^.*\|/, '').trim();
+      const genericLabel = /^(?:mixamo\.com|layer0(?:\.\d+)?|take[_ ]?\d+|scene|action|armatureaction|animation|default)$/i.test(clipLabel);
+      onApply(keys, Math.max(clip.duration, 1 / fps), mode, Number(blend), librarySource && clipLabel && !genericLabel ? clipLabel.replace(/_/g, ' ') : filename);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'This animation could not be applied.'); }
   }
 
