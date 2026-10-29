@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowUpRight, FolderPlus, LoaderCircle, Play, Search, Trash2, X } from 'lucide-react';
 import { disposeCharacter, importCharacter } from '../engine/character';
 import { importAnimationOnRig } from '../engine/animationImport';
-import { mappingReady, suggestLibraryMapping } from '../engine/libraryRetarget';
+import { libraryAlignment, mappingReady, suggestLibraryMapping } from '../engine/libraryRetarget';
 import { addPersonalMotion, listPersonalMotions, motionHash, readMotionMapping, readPersonalMotion, removePersonalMotion } from '../engine/motionLibrary';
 import type { PersonalMotion } from '../engine/motionLibrary';
-import { retargetAnimation } from '../engine/retarget';
+import { RetargetError, retargetAnimation } from '../engine/retarget';
 import type { CharacterAsset, PoseKey, RigKind } from '../types';
 import MeshyLibrary from './MeshyLibrary';
 import './MotionLibrary.css';
@@ -28,7 +28,7 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
   const [body, setBody] = useState<'all' | RigKind>('all');
   const [limit, setLimit] = useState(40);
   const [selected, setSelected] = useState<Entry | null>(null);
-  const [loaded, setLoaded] = useState<{ keys: PoseKey[]; duration: number; file: File; needsMapping: boolean } | null>(null);
+  const [loaded, setLoaded] = useState<{ keys: PoseKey[]; duration: number; file: File; needsMapping: boolean; retargeted: boolean } | null>(null);
   const [blend, setBlend] = useState('0.15');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,17 +95,29 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
       if (!clip) throw new Error('The selected clip is missing from its source file.');
       let keys: PoseKey[];
       let needsMapping = false;
+      let retargeted = false;
       try { keys = importAnimationOnRig(target, source, clip); }
       catch {
-        const saved = await readMotionMapping(source, target);
+        retargeted = true;
+        const saved = await readMotionMapping(source, target).catch(() => undefined);
         const mapping = saved ?? suggestLibraryMapping(target, source);
         if (!saved && !mappingReady(target, mapping)) { needsMapping = true; keys = []; }
-        else keys = retargetAnimation(target, source, clip, mapping);
+        else {
+          try { keys = retargetAnimation(target, source, clip, mapping, true, libraryAlignment(target, mapping)); }
+          catch (cause) {
+            const message = cause instanceof Error ? cause.message : 'This move could not be fitted automatically.';
+            if (cause instanceof RetargetError && cause.reason === 'scale') throw cause;
+            needsMapping = true; keys = []; if (ticket === request.current) setError(message);
+          }
+        }
       }
       if (ticket !== request.current) return;
-      setLoaded({ keys, duration: clip.duration, file, needsMapping });
+      setLoaded({ keys, duration: clip.duration, file, needsMapping, retargeted });
       setBlend(String(Math.min(.15, clip.duration / 2)));
-      if (!needsMapping) onPreview(keys, clip.duration, entry.name);
+      if (!needsMapping) {
+        onPreview(keys, clip.duration, entry.name);
+        if (window.matchMedia('(max-width: 720px)').matches) requestAnimationFrame(() => document.querySelector('.viewport-shell')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }));
+      }
     } catch (cause) { if (ticket === request.current) setError(cause instanceof Error ? cause.message : 'Could not preview this motion.'); }
     finally { if (source) disposeCharacter(source); if (ticket === request.current) setLoading(false); }
   }
@@ -152,13 +164,15 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
       {entry.personal && <button className="motion-remove" aria-label={`Remove ${entry.name} from My Motions`} title="Remove saved file and all its clips" disabled={disabled || loading} onClick={() => void remove(entry.personal!)}><Trash2 size={11}/></button>}
     </div>)}{!filtered.length && <p className="motion-empty">No motions match this search.</p>}</div>
     {filtered.length > limit && <button className="motion-more" onClick={() => setLimit(value => value + 40)}>Show more · {filtered.length - limit} remaining</button>}
-    {selected && <div className="motion-actions"><div className="motion-actions-heading"><strong>{selected.name}</strong><button aria-label="Close motion preview" onClick={() => { ++request.current; setSelected(null); setLoaded(null); onClear(); }}><X size={13}/></button></div>
-      {loaded?.needsMapping && <p>This rig needs a reviewed joint map before preview or Apply.</p>}
+    {selected && <div className="motion-actions"><div className="motion-actions-heading"><strong>{selected.name}</strong><button aria-label="Close motion preview" onClick={() => { ++request.current; setSelected(null); setLoaded(null); setError(null); onClear(); }}><X size={13}/></button></div>
+      {error && <p className="motion-error" role="alert">{error}</p>}
+      {loaded?.needsMapping && <p>This move needs help fitting your character. Set it up once to use it with this rig.</p>}
       {loaded && !loaded.needsMapping && <button className="motion-replay" onClick={() => onPreview(loaded.keys, loaded.duration, selected.name)}><Play size={12}/>Replay preview</button>}
-      <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled} onClick={() => apply('apply')}>Apply</button><button disabled={!loaded || loading || disabled} onClick={() => apply('append')}>Append</button></div>
-      <label>Blend · seconds<input aria-label="Motion transition seconds" type="number" min="0" step="0.05" value={blend} onChange={event => setBlend(event.target.value)}/></label>
+      {loaded?.retargeted && !loaded.needsMapping && <button className="motion-replay" disabled={disabled || loading} onClick={() => onNeedsMapping(loaded.file, 'apply', selected.clipIndex)}>Adjust fit</button>}
+      <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled} onClick={() => apply('apply')}>{loaded?.needsMapping ? 'Set up motion' : 'Apply'}</button>{!loaded?.needsMapping && <button disabled={!loaded || loading || disabled} onClick={() => apply('append')}>Append</button>}</div>
+      {!loaded?.needsMapping && <label>Blend · seconds<input aria-label="Motion transition seconds" type="number" min="0" step="0.05" value={blend} onChange={event => setBlend(event.target.value)}/></label>}
     </div>}
-    {error && <p className="motion-error" role="alert">{error}</p>}
+    {error && !selected && <p className="motion-error" role="alert">{error}</p>}
     <input ref={input} type="file" accept=".fbx,.glb,.gltf,.bvh" hidden aria-label="Add a motion file" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void add(file); }}/>
     <button className="motion-add" disabled={disabled || loading} onClick={() => { setImportProvider('My Motions'); input.current?.click(); }}><FolderPlus size={14}/>Add to My Motions</button>
     <button className="motion-mixamo" onClick={() => { setImportProvider('Mixamo'); if (window.stillDesktop) void window.stillDesktop.openExternal('https://www.mixamo.com/').catch(() => setError('Mixamo could not be opened in your browser.')); else if (!window.open('https://www.mixamo.com/', '_blank', 'noopener,noreferrer')) setError('Allow popups to open Mixamo.'); }}><ArrowUpRight size={13}/>Open Mixamo</button>
