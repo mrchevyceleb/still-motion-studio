@@ -84,7 +84,7 @@ export function mappingReady(target: CharacterAsset, mapping: number[]): boolean
 }
 
 /** Corresponding landmarks let the retargeter align characters facing different directions. */
-export function libraryAlignment(target: CharacterAsset, mapping: number[]): { source: number[]; target: number[]; limbs: number[]; next: [number, number][]; ends: number[] } | undefined {
+export function libraryAlignment(target: CharacterAsset, mapping: number[]): { source: number[]; target: number[]; limbs: number[]; next: [number, number][]; ends: number[]; handSides: [number, number, number][] } | undefined {
   if (target.kind !== 'humanoid') return undefined;
   const roles = ['LeftArm', 'RightArm'];
   const targetIndices = roles.map(role => mapping.find(index => index >= 0 && demoHumanRole(target.bones[index].name) === role) ?? -1);
@@ -93,17 +93,21 @@ export function libraryAlignment(target: CharacterAsset, mapping: number[]): { s
   const chains = ['Left', 'Right'].flatMap(side => [['Arm', 'ForeArm', 'Hand'], ['UpLeg', 'Leg', 'Foot', 'ToeBase']].map(parts => parts.map(part => roleIndex(side + part))));
   const limbs = chains.map(chain => chain.find(index => index >= 0) ?? -1).filter(index => index >= 0);
   const next: [number, number][] = chains.flatMap(chain => chain.slice(0, -1).flatMap((index, i) => index >= 0 && chain[i + 1] >= 0 ? [[index, chain[i + 1]] as [number, number]] : []));
+  const handSides: [number, number, number][] = [];
   for (const side of ['Left', 'Right']) {
     const hand = roleIndex(side + 'Hand');
     if (hand < 0) continue;
-    const finger = mapping.find(index => {
-      if (index < 0 || !/middle/i.test(target.bones[index].name)) return false;
+    const fingerFor = (part: string) => mapping.find(index => {
+      if (index < 0 || !target.bones[index].name.toLowerCase().includes(part) || /metacarpal|twist|helper/i.test(target.bones[index].name)) return false;
       let parent = target.bones[index].parent;
       while (parent) { if (parent === target.bones[hand]) return true; parent = parent.parent; }
       return false;
     });
+    const finger = fingerFor('middle');
     if (finger !== undefined) next.push([hand, finger]);
+    const index = fingerFor('index'), pinky = fingerFor('pinky') ?? fingerFor('little');
+    if (finger !== undefined && index !== undefined && pinky !== undefined) handSides.push([hand, index, pinky]);
   }
   const ends = ['LeftHand', 'RightHand', 'LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'].map(roleIndex).filter(index => index >= 0);
-  return targetIndices.every(index => index >= 0) && sourceIndices.every(index => index >= 0) ? { source: sourceIndices, target: targetIndices, limbs, next, ends } : undefined;
+  return targetIndices.every(index => index >= 0) && sourceIndices.every(index => index >= 0) ? { source: sourceIndices, target: targetIndices, limbs, next, ends, handSides } : undefined;
 }
