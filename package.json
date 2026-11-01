@@ -25,16 +25,16 @@
     "three": "^0.186.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.55.0",
+    "@playwright/test": "^1.64.1",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "@types/three": "^0.180.0",
+    "@types/three": "^0.186.0",
     "@vitejs/plugin-react": "^6.1.2",
     "electron": "^44.7.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^26.18.0",
     "typescript": "~5.8.3",
-    "vite": "^8.3.4",
-    "vitest": "^5.0.4"
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "main": "desktop/main.cjs",
   "description": "A local character animation editor with posing, motion tools, physics, Unreal export, and agent scripting.",
