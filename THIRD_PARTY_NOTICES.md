@@ -9,6 +9,7 @@ Still Motion Studio's original code is covered by [MIT](LICENSE). This does not 
 | React and React DOM | [MIT](https://github.com/facebook/react/blob/main/LICENSE) |
 | Three.js | [MIT](https://github.com/mrdoob/three.js/blob/dev/LICENSE) |
 | Lucide icons | [ISC](https://github.com/lucide-icons/lucide/blob/main/LICENSE) |
+| MediaPipe Tasks Vision (`@mediapipe/tasks-vision`) | [Apache-2.0](https://github.com/google-ai-edge/mediapipe/blob/master/LICENSE) |
 | Electron | [MIT](https://github.com/electron/electron/blob/main/LICENSE); Chromium and other bundled components have separate notices |
 | electron-updater | [MIT](https://github.com/electron-userland/electron-builder/blob/master/LICENSE) |
 | Manrope and DM Sans fonts | SIL Open Font License 1.1; full notices in [`public/fonts`](public/fonts) |
@@ -30,6 +31,10 @@ The desktop also includes app-local Microsoft Visual C++ 14.44.35211 runtime DLL
 Official Windows releases include NVIDIA MotionBricks SOMA RP v1 ONNX weights, pinned to source revision `54fc563aeaaf819a753d72cc9fdc6713989cdd43` and SHA-256 `856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb`. The model is separately licensed under the [NVIDIA Open Model Agreement](backend/assets/NVIDIA-Open-Model-Agreement.pdf); its full agreement and upstream model notice accompany the installed weights. Licensed by NVIDIA Corporation under the NVIDIA Open Model Agreement.
 
 The adapted SOMA feature codec and canonical skeleton retain upstream Apache-2.0 notices in [backend/assets/motionbricks-LICENSE.txt](backend/assets/motionbricks-LICENSE.txt). No NVIDIA evaluation sample motion is shipped. ONNX Runtime (MIT), FlatBuffers (Apache-2.0), packaging (Apache-2.0/BSD) and protobuf (BSD) retain their installed distribution notices. The model is not relicensed under Still's MIT license.
+
+## Motion capture (MediaPipe)
+
+Motion Capture runs Google's MediaPipe Pose Landmarker entirely on the user's device. Official releases include the `pose_landmarker_full.task` model (float16, version 1), SHA-256 `5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1`, downloaded at build time from the official MediaPipe model store and verified before packaging; the weights are not in Git. The model and the Tasks Vision runtime are licensed under Apache-2.0 (see [`public/mocap/NOTICE.txt`](public/mocap/NOTICE.txt)). The model only estimates body landmarks from a video the user provides; no video leaves the device, and animation created from those landmarks is the user's own work. The model is not relicensed under Still's MIT license.
 
 ## Motion and character rights
 

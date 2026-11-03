@@ -15,8 +15,8 @@ interface OfflineSource { file: string; sha256: string; bytes: number }
 interface OfflineCatalog { version: number; sources: OfflineSource[]; clips: OfflineClip[] }
 interface Entry { id: string; sourceId: string; clipIndex: number; name: string; duration: number; provider: string; body: RigKind; category: string; personal?: PersonalMotion }
 
-export default function MotionLibrary({ target, disabled, onPreview, onClear, onApply, onNeedsMapping }: {
-  target: CharacterAsset; disabled: boolean;
+export default function MotionLibrary({ target, disabled, previewBlocked, onPreview, onClear, onApply, onNeedsMapping }: {
+  target: CharacterAsset; disabled: boolean; previewBlocked: boolean;
   onPreview: (keys: PoseKey[], duration: number, name: string) => void;
   onClear: () => void;
   onApply: (keys: PoseKey[], duration: number, mode: 'apply' | 'append', blend: number, name: string) => void;
@@ -135,7 +135,7 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
   }
 
   function apply(mode: 'apply' | 'append') {
-    if (!selected || !loaded || disabled || loading) return;
+    if (!selected || !loaded || disabled || loading || previewBlocked) { if (previewBlocked) setError('Replay this preview before applying it.'); return; }
     if (loaded.needsMapping) { onNeedsMapping(loaded.file, mode, selected.clipIndex); return; }
     const seconds = Math.min(Number(blend), loaded.duration / 2);
     if (mode === 'append' && (!Number.isFinite(seconds) || seconds < 0)) { setError('Enter a valid transition duration.'); return; }
@@ -154,8 +154,9 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
     {filtered.length > limit && <button className="motion-more" onClick={() => setLimit(value => value + 40)}>Show more · {filtered.length - limit} remaining</button>}
     {selected && <div className="motion-actions"><div className="motion-actions-heading"><strong>{selected.name}</strong><button aria-label="Close motion preview" onClick={() => { ++request.current; setSelected(null); setLoaded(null); onClear(); }}><X size={13}/></button></div>
       {loaded?.needsMapping && <p>This rig needs a reviewed joint map before preview or Apply.</p>}
+      {loaded && previewBlocked && <p>Another preview is playing. Replay this clip before applying it.</p>}
       {loaded && !loaded.needsMapping && <button className="motion-replay" onClick={() => onPreview(loaded.keys, loaded.duration, selected.name)}><Play size={12}/>Replay preview</button>}
-      <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled} onClick={() => apply('apply')}>Apply</button><button disabled={!loaded || loading || disabled} onClick={() => apply('append')}>Append</button></div>
+      <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled || previewBlocked} title={previewBlocked ? 'Replay this clip before applying it' : undefined} onClick={() => apply('apply')}>Apply</button><button disabled={!loaded || loading || disabled || previewBlocked} title={previewBlocked ? 'Replay this clip before applying it' : undefined} onClick={() => apply('append')}>Append</button></div>
       <label>Blend · seconds<input aria-label="Motion transition seconds" type="number" min="0" step="0.05" value={blend} onChange={event => setBlend(event.target.value)}/></label>
     </div>}
     {error && <p className="motion-error" role="alert">{error}</p>}

@@ -1,0 +1,60 @@
+.motion-capture { padding-top: 20px; }
+.motion-capture .section-heading { margin-bottom: 10px; }
+.mocap-caption, .mocap-note { font-size: 12px; line-height: 1.55; color: var(--muted); margin: 0 0 10px; }
+.mocap-open-row { display: grid; gap: 6px; }
+.mocap-open { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 13px; border: 1px dashed var(--line); border-radius: 7px; background: var(--surface); font-size: 12px; font-weight: 500; text-align: left; }
+.mocap-open:not(:disabled):hover { background: var(--hover); }
+.mocap-result .mocap-adjust { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); padding: 7px 4px; }
+
+.modal.mocap-dialog { width: 640px; }
+.mocap-dialog h2 { font-family: Manrope, sans-serif; font-size: 31px; line-height: 1.25; letter-spacing: -1px; font-weight: 550; margin: 0 0 16px; }
+.mocap-dialog p { font-size: 12px; line-height: 1.8; color: var(--muted); margin: 0; }
+.mocap-dialog .eyebrow { margin-bottom: 11px; }
+.mocap-close { position: absolute; right: 15px; top: 15px; }
+
+.mocap-tabs { display: flex; gap: 6px; margin: 18px 0 12px; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.mocap-tabs button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 12px; font-weight: 550; padding: 8px 6px; border-radius: 5px; color: var(--muted); }
+.mocap-tabs button.active { background: var(--paper); color: var(--ink); box-shadow: 0 1px 4px rgba(41, 51, 63, 0.12); }
+
+.mocap-stage { position: relative; aspect-ratio: 16 / 9; background: #14181f; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.mocap-stage video, .mocap-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.mocap-stage video { object-fit: contain; background: #14181f; }
+.mocap-stage video.mirrored { transform: scaleX(-1); }
+.mocap-stage canvas { pointer-events: none; }
+.mocap-stage-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 24px; color: #c8d2c2; background: #14181f; }
+.mocap-stage-empty strong { font-size: 14px; color: #eef3e4; }
+.mocap-stage-empty span { font-size: 12px; line-height: 1.6; max-width: 340px; }
+.mocap-livebar { position: absolute; left: 0; right: 0; bottom: 14px; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.mocap-rec-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #e0654a; flex-shrink: 0; }
+.mocap-rec-dot.blinking { animation: mocap-blink 1.2s ease-in-out infinite; }
+.mocap-rec-time { display: flex; align-items: center; gap: 7px; font-size: 13px; font-variant-numeric: tabular-nums; color: #fff; background: rgba(20, 24, 31, 0.72); padding: 8px 12px; border-radius: 7px; }
+@keyframes mocap-blink { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .mocap-rec-dot.blinking { animation: none; } }
+.mocap-progress { position: absolute; left: 14px; right: 14px; bottom: 14px; display: flex; align-items: center; gap: 12px; background: rgba(20, 24, 31, 0.78); border-radius: 8px; padding: 10px 14px; color: #eef3e4; font-size: 12px; }
+.mocap-progress progress { flex: 1; height: 6px; accent-color: #a8c686; }
+.mocap-live-note { margin-top: 10px; }
+
+.mocap-clip-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; font-size: 12px; }
+.mocap-clip-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+.mocap-clip-row > span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.mocap-clip-row .text-button { margin-left: auto; flex-shrink: 0; }
+.mocap-options { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin: 14px 0 6px; }
+.mocap-options > label { display: block; font-size: 12px; grid-column: span 2; min-width: 0; }
+.mocap-options select, .mocap-options input[type=number] { display: block; width: 100%; padding: 9px; margin-top: 6px; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); }
+.mocap-options .mocap-smoothing { grid-column: 1 / -1; }
+.mocap-options .mocap-smoothing input { display: block; width: 100%; margin-top: 8px; }
+.mocap-options .mocap-check { grid-column: span 3; display: flex; align-items: center; gap: 7px; cursor: pointer; line-height: 1.5; }
+.mocap-options .mocap-check input { accent-color: var(--green); width: 16px; height: 16px; flex-shrink: 0; }
+.mocap-options .mocap-check small { color: var(--muted); }
+.mocap-error { border: 1px solid var(--line); border-radius: 6px; padding: 10px; color: var(--ink); font-size: 12px; margin: 14px 0 0; }
+.mocap-analyze-row { display: flex; gap: 8px; margin-top: 15px; }
+.mocap-analyze-row .primary { flex: 1; }
+.mocap-dialog .full-width { margin-top: 15px; }
+.mocap-dialog > .micro-copy:last-child { margin-top: 14px; }
+
+@media (max-width: 720px) {
+  .mocap-dialog .modal-inner { padding: 26px 20px; }
+  .mocap-dialog h2 { font-size: 26px; }
+  .mocap-options { grid-template-columns: 1fr 1fr; }
+  .mocap-options .mocap-check { grid-column: 1 / -1; }
+}

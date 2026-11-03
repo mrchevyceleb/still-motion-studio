@@ -32,3 +32,7 @@ Thumbs.db
 *.ckpt
 *.safetensors
 *.onnx
+
+# Motion-capture runtime staged by scripts/fetch-mocap-assets.mjs
+public/mocap/*
+!public/mocap/NOTICE.txt

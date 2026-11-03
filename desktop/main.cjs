@@ -150,7 +150,14 @@ if (acquired) app.whenReady().then(async () => {
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, target) => { if (new URL(target).origin !== url) event.preventDefault(); });
-  window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  // Motion Capture may use the camera from the local editor only; every other permission stays denied.
+  window.webContents.session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+    let local = false;
+    try { local = new URL(details?.requestingUrl ?? '').origin === url; } catch { /* deny below */ }
+    const types = details?.mediaTypes;
+    const videoOnly = !types || (types.length > 0 && types.every(type => type === 'video'));
+    callback(permission === 'media' && local && videoOnly);
+  });
   const menu = Menu.buildFromTemplate([
     { label: 'Still', submenu: [{ label: 'Show editor', click: show }, { label: 'Updates…', click: () => { show(); window.webContents.send('still:updates:open'); } }, { label: 'Agent tools', click: () => shell.openPath(path.join(dataRoot, 'agent-tools')) }, { label: 'Open local data', click: () => shell.openPath(dataRoot) }, { type: 'separator' }, { label: 'Quit Still', click: () => void shutdown() }] },
     { role: 'editMenu' }, { label: 'View', submenu: [{ role: 'togglefullscreen' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }] },
