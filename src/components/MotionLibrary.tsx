@@ -15,8 +15,8 @@ interface OfflineSource { file: string; sha256: string; bytes: number }
 interface OfflineCatalog { version: number; sources: OfflineSource[]; clips: OfflineClip[] }
 interface Entry { id: string; sourceId: string; clipIndex: number; name: string; duration: number; provider: string; body: RigKind; category: string; personal?: PersonalMotion }
 
-export default function MotionLibrary({ target, disabled, onPreview, onClear, onApply, onNeedsMapping }: {
-  target: CharacterAsset; disabled: boolean;
+export default function MotionLibrary({ target, disabled, previewBlocked, onPreview, onClear, onApply, onNeedsMapping }: {
+  target: CharacterAsset; disabled: boolean; previewBlocked: boolean;
   onPreview: (keys: PoseKey[], duration: number, name: string) => void;
   onClear: () => void;
   onApply: (keys: PoseKey[], duration: number, mode: 'apply' | 'append', blend: number, name: string) => void;
@@ -152,7 +152,7 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
   }
 
   function apply(mode: 'apply' | 'append') {
-    if (!selected || !loaded || disabled || loading) return;
+    if (!selected || !loaded || disabled || loading || previewBlocked) { if (previewBlocked) setError('Replay this preview before applying it.'); return; }
     if (loaded.needsMapping) { onNeedsMapping(loaded.file, mode, selected.clipIndex, loaded.fitError); return; }
     const seconds = Math.min(Number(blend), loaded.duration / 2);
     if (mode === 'append' && (!Number.isFinite(seconds) || seconds < 0)) { setError('Enter a valid transition duration.'); return; }
@@ -172,9 +172,10 @@ export default function MotionLibrary({ target, disabled, onPreview, onClear, on
     {selected && <div className="motion-actions"><div className="motion-actions-heading"><strong>{selected.name}</strong><button aria-label="Close motion preview" onClick={() => { ++request.current; setSelected(null); setLoaded(null); setError(null); onClear(); }}><X size={13}/></button></div>
       {error && <p className="motion-error" role="alert">{error}</p>}
       {loaded?.needsMapping && <p>This move needs help fitting your character. Set it up once to use it with this rig.</p>}
+      {loaded && previewBlocked && <p>Another preview is playing. Replay this clip before applying it.</p>}
       {loaded && !loaded.needsMapping && <button className="motion-replay" onClick={() => onPreview(loaded.keys, loaded.duration, selected.name)}><Play size={12}/>Replay preview</button>}
-      {loaded?.retargeted && !loaded.needsMapping && <button className="motion-replay" disabled={disabled || loading} onClick={() => onNeedsMapping(loaded.file, 'apply', selected.clipIndex)}>Adjust fit</button>}
-      {(!error || loaded) && <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled} onClick={() => apply('apply')}>{loaded?.needsMapping ? 'Set up motion' : 'Apply'}</button>{!loaded?.needsMapping && <button disabled={!loaded || loading || disabled} onClick={() => apply('append')}>Append</button>}</div>}
+      {loaded?.retargeted && !loaded.needsMapping && <button className="motion-replay" disabled={disabled || loading || previewBlocked} title={previewBlocked ? 'Replay this clip before applying it' : undefined} onClick={() => onNeedsMapping(loaded.file, 'apply', selected.clipIndex)}>Adjust fit</button>}
+      {(!error || loaded) && <div className="motion-apply-buttons"><button disabled={!loaded || loading || disabled || previewBlocked} title={previewBlocked ? 'Replay this clip before applying it' : undefined} onClick={() => apply('apply')}>{loaded?.needsMapping ? 'Set up motion' : 'Apply'}</button>{!loaded?.needsMapping && <button disabled={!loaded || loading || disabled || previewBlocked} title={previewBlocked ? 'Replay this clip before applying it' : undefined} onClick={() => apply('append')}>Append</button>}</div>}
       {loaded && !loaded.needsMapping && <label>Blend · seconds<input aria-label="Motion transition seconds" type="number" min="0" step="0.05" value={blend} onChange={event => setBlend(event.target.value)}/></label>}
     </div>}
     {error && !selected && <p className="motion-error" role="alert">{error}</p>}

@@ -14,6 +14,7 @@ Still is a free, open-source character animation editor built with React, Three.
 - Browse 310 offline CC0 motion clips for human, quadruped and creature rigs, preview them on your character, then apply or append with one-step Undo. Keep your own downloaded FBX, GLB and BVH clips in **My Motions**.
 - Fit a rig to a neutral-pose character, including editable hand and finger joints, hydra heads, serpents and tentacles.
 - Import BVH motion and map joints from other animation libraries. See [creature workflows and limits](docs/creature-animation.md).
+- Copy your own movement: drop in a phone video or record with your camera, and Still tracks your body on-device and poses a human character to match. Nothing is uploaded.
 - Pose joints, edit keyframes, copy selected properties, ripple timing and undo bulk edits.
 - Trim, blend, repeat and reverse clips. Keep a local character library with independent scenes and backups.
 - Export portable `.still` projects, animated GLB, and Unreal FBX packages with optional root motion and body retargeting.

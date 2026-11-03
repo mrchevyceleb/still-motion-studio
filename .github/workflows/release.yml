@@ -172,8 +172,26 @@ jobs:
           path: .local/motionbricks/mmm_v6_soma_fp32.onnx
           key: motionbricks-soma-856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb
 
+      - name: Restore the pinned motion-capture pose model
+        id: mocap-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: public/mocap/pose_landmarker_full.task
+          key: mocap-pose-5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1
+
+      # A release without the pose model would ship a broken Motion Capture; fail here instead.
+      - name: Stage motion-capture assets
+        run: node scripts/fetch-mocap-assets.mjs --require-model
+
       - name: Build both installers
         run: npm run desktop:dist
+
+      - name: Cache the verified motion-capture pose model
+        if: steps.mocap-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: public/mocap/pose_landmarker_full.task
+          key: mocap-pose-5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1
 
       - name: Cache the verified MotionBricks model
         if: steps.motionbricks-cache.outputs.cache-hit != 'true'

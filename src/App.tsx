@@ -23,6 +23,7 @@ import FaceShapes from './components/FaceShapes';
 import ClipTools from './components/ClipTools';
 import AnimationImport from './components/AnimationImport';
 import MotionLibrary from './components/MotionLibrary';
+import MotionCapture from './components/MotionCapture';
 import { saveMotionMapping } from './engine/motionLibrary';
 import HandRigSetup from './components/HandRigSetup';
 import PartFit from './components/PartFit';
@@ -118,7 +119,8 @@ export default function App() {
   useEffect(() => { try { localStorage.setItem('still.zoom-to-cursor', String(zoomToCursor)); } catch { /* Keep the session preference if storage is unavailable. */ } }, [zoomToCursor]);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [animationImportMode, setAnimationImportMode] = useState<'apply' | 'append'>('apply');
-  const [libraryPreview, setLibraryPreview] = useState<{ keys: PoseKey[]; duration: number; name: string } | null>(null);
+  const [libraryPreview, setLibraryPreview] = useState<{ keys: PoseKey[]; duration: number; name: string; owner: 'library' | 'mocap' } | null>(null);
+  const [mocapOpen, setMocapOpen] = useState(false);
   const [libraryImportFile, setLibraryImportFile] = useState<File | null>(null);
   const [libraryImportClipIndex, setLibraryImportClipIndex] = useState(0);
   const [libraryFitError, setLibraryFitError] = useState<string | null>(null);
@@ -759,7 +761,7 @@ export default function App() {
       if (event.defaultPrevented || event.isComposing) return;
       if (selectionDrag.current) { if (event.key === 'Escape') { event.preventDefault(); cancelSelection(); setTimelineMode(false); } return; }
       if (keyDrag.current) { if (event.key === 'Escape') { event.preventDefault(); cancelKeyDrag(); setTimelineMode(false); } return; }
-      if (!dialog && libraryPreview) {
+      if (!dialog && !mocapOpen && libraryPreview) {
         if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
         if (event.key === 'Escape') { event.preventDefault(); setLibraryPreview(null); setPlaying(false); setTime(t => Math.min(t, studio.duration)); }
         else if (event.code === 'Space') { event.preventDefault(); setPlaying(value => !value); }
@@ -770,7 +772,7 @@ export default function App() {
       const mod = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('input:not([type="range"]), textarea, select, [contenteditable="true"]') || dialog || busy || !hydrated || !hasActiveScene) return;
+      if (target?.closest('input:not([type="range"]), textarea, select, [contenteditable="true"]') || dialog || mocapOpen || busy || !hydrated || !hasActiveScene) return;
       if (target?.matches('input[type="range"]') && !mod && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
       if (!mod && !event.altKey && event.repeat && ['s', 'v', 'r', 'm', 'w', 'e', 'f', 'g', ' '].includes(key)) { event.preventDefault(); return; }
       if (mod && key === 'a') { event.preventDefault(); setTimelineMode(true); setSelectedIds(new Set(editKeys.map(key => key.id))); }
@@ -799,7 +801,7 @@ export default function App() {
     };
     window.addEventListener('keydown', keydown);
     return () => window.removeEventListener('keydown', keydown);
-  }, [dialog, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, editKeys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode, toggleModelMove]);
+  }, [dialog, mocapOpen, busy, hydrated, hasActiveScene, redo, undo, saveProject, saveCurrentScene, addKey, duplicateKey, copyKeyframes, pasteKeyframes, deleteKey, editKeys, studio.duration, fps, selectionMode, selectedKey, setTimelineMode, toggleModelMove]);
 
   const handleImport = async (file: File) => {
     if (busy) return;
@@ -1350,7 +1352,8 @@ export default function App() {
           {fitOpen && asset.source !== 'demo' && <PartFit key={asset.root.uuid} asset={asset} disabled={!!busy || !hydrated} onApply={message => { setLookRevision(value => value + 1); dirty.current = true; notify(message); }} onClose={() => setFitOpen(false)}/>}
           <button className="button secondary character-new-scene" aria-label="New scene with this character" disabled={!asset.rigged || !!busy || !hydrated || !characterId} onClick={() => characterId && void createCharacterScene(characterId)}><Plus size={15}/>New scene with this character</button><button className="text-button" disabled={!!busy || !characterId} onClick={() => void openLibrary(characterId)}><Layers2 size={13}/>All scenes for this character</button><div className="format-note">FBX, GLB, or a saved .still scene</div>
         </div>
-        <MotionLibrary target={asset} disabled={!asset.rigged || !!busy || !hydrated} onPreview={(keys, duration, name) => { setLibraryPreview({ keys, duration, name }); setTime(0); setPlaying(true); }} onClear={() => { setLibraryPreview(null); setPlaying(false); setTime(value => Math.min(value, studio.duration)); }} onApply={applyImportedAnimation} onNeedsMapping={(file, mode, clipIndex, reason) => { setLibraryPreview(null); setLibraryFitError(reason ?? null); setLibraryImportFile(file); setLibraryImportClipIndex(clipIndex); setAnimationImportMode(mode); setDialog('animation'); }}/>
+        <MotionLibrary target={asset} disabled={!asset.rigged || !!busy || !hydrated} previewBlocked={libraryPreview?.owner === 'mocap'} onPreview={(keys, duration, name) => { setLibraryPreview({ keys, duration, name, owner: 'library' }); setTime(0); setPlaying(true); }} onClear={() => { if (libraryPreview && libraryPreview.owner !== 'library') return; setLibraryPreview(null); setPlaying(false); setTime(value => Math.min(value, studio.duration)); }} onApply={applyImportedAnimation} onNeedsMapping={(file, mode, clipIndex, reason) => { setLibraryPreview(null); setLibraryFitError(reason ?? null); setLibraryImportFile(file); setLibraryImportClipIndex(clipIndex); setAnimationImportMode(mode); setDialog('animation'); }}/>
+        <MotionCapture target={asset} disabled={!asset.rigged || !!busy || !hydrated} previewing={libraryPreview?.owner === 'mocap'} previewBlocked={libraryPreview?.owner === 'library'} onOpenChange={setMocapOpen} onPreview={(keys, duration, name) => { setLibraryPreview({ keys, duration, name, owner: 'mocap' }); setTime(0); setPlaying(true); }} onClear={() => { if (libraryPreview && libraryPreview.owner !== 'mocap') return; setLibraryPreview(null); setPlaying(false); setTime(value => Math.min(value, studio.duration)); }} onApply={applyImportedAnimation}/>
 
         <button className="mobile-inspector-toggle" aria-expanded={inspectorOpen} disabled={!!libraryPreview} onClick={() => setInspectorOpen(v => !v)}><SlidersHorizontal size={15}/>Character &amp; joint controls{asset.warnings.length > 0 && <span>{asset.warnings.length} notes</span>}<ChevronDown size={14}/></button><div className="inspector-body" data-open={inspectorOpen} inert={!!libraryPreview}><div className="sidebar-section animation-section"><div className="section-heading"><h2>Animation</h2><span className="tiny-badge">{emptyTrack ? 'READY' : `${editKeys.length} POSES`}</span></div>
           {asset.clips.length > 0 ? <label className="clip-select"><Activity size={15}/><select aria-label="Animation clip" value={studio.sourceClip ?? -1} onChange={e => { if (Number(e.target.value) >= 0) switchClip(Number(e.target.value)); }}><option value={-1}>Edited motion</option>{asset.clips.map((clip, index) => <option value={index} key={index}>{clip.name || `Animation ${index + 1}`}</option>)}</select></label> : <div className="animation-name"><span className="motion-icon"><Activity size={18}/></span><div><strong>{studio.baseMotionName ?? studio.baseTrackName ?? (asset.source === 'demo' ? asset.kind === 'humanoid' ? 'A friendly wave' : 'An easy stride' : 'Base motion')}</strong><span>{studio.duration.toFixed(1)} seconds · {fps} fps</span></div><Check size={14}/></div>}

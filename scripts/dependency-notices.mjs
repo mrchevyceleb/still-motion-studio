@@ -21,6 +21,9 @@ for (const [relative, entry] of Object.entries(lock.packages).sort(([a], [b]) =>
   if (!texts.length && manifest.name === 'lazy-val' && manifest.version === '1.0.5' && manifest.license === 'MIT') {
     texts.push(await readFile(path.join(root, 'docs/licenses/lazy-val-1.0.5.txt'), 'utf8'));
   }
+  if (!texts.length && manifest.name === '@mediapipe/tasks-vision' && manifest.version === '1.2.0' && manifest.license === 'Apache-2.0') {
+    texts.push(await readFile(path.join(root, 'docs/licenses/mediapipe-tasks-vision-1.2.0.txt'), 'utf8'));
+  }
   if (!texts.length) throw new Error(`Missing redistribution notice for ${manifest.name}. Inspect its license before building.`);
   sections.push(`${manifest.name}@${manifest.version} (${manifest.license || 'see notice'})\n${texts.join('\n\n')}`);
 }
