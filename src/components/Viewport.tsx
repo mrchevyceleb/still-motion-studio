@@ -3,15 +3,17 @@ import type { MutableRefObject } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { applyPose, capturePose } from '../engine/character';
-import { solveIK } from '../engine/motion';
+import { solveIK, swingLimbPole } from '../engine/motion';
+import { solveFollow, type FollowMemory } from '../engine/followChain';
 import { isFingerBone } from '../engine/handRig';
+import { offsetPose, propertyValues } from '../engine/poseProperties';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
 import type { Theme } from '../theme';
 import './Viewport.css';
 
-export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number; limits: { coordinates: number; fov: [number, number]; distance: [number, number] } }
 export type SheetView = 'front' | 'side' | 'back' | 'perspective';
 export interface SheetOptions { poses: Pose[]; labels: string[]; views: SheetView[]; cellWidth: number; columns: number; facing: Vec3; title?: string }
+export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number; limits: { coordinates: number; fov: [number, number]; distance: [number, number] } }
 export interface ViewportAPI {
   capture: () => Promise<string>;
   /** Render several poses from fixed body-relative cameras into one labelled PNG. */
@@ -19,9 +21,6 @@ export interface ViewportAPI {
   getCamera: () => CameraSnapshot;
   setCamera: (view: { position?: Vec3; target?: Vec3; fov?: number }) => CameraSnapshot;
 }
-
-export interface GhostPose { pose: Pose; side: 'before' | 'after' }
-export const GHOST_COLORS = { before: '#3984c8', after: '#d3843e' };
 
 export interface ViewportProps {
   theme: Theme;
@@ -33,9 +32,13 @@ export interface ViewportProps {
   onPoseChange: (pose: Pose) => void;
   showRig: boolean;
   showGhosts: boolean;
-  ghostPoses: GhostPose[];
+  ghostPoses: Pose[];
   cameraView: 'perspective' | 'front' | 'side';
   tool: 'move' | 'rotate';
+  /** Follow feel (0 snaky, 1 robotic) when moving a joint drags its chain along; null keeps the classic IK. */
+  follow?: number | null;
+  moveModel?: boolean;
+  zoomToCursor?: boolean;
   playing: boolean;
   editable?: boolean;
   jointPlacement?: boolean;
@@ -47,8 +50,9 @@ export interface ViewportProps {
 type Runtime = ViewportAPI & {
   setTheme: (theme: Theme) => void;
   frame: (view: ViewportProps['cameraView']) => void;
-  ghosts: (poses: GhostPose[], visible: boolean) => void;
+  ghosts: (poses: Pose[], visible: boolean) => void;
   refresh: () => void;
+  zoomToCursor: (enabled: boolean) => void;
 };
 
 function jointTexture(selected: boolean): THREE.CanvasTexture {
@@ -106,8 +110,8 @@ export default function Viewport(props: ViewportProps) {
 
     const { asset } = props;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#e9ece5');
-    scene.fog = new THREE.Fog('#e9ece5', 14, 38);
+    scene.background = new THREE.Color('#e9ecf1');
+    scene.fog = new THREE.Fog('#e9ecf1', 14, 38);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -123,6 +127,7 @@ export default function Viewport(props: ViewportProps) {
 
     const camera = new THREE.PerspectiveCamera(34, 1, 0.02, 120);
     const orbit = new OrbitControls(camera, canvas);
+    orbit.zoomToCursor = props.zoomToCursor ?? true;
     orbit.enableDamping = true;
     orbit.dampingFactor = 0.1;
     orbit.minDistance = props.jointPlacement ? .06 : 1.2;
@@ -131,9 +136,9 @@ export default function Viewport(props: ViewportProps) {
     orbit.screenSpacePanning = true;
     orbit.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
 
-    const hemisphere = new THREE.HemisphereLight('#ffffff', '#a5ae9b', 2.7);
+    const hemisphere = new THREE.HemisphereLight('#ffffff', '#a4adbc', 2.7);
     scene.add(hemisphere);
-    const keyLight = new THREE.DirectionalLight('#fff5df', 3.6);
+    const keyLight = new THREE.DirectionalLight('#fffaf2', 3.6);
     keyLight.position.set(-3, 7, 5);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
@@ -147,18 +152,18 @@ export default function Viewport(props: ViewportProps) {
     keyLight.shadow.bias = -0.0001;
     keyLight.shadow.radius = 5;
     scene.add(keyLight);
-    const rim = new THREE.DirectionalLight('#f9fff0', 1.7);
+    const rim = new THREE.DirectionalLight('#f4f7ff', 1.7);
     rim.position.set(3, 4, -4);
     scene.add(rim);
 
     const floorGeometry = new THREE.PlaneGeometry(100, 100);
-    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#e9ece4', roughness: 1, metalness: 0 });
+    const floorMaterial = new THREE.MeshStandardMaterial({ color: '#e5e9ef', roughness: 1, metalness: 0 });
     const floor = new THREE.Mesh(floorGeometry, floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -0.025;
     floor.receiveShadow = true;
     scene.add(floor);
-    const grid = new THREE.GridHelper(40, 80, '#cbd1c3', '#d4dacd');
+    const grid = new THREE.GridHelper(40, 80, '#bcc5d2', '#cdd4df');
     grid.position.y = -0.019;
     const gridMaterial = grid.material as THREE.Material;
     gridMaterial.transparent = true;
@@ -186,18 +191,18 @@ export default function Viewport(props: ViewportProps) {
     const lineMaterial = new THREE.LineBasicMaterial({ color: '#4d6947', transparent: true, opacity: 0.25, depthTest: false });
     const gridColors = grid.geometry.getAttribute('color') as THREE.BufferAttribute;
     const lightGridColors = new Float32Array(gridColors.array);
-    const darkGridColor = new THREE.Color('#597663');
+    const darkGridColor = new THREE.Color('#66758a');
     function setTheme(theme: Theme) {
       const dark = theme === 'dark';
-      (scene.background as THREE.Color).set(dark ? '#202c26' : '#e9ece5');
-      (scene.fog as THREE.Fog).color.set(dark ? '#202c26' : '#e9ece5');
-      floorMaterial.color.set(dark ? '#25362b' : '#e9ece4');
+      (scene.background as THREE.Color).set(dark ? '#242a35' : '#e9ecf1');
+      (scene.fog as THREE.Fog).color.set(dark ? '#242a35' : '#e9ecf1');
+      floorMaterial.color.set(dark ? '#2d3542' : '#e5e9ef');
       for (let i = 0; i < gridColors.count; i++) {
         if (dark) gridColors.setXYZ(i, darkGridColor.r, darkGridColor.g, darkGridColor.b);
         else gridColors.setXYZ(i, lightGridColors[i * 3], lightGridColors[i * 3 + 1], lightGridColors[i * 3 + 2]);
       }
       gridColors.needsUpdate = true;
-      hemisphere.groundColor.set(dark ? '#25362d' : '#a5ae9b');
+      hemisphere.groundColor.set(dark ? '#293241' : '#a4adbc');
       hemisphere.intensity = dark ? 1.8 : 2.7;
       keyLight.intensity = dark ? 3.0 : 3.6;
       rim.intensity = dark ? 1.5 : 1.7;
@@ -234,7 +239,7 @@ export default function Viewport(props: ViewportProps) {
     const pointer = new THREE.Vector2();
     const plane = new THREE.Plane();
     const intersection = new THREE.Vector3();
-    let drag: { index: number; original: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] } | null = null;
+    let drag: { index: number; original: Pose; pose?: Pose; offset: THREE.Vector3; startX: number; startY: number; moved: boolean; pointerId: number; tool: ViewportProps['tool'] | 'model'; right: THREE.Vector3; forward: THREE.Vector3; units: number; memory: FollowMemory } | null = null;
 
     function frame(view: ViewportProps['cameraView']) {
       asset.root.updateMatrixWorld(true);
@@ -254,12 +259,12 @@ export default function Viewport(props: ViewportProps) {
       orbit.update();
     }
 
-    function updateGhosts(poses: GhostPose[], visible: boolean) {
+    function updateGhosts(poses: Pose[], visible: boolean) {
       clearGroup(ghosts);
       ghosts.visible = visible;
       if (!visible || poses.length === 0) return;
       const original = capturePose(asset);
-      for (const { pose: ghostPose, side } of poses.slice(0, 8)) {
+      for (const ghostPose of poses.slice(0, 8)) {
         if (ghostPose.length !== asset.bones.length) continue;
         applyPose(asset, ghostPose);
         asset.root.updateMatrixWorld(true);
@@ -267,11 +272,11 @@ export default function Viewport(props: ViewportProps) {
         const vertices = connections.flatMap(([parent, child]) => [...joints[parent].toArray(), ...joints[child].toArray()]);
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-        const material = new THREE.LineBasicMaterial({ color: GHOST_COLORS[side], transparent: true, opacity: 0.55, depthWrite: false });
+        const material = new THREE.LineBasicMaterial({ color: '#7e9264', transparent: true, opacity: 0.22, depthWrite: false });
         const lines = new THREE.LineSegments(geometry, material);
         ghosts.add(lines);
         const pointsGeometry = new THREE.BufferGeometry().setFromPoints(joints);
-        const pointsMaterial = new THREE.PointsMaterial({ color: GHOST_COLORS[side], transparent: true, opacity: 0.55, size: 0.025, depthWrite: false });
+        const pointsMaterial = new THREE.PointsMaterial({ color: '#758954', transparent: true, opacity: 0.22, size: 0.025, depthWrite: false });
         ghosts.add(new THREE.Points(pointsGeometry, pointsMaterial));
       }
       applyPose(asset, original);
@@ -294,28 +299,36 @@ export default function Viewport(props: ViewportProps) {
     }
 
     function pointerDown(event: PointerEvent) {
-      if (event.button !== 0 || isBeforePane(event) || latest.current.editable === false || !latest.current.showRig || !setPointer(event)) return;
-      const hit = raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
+      const model = !!latest.current.moveModel && !latest.current.jointPlacement;
+      if (event.button !== 0 || isBeforePane(event) || latest.current.editable === false || !model && !latest.current.showRig || !setPointer(event)) return;
+      const hit = model ? raycaster.intersectObject(asset.root, true)[0] : raycaster.intersectObjects(handles.filter(handle => handle.visible), false)[0];
       if (!hit) return;
       event.stopImmediatePropagation();
       event.preventDefault();
-      const index = hit.object.userData.boneIndex as number;
-      latest.current.onSelectBone(index);
+      const index = model ? -1 : hit.object.userData.boneIndex as number;
+      latest.current.onSelectBone(model ? null : index);
       canvas.focus({ preventScroll: true });
       if (latest.current.playing) return;
       orbit.enabled = false;
       canvas.setPointerCapture(event.pointerId);
-      const joint = asset.bones[index].getWorldPosition(new THREE.Vector3());
+      const joint = model ? new THREE.Vector3().fromArray(propertyValues(asset, latest.current.pose, 'position', null)) : asset.bones[index].getWorldPosition(new THREE.Vector3());
       plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), joint);
       raycaster.ray.intersectPlane(plane, intersection);
-      drag = { index, original: capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: latest.current.tool };
+      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
+      const forward = camera.getWorldDirection(new THREE.Vector3()).setY(0);
+      if (forward.lengthSq() < 1e-6) forward.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion)).setY(0);
+      forward.normalize();
+      const units = 2 * camera.position.distanceTo(joint) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / canvas.clientHeight;
+      drag = { index, original: model ? structuredClone(latest.current.pose) : capturePose(asset), offset: joint.clone().sub(intersection), startX: event.clientX, startY: event.clientY, moved: false, pointerId: event.pointerId, tool: model ? 'model' : latest.current.tool, right, forward, units, memory: {} };
       canvas.style.cursor = 'grabbing';
     }
 
     function pointerMove(event: PointerEvent) {
       if (!setPointer(event)) return;
       if (!drag) {
-        canvas.style.cursor = !isBeforePane(event) && latest.current.editable !== false && latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length ? 'grab' : 'default';
+        const model = !!latest.current.moveModel && !latest.current.jointPlacement;
+        const hit = model ? raycaster.intersectObject(asset.root, true).length : latest.current.showRig && raycaster.intersectObjects(handles.filter(handle => handle.visible), false).length;
+        canvas.style.cursor = !isBeforePane(event) && latest.current.editable !== false && hit ? 'grab' : 'default';
         return;
       }
       event.stopImmediatePropagation();
@@ -325,7 +338,11 @@ export default function Viewport(props: ViewportProps) {
       drag.moved = true;
       applyPose(asset, drag.original);
       asset.root.updateMatrixWorld(true);
-      if (drag.tool === 'move') {
+      if (drag.tool === 'model') {
+        const delta = event.shiftKey ? new THREE.Vector3(0, -dy * drag.units, 0) : drag.right.clone().multiplyScalar(dx * drag.units).addScaledVector(drag.forward, -dy * drag.units);
+        drag.pose = offsetPose(asset, drag.original, delta.toArray());
+        applyPose(asset, drag.pose);
+      } else if (drag.tool === 'move') {
         if (raycaster.ray.intersectPlane(plane, intersection)) {
           const target = intersection.add(drag.offset);
           if (latest.current.jointPlacement) {
@@ -336,7 +353,10 @@ export default function Viewport(props: ViewportProps) {
             // Placement moves one landmark; neighboring markers stay on the mesh.
             for (const { child, position } of children) child.position.copy(bone.worldToLocal(position));
             asset.root.updateMatrixWorld(true);
-          } else solveIK(asset, drag.index, target);
+          } else if (latest.current.follow == null || !solveFollow(asset, drag.index, target, latest.current.follow, drag.memory)) {
+            // A knee or elbow is its limb's pole: it swings the bend round while the hand or foot stays planted.
+            if (!swingLimbPole(asset, drag.index, target)) solveIK(asset, drag.index, target);
+          }
         }
       } else {
         const bone = asset.bones[drag.index];
@@ -362,14 +382,46 @@ export default function Viewport(props: ViewportProps) {
       if (event.type === 'pointercancel') {
         applyPose(asset, completed.original);
       } else if (completed.moved) {
-        latest.current.onPoseChange(capturePose(asset));
+        latest.current.onPoseChange(completed.pose ?? capturePose(asset));
       }
+    }
+
+    function cancelDrag() {
+      if (!drag) return;
+      const cancelled = drag;
+      drag = null;
+      applyPose(asset, cancelled.original);
+      orbit.enabled = true;
+      canvas.style.cursor = 'default';
+      if (canvas.hasPointerCapture(cancelled.pointerId)) canvas.releasePointerCapture(cancelled.pointerId);
+    }
+    function keyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') cancelDrag();
+    }
+    let forwardingWheel = false;
+    function wheel(event: WheelEvent) {
+      if (!latest.current.comparisonPose || !orbit.zoomToCursor || forwardingWheel) return;
+      const rect = canvas.getBoundingClientRect(), paneWidth = rect.width / 2;
+      if (paneWidth <= 0) return;
+      // Both panes share a camera. Map the hovered half onto the control's full canvas.
+      const x = event.clientX - rect.left;
+      const forwarded = new WheelEvent('wheel', {
+        clientX: rect.left + (x >= paneWidth ? x - paneWidth : x) * 2, clientY: event.clientY,
+        deltaX: event.deltaX, deltaY: event.deltaY, deltaZ: event.deltaZ, deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey, cancelable: true,
+      });
+      event.preventDefault(); event.stopImmediatePropagation();
+      forwardingWheel = true;
+      try { canvas.dispatchEvent(forwarded); } finally { forwardingWheel = false; }
     }
 
     canvas.addEventListener('pointerdown', pointerDown, true);
     canvas.addEventListener('pointermove', pointerMove, true);
     canvas.addEventListener('pointerup', endDrag, true);
     canvas.addEventListener('pointercancel', endDrag, true);
+    canvas.addEventListener('keydown', keyDown);
+    canvas.addEventListener('wheel', wheel, { capture: true, passive: false });
+    window.addEventListener('blur', cancelDrag);
     let width = 0;
     let height = 0;
     let initialFrame = false;
@@ -403,7 +455,7 @@ export default function Viewport(props: ViewportProps) {
       asset.root.updateMatrixWorld(true);
       const current = latest.current;
       ghosts.visible = current.showGhosts && !before;
-      rigLines.visible = current.showRig;
+      rigLines.visible = current.showRig && !current.moveModel;
       for (let i = 0; i < asset.bones.length; i++) {
         asset.bones[i].getWorldPosition(positions[i]);
         handles[i].position.copy(positions[i]);
@@ -413,7 +465,7 @@ export default function Viewport(props: ViewportProps) {
         const distance = camera.position.distanceTo(positions[i]);
         const worldPixel = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / height;
         handles[i].scale.setScalar(worldPixel * (selected ? 25 : 18));
-        handles[i].visible = current.showRig && (!current.jointFilter || current.jointFilter.includes(asset.bones[i].name)) && (!detailedJoints[i] || selected || !!current.jointPlacement || !!current.showFingerJoints && isFingerBone(asset.bones[i].name));
+        handles[i].visible = !current.moveModel && current.showRig && (!current.jointFilter || current.jointFilter.includes(asset.bones[i].name)) && (!detailedJoints[i] || selected || !!current.jointPlacement || !!current.showFingerJoints && isFingerBone(asset.bones[i].name));
         handles[i].renderOrder = selected ? 30 : 20;
       }
       connections.forEach(([parent, child], i) => {
@@ -437,6 +489,7 @@ export default function Viewport(props: ViewportProps) {
       if (latest.current.asset !== asset) return;
       orbit.update();
       const current = latest.current;
+      if (drag?.tool === 'model' && (!current.moveModel || current.editable === false || current.playing)) cancelDrag();
       // Draw both versions with one camera and playhead, then leave the live
       // skeleton in its editable After pose for picking, scripts and exports.
       const afterPose = drag ? capturePose(asset) : current.pose;
@@ -468,7 +521,7 @@ export default function Viewport(props: ViewportProps) {
       return { position: camera.position.toArray() as Vec3, target: orbit.target.toArray() as Vec3, fov: camera.fov, width, height, limits: { coordinates: 10000, fov: [10, 100], distance: [orbit.minDistance, orbit.maxDistance] } };
     };
     const api: Runtime = {
-      frame, ghosts: updateGhosts, getCamera, setTheme,
+      frame, ghosts: updateGhosts, getCamera, setTheme, zoomToCursor: enabled => { orbit.zoomToCursor = enabled; },
       refresh: () => { if (width > 0 && height > 0) renderScene(performance.now(), true); },
       capture: async () => {
         if (disposed) throw new Error('This viewport is no longer active.');
@@ -595,6 +648,9 @@ export default function Viewport(props: ViewportProps) {
       canvas.removeEventListener('pointermove', pointerMove, true);
       canvas.removeEventListener('pointerup', endDrag, true);
       canvas.removeEventListener('pointercancel', endDrag, true);
+      canvas.removeEventListener('keydown', keyDown);
+      canvas.removeEventListener('wheel', wheel, true);
+      window.removeEventListener('blur', cancelDrag);
       orbit.dispose();
       scene.remove(asset.root);
       floorGeometry.dispose();
@@ -629,14 +685,16 @@ export default function Viewport(props: ViewportProps) {
 
   useEffect(() => { runtime.current?.frame(props.cameraView); }, [props.cameraView]);
   useEffect(() => { runtime.current?.setTheme(props.theme); }, [props.theme, props.asset]);
+  useEffect(() => { runtime.current?.zoomToCursor(props.zoomToCursor ?? true); }, [props.zoomToCursor, props.asset]);
   useEffect(() => { runtime.current?.ghosts(props.ghostPoses, props.showGhosts); }, [props.asset, props.ghostPoses, props.showGhosts]);
   useEffect(() => {
     const canvas = container.current?.querySelector('canvas');
     canvas?.setAttribute('aria-label', props.comparisonPose
       ? 'Side-by-side physics comparison. Before on the left, After on the right. Drag either background to orbit both views. Edit joints on the right.'
       : props.editable === false ? 'Before physics preview. Drag the background to orbit.'
+      : props.moveModel ? 'Move whole model. Drag the character across the floor. Shift-drag to raise or lower it. Escape cancels a drag.'
       : 'Interactive character pose editor. Drag a joint to pose it, or drag the background to orbit.');
-  }, [!!props.comparisonPose, props.editable, props.asset]);
+  }, [!!props.comparisonPose, props.editable, props.asset, props.moveModel]);
 
   return <div ref={container} className="motion-viewport" data-testid="viewport">
     {props.comparisonPose && <div className="viewport-split-labels" aria-label="Side-by-side physics comparison"><span><span className="viewport-split-label"><strong>Before</strong>Original motion</span></span><span><span className="viewport-split-label"><strong>After</strong>Physics correction</span></span></div>}

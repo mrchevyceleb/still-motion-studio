@@ -39,6 +39,7 @@ export interface CharacterAsset {
 }
 export interface ProjectDocument extends TrackState {
   version: 1;
+  characterId?: string;
   name: string;
   duration: number;
   fps: number;

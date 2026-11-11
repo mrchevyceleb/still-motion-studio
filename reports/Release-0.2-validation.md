@@ -39,9 +39,9 @@ All 37 checked packaged source/build files matched the final source. Python, Num
 
 Final proof files: `.local/packaged-v3-proof/proof.json`, `.local/verification/packaged-source.json`, `.local/verification/packaged-runtime-paths.json`, `.local/verification/packaged-model-rights.json`, `.local/verification/desktop-fresh-bundle.json`, `.local/verification/desktop-build-recovery.json`, `.local/verification/coverage-v3.json`, `.local/verification/bundle-rejection-v3.json`, and `.local/verification/installer.json`.
 
-## Codex-fix result
+## Code review result
 
-Scope: **55 files, 6,600 changed lines at the final review snapshot, large tier**. Three reviews ran through **direct Codex CLI / GPT-5.6-Sol**: medium, medium, high. The reviewer inspected the supplied complete diff; its separate shell attempts failed with a local DPAPI error. Each review returned findings successfully. Exit: **third-loop, limit reached; no P0 findings; two new P1 issues remain**. This is not a clean-review claim.
+Scope: **55 files, 6,600 changed lines at the final review snapshot, large tier**. Three automated review passes ran: medium, medium, high. The reviewer inspected the supplied complete diff; its separate shell attempts failed with a local DPAPI error. Each review returned findings successfully. Exit: **third-loop, limit reached; no P0 findings; two new P1 issues remain**. This is not a clean-review claim.
 
 | Finding | Result |
 | --- | --- |
@@ -53,7 +53,7 @@ Scope: **55 files, 6,600 changed lines at the final review snapshot, large tier*
 | P1 stale runtime manifests after desktop upgrade | Open: existing data can retain an omitted/rejected humanoid provider or old bundled Python paths. App-managed runtime migration and bundle verification before advertising are needed. Fresh-install test data had no previous runtime. |
 | P1 pending native cleanup after moving/reinstalling app | Open: recovery records contain absolute Python paths. If the old path disappears, cleanup remains blocked. Recovery must resolve the current packaged runtime. |
 
-The required [codex-fix skill](C:/GLOBAL-AGENT-CONFIGS/skills/codex-fix/SKILL.md) states, **“After review 3, STOP.”** That hard limit prevented another fix/review cycle. The two final P1 findings are recorded above rather than described as resolved. Raw review outputs remain in `.local/gap-review/review1.txt`, `review2.txt`, and `review3.txt`.
+The review process stops after three reviews, so no further fix/review cycle ran. The two final P1 findings are recorded above rather than described as resolved. Raw review outputs remain in `.local/gap-review/review1.txt`, `review2.txt`, and `review3.txt`.
 
 <details>
 <summary>Reviewed file manifest</summary>
@@ -116,4 +116,4 @@ The required [codex-fix skill](C:/GLOBAL-AGENT-CONFIGS/skills/codex-fix/SKILL.md
 
 </details>
 
-The existing browser development server was not restarted: automatic approval review rejected that process-stop action with “blocked by policy,” without a more specific reason. The separately packaged desktop executable was verified instead.
+The existing browser development server was not restarted: that process-stop action was not permitted in the validation environment. The separately packaged desktop executable was verified instead.

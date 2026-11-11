@@ -65,7 +65,7 @@
   .simplify-timeline, .mobile-inspector-toggle > span, .agent-command,
   .unreal-options select, .unreal-options input) { background: var(--surface); }
 
-[data-theme='dark'] :is(.viewport-shell, .motion-viewport) { background: #202c26; }
+[data-theme='dark'] :is(.viewport-shell, .motion-viewport) { background: #242a35; }
 [data-theme] :is(.mode-pill, .viewport-icon, .viewport-tools,
   .view-picker, .rig-overlay) { background: var(--paper); }
 [data-theme] .viewport-tools > div { background: var(--line); }
@@ -219,3 +219,5 @@
   .header-right { gap: 5px; }
   .theme-toggle { width: 28px; height: 28px; }
 }
+
+[data-theme] .follow-feel { background: var(--paper); border-color: var(--line); color: var(--muted); }

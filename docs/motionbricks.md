@@ -6,23 +6,25 @@ and select **Generate motion**. Play the result, edit it, or Undo to compare.
 Your original mesh, skin, bone lengths, authored poses and their times stay intact.
 Finger and facial animation continue to follow your authored animation.
 
-## Install the optional model
+## Install or use the model
 
-From the Still source folder on Windows, with `uv` installed:
+Official Windows releases include MotionBricks and ONNX Runtime on CPU. Install the full Setup when prompted to update the runtime; generation then works offline. No NVIDIA account, separate Python or CUDA installation is needed.
+
+For a source checkout without the model, run this from the Still folder on Windows with `uv` installed:
 
 ```powershell
 ./scripts/setup-motionbricks.ps1
 ```
 
-Setup creates its own Python 3.12 environment, downloads the pinned SOMA FP32
-model (723 MiB), verifies its SHA-256, and runs real inference before registering
+New setups create a Python 3.10 environment (an existing compatible environment is reused), download the pinned SOMA FP32
+model (723 MiB), verify its SHA-256, and run real inference before registering
 the provider. Existing engines remain available if setup fails. Still discovers
 the model on its next engine-status refresh; reopen the editor if necessary.
 Use `-DataRoot <folder>` for a separate Still data directory, or `STILL_DATA_ROOT`.
-This optional download is separate from the desktop installer.
+Source setup downloads the model separately. Release builds set `STILL_BUNDLE_MOTIONBRICKS=1` and verify real inference using the bundled Python before including it.
 
 Inference uses ONNX Runtime on CPU; no CUDA installation, cloud account or
-Cascadeur installation is required. Character data stays on this computer.
+another animation application is required. Character data stays on this computer.
 The model is deterministic: regenerating the same inputs does not promise a
 different random take. Change your poses or timing to direct another movement.
 
@@ -57,7 +59,7 @@ Model: NVIDIA MotionBricks SOMA RP v1, upstream revision
 ONNX SHA-256: `856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb`.
 
 The model uses the [NVIDIA Open Model Agreement](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/).
-The installed `MODEL-LICENSE.md` identifies that agreement.
+The installed `MODEL-LICENSE.md` identifies that agreement; `NVIDIA-Open-Model-Agreement.pdf` contains its full terms.
 The NumPy feature codec adapts the upstream Apache-2.0 SOMA representation;
 `backend/assets/motionbricks-soma.json` contains neutral joint offsets derived
 from NVIDIA's Apache-2.0 minimal SOMA rig, in model order and meters, with
@@ -70,3 +72,9 @@ References: [project](https://github.com/NVlabs/motionbricks),
 [runtime](https://github.com/NVlabs/motionbricks/blob/main/docs/runtime_api.md),
 [ONNX interface](https://github.com/NVlabs/motionbricks/blob/main/docs/onnx_inference.md),
 [model card](https://github.com/NVlabs/motionbricks/blob/main/docs/soma_model.md).
+
+MotionBricks is deterministic; the agent `seed` parameter has no effect on this provider. Pose edits clear the generated take while retaining its original guide. Clip transformations update both the take and its guide.
+
+When an original guide is active, **Following your original motion** appears beside the generation controls. Choose **Use only my poses** (or agent `motion.clear`) to discard it and start a new action from the authored keys.
+
+Source-only Windows setups may require the [Microsoft Visual C++ x64 runtime](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Official desktop releases include app-local runtime DLLs.

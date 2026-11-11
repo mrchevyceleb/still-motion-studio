@@ -1,5 +1,7 @@
 # Native AutoPhysics: actual solver, baked motion, and original-rig retargeting
 
+> Historical development notes. Local verification artifacts are not distributed. See the current README and docs for supported behavior.
+
 ## Is a real native physical result now available?
 
 ### Takeaway
@@ -9,7 +11,7 @@ Yes. The installed Cascadeur 2026.2.3 physical solver runs through its public sc
 ### Cited findings
 
 - The official 2026.2 release notes explain that Snap to Physics now asks whether to apply to every frame or only keyframes. They also document PySide UI extensions and the scripting/MCP additions. The missing final scope choice explains the earlier zero-change result. [Cascadeur 2026.2 release notes](https://cascadeur.com/help/category/319).
-- Public actions are `AutoPhysicsTool.Switch Auto Physics` and `AutoPhysicsTool.Snap to Auto Physics`. The installed public `AutoPhysicTool` class itself only exposes turn-off operations. [Public action list](https://cascadeur.com/help/category/301), [installed API stubs](</C:/Users/MattJ/AppData/Local/Programs/Cascadeur/resources/scripts/stubs/csc/tools/__init__.pyi>).
+- Public actions are `AutoPhysicsTool.Switch Auto Physics` and `AutoPhysicsTool.Snap to Auto Physics`. The installed public `AutoPhysicTool` class itself only exposes turn-off operations. [Public action list](https://cascadeur.com/help/category/301), installed API stubs (local development artifact; not distributed).
 - Qt documents `QMetaObject.invokeMethod` as a public way to invoke a signal or slot and report whether invocation succeeded. The adapter uses it on the freshly created, job-owned `All Frames` button. It checks the exact dialog title, question, two expected options, button enabled/visible state, and active owned scene first. It never chooses an existing unrelated prompt. [Qt Python meta-object API](https://doc.qt.io/qtforpython-6/PySide6/QtCore/QMetaObject.html), [runtime implementation](../../backend/cascadeur_runtime.py).
 - Independent native log evidence confirms physical-corrector completion, solver termination statuses, completion of the AutoPhysics core, and the subsequent native Snap command. Actual joint transforms are read after the bake on a later idle event. These checks prevent treating a successful HTTP response or an open dialog as completed physics. [Provider implementation](../../backend/cascadeur_physics.py).
 - Initial 4-second demo proof: 121/121 native frames changed after baking, maximum joint displacement 4.548 cm, mean displacement 0.854 cm, and maximum angular correction 0.1013 radians. Earlier Snap-without-choice produced zero displacement. [First successful bake verification](../../.local/autophysics-proof/initial-bake-verification.json).

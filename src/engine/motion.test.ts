@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { applyPose, capturePose, createDemoCharacter } from './character';
-import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys, solveIK } from './motion';
+import { applyPhysics, buildAnimationClip, continuousQuaternions, createDemoKeys, sampleClip, samplePose, simplifyKeys, solveIK, swingLimbPole } from './motion';
 import { DEFAULT_SETTINGS, type Pose, type PoseKey } from '../types';
 import { assertMatchingRig, composeMotion, editMotion } from './clipEditing';
 
@@ -155,6 +155,32 @@ describe('motion edits preserve authored skeleton data', () => {
     expect(capturePose(asset).map(p => p.position)).toEqual(before.map(p => p.position));
     expect(capturePose(asset).map(p => p.scale)).toEqual(before.map(p => p.scale));
     expect(capturePose(asset)[0]).toEqual(before[0]);
+  });
+
+  it('bends a limb in its own plane without rolling, holds the foot, and swings the knee as a pole', () => {
+    const asset = createDemoCharacter('humanoid');
+    const index = (name: string) => asset.bones.findIndex(b => b.name === name);
+    const foot = asset.bones[index('RightFoot')], knee = asset.bones[index('RightLeg')], hip = asset.bones[index('RightUpLeg')];
+    const world = (bone: THREE.Bone) => bone.getWorldPosition(new THREE.Vector3());
+    // The roll a bone took about its own length since the start pose (swing-twist of its local change).
+    const roll = (bone: THREE.Bone, start: THREE.Quaternion) => {
+      const change = start.clone().invert().multiply(bone.quaternion), along = boneChild(bone).position.clone().normalize();
+      return Math.abs(2 * Math.atan2(new THREE.Vector3(change.x, change.y, change.z).dot(along), change.w));
+    };
+    const boneChild = (bone: THREE.Bone) => bone.children.find((c): c is THREE.Bone => c instanceof THREE.Bone)!;
+    const starts = [hip, knee].map(b => b.quaternion.clone()), footAngle = foot.getWorldQuaternion(new THREE.Quaternion());
+    const target = world(foot).add(new THREE.Vector3(.25, .45, .3));
+    solveIK(asset, index('RightFoot'), target);
+    expect(world(foot).distanceTo(target)).toBeLessThan(1e-3);
+    [hip, knee].forEach((bone, i) => expect(roll(bone, starts[i])).toBeLessThan(1e-4));
+    expect(foot.getWorldQuaternion(new THREE.Quaternion()).angleTo(footAngle)).toBeLessThan(1e-4);
+    const planted = world(foot), side = world(knee).add(new THREE.Vector3(1, 0, 0));
+    expect(swingLimbPole(asset, index('RightLeg'), side)).toBe(true);
+    expect(world(foot).distanceTo(planted)).toBeLessThan(1e-4);
+    expect(foot.getWorldQuaternion(new THREE.Quaternion()).angleTo(footAngle)).toBeLessThan(1e-4);
+    expect(world(knee).x).toBeGreaterThan(world(hip).x);
+    expect(swingLimbPole(asset, index('Spine'), side)).toBe(false);
+    expect(continuousQuaternions([[0, 0, 0, 1], [0, 0, .1, -.99], [0, 0, -.2, .98]])).toEqual([0, 0, 0, 1, -0, -0, -.1, .99, 0, 0, -.2, .98]);
   });
 
   it('lifts ground penetration while keeping input keys and the current viewport pose unchanged', () => {

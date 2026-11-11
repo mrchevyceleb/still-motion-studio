@@ -62,7 +62,6 @@ try {
   await page.getByRole('spinbutton', { name: 'X joint rotation', exact: true }).fill('20');
   const edited = await save('edited.still'); assert.equal(edited.generated, undefined); assert.equal(edited.keys.length, 6);
   console.log('PASS editing clears stale generated frames and keeps simple pose timeline');
-  if (provider !== 'cascadeur') {
   await page.getByRole('switch', { name: 'Floor contact' }).click();
   await expect(page.getByRole('button', { name: 'Correct with physics' })).toBeEnabled();
   await page.getByRole('button', { name: 'Correct with physics' }).click();
@@ -75,6 +74,5 @@ try {
   assert(dynamics.generation.metrics.after.rootForceResidualRmsN < dynamics.generation.metrics.before.rootForceResidualRmsN);
   console.log(`PASS real dynamics: residual force ${dynamics.generation.metrics.before.rootForceResidualRmsN.toFixed(1)} → ${dynamics.generation.metrics.after.rootForceResidualRmsN.toFixed(1)} N`);
   await page.screenshot({ path: path.join(output, 'physics-editor.png'), fullPage: true });
-  }
   assert.deepEqual(errors, []);
 } finally { await browser.close(); }

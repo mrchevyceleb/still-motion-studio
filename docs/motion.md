@@ -1,14 +1,14 @@
 # Motion engine
 
-The editor now separates authored poses from generated motion. Pretrained learned engines and a real inverse-dynamics solver run locally; the original curve and ground tools remain available. No proprietary Cascadeur weights are copied into the project.
+The editor now separates authored poses from generated motion. Pretrained learned engines and a real inverse-dynamics solver run locally; the original curve and ground tools remain available.
 
 ## Learned in-betweening
 
-`backend/inbetween.py` runs the primary authors' CondMDI checkpoint through a pinned MoLab feature codec and diffusion implementation. Sparse full-body key poses condition the network. Long clips use overlapping windows. `backend/cascadeur.py` provides an alternate learned path through the installed Cascadeur scripting server, driving an isolated canonical proxy instead of re-rigging the imported FBX. Both adapters retain the authored poses exactly, preserve bone lengths, and leave mesh/skin bindings intact.
+The shipped animal prior retains authored poses and leaves mesh/skin bindings intact. The research-only `backend/inbetween.py` CondMDI provider is disabled by default and its weights are not distributed because rights remain unresolved.
 
 `src/engine/assistance.ts` converts bone transforms into a virtual Y-up skeleton in meters, retaining non-bone ancestors and source display transforms when mapping results back. Unmapped detail such as fingers follows the baseline motion. A generated take has its own dense frame sequence; authored poses remain the simple editing interface. Editing, deleting, or retiming a pose invalidates the generated take. Undo, project saves, archives, and exports include the generated frames.
 
-The fresh `backend/quadruped.py` provider supports four-legged starter rigs and recognized Quaternius animal names. Its original neural network is trained from random weights on authored CC0 animal clips; no CondMDI checkpoint is used. `backend/owned_humanoid.py` provides a separately trained CC0 humanoid model with experimental quality: it does not yet beat interpolation on held-out clips. Models can need cleanup on unusual proportions or actions outside their training set. See [animal model and validation](learned-quadruped.md), [permission evidence](motion-model-rights.md), and [native adapter](cascadeur-integration.md).
+The fresh `backend/quadruped.py` provider supports four-legged starter rigs and recognized Quaternius animal names. Its original neural network is trained from random weights on authored CC0 animal clips; no CondMDI checkpoint is used. `backend/owned_humanoid.py` provides a separately trained CC0 humanoid model with experimental quality: it does not yet beat interpolation on held-out clips. Models can need cleanup on unusual proportions or actions outside their training set. See [animal model and validation](learned-quadruped.md) and [permission evidence](motion-model-rights.md).
 
 ## Articulated dynamics
 
@@ -18,7 +18,6 @@ Every result is audited at the full returned frame rate, even when fitting used 
 
 With **Keep feet planted**, low, slow-moving source feet define stance intervals. Isolated detections are filtered; each stance uses a median horizontal foot-center target. A damped Jacobian solve removes drift at the full output rate, with 150 ms transitions into neighboring swing frames. It retains the dynamics solver's foot orientations and vertical compression and caps excess proxy penetration at 4 mm where reachable. The final full-rate dynamics audit still decides acceptance. This stabilizes measured foot centers; it does not model every heel/toe pivot or arbitrary terrain.
 
-`backend/cascadeur_physics.py` runs installed native AutoPhysics independently of learned interpolation. It solves a temporary humanoid proxy, invokes the native **All Frames** bake, then transfers the correction to the original skeleton. Earth gravity and floor contacts are required. The service closes its owned confirmation dialog and proxy after completion or cancellation; it does not close user scenes. Proxy retargeting and source proportions can still create large corrections, so the provider measures drift and foot penetration and marks questionable results for review.
 
 ## Curve and posing tools
 

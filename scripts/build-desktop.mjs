@@ -1,5 +1,5 @@
 /** Build the full installer (with the runtime) and the app-only update installer, then one feed. */
-import { readFile, writeFile, copyFile, rm, access } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, rm, access, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +53,10 @@ await writeFile(guard, `!include "${path.join(root, 'desktop', 'installer.nsh')}
 
 await rm(update, { recursive: true, force: true });
 await win(full);
+const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
+const setupSize = (await stat(path.join(full, `Still-Motion-Studio-Setup-${version}.exe`))).size;
+if (setupSize >= 2_000_000_000) throw new Error('The full Setup exceeds the safe NSIS/release-asset size limit.');
+console.log(`Full Setup size: ${(setupSize / 1024 / 1024).toFixed(1)} MiB`);
 // Same app, without deps/: installs in seconds because the runtime already sits outside the install folder.
 await win(update, { artifactName: 'Still-Motion-Studio-Update-${version}.${ext}', nsis: { ...config.nsis, include: guard }, extraResources: [{ from: '.local/desktop-bundle', to: 'runtime', filter: ['**/*', '!deps', '!deps/**/*'] }] });
 

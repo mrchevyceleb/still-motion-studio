@@ -1,10 +1,9 @@
 import { Matrix4, PropertyBinding, Quaternion } from 'three';
 import type { AnimationClip, Bone, SkinnedMesh } from 'three';
 import type { CharacterAsset, PoseKey } from '../types';
+import { jointName } from './character';
 import { sampleClip } from './motion';
 
-// FBX/GLB exporters spell the same Mixamo joint with different namespaces.
-const jointName = (name: string) => name.replace(/^.*[|:]/, '').replace(/^mixamorig\d*[_:]?/i, '').toLowerCase();
 const incompatible = (name: string) => new Error(`The animation's skeleton does not match ${name}. Use an animation exported for this rig, or choose Retarget with joint mapping.`);
 
 function parentBone(bone: Bone, asset: CharacterAsset): Bone | null {

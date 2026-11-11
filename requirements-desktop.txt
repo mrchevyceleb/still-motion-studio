@@ -17,3 +17,10 @@ sympy==1.13.1
 torch==2.5.1+cpu
 typing-extensions==4.16.0
 zipp==4.1.1
+flatbuffers==25.12.19
+onnxruntime==1.23.2
+packaging==26.3
+protobuf==7.36.2
+coloredlogs==15.0.1
+humanfriendly==10.0
+pyreadline3==3.5.6

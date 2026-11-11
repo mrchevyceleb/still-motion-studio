@@ -1,5 +1,7 @@
 # Native Cascadeur learned motion integration
 
+> Historical development notes. Local verification artifacts are not distributed. See the current README and docs for supported behavior.
+
 ## Can the installed learned engine actually produce motion through a public API?
 
 ### Takeaway
@@ -9,7 +11,7 @@ Yes. A working adapter now runs the installed Cascadeur learned inbetweening eng
 ### Cited Findings
 
 - Cascadeur 2026.2 officially adds a simple MCP server, Python stubs, and updates its trained inbetweening model. The local installation is 2026.2.3.0.16863. — [Official release notes](https://cascadeur.com/help/category/319); [local integration notes](../../docs/cascadeur-integration.md).
-- The installed scripting server exposes loopback `GET /health` and queued `POST /run`; scripts run on the application's idle event. — [Installed server README](</C:/Users/MattJ/AppData/Local/Programs/Cascadeur/resources/scripts/python/scripts/mcp/script_server/README.md>).
+- The installed scripting server exposes loopback `GET /health` and queued `POST /run`; scripts run on the application's idle event. — Installed server README (local development artifact; not distributed).
 - The public layer enum exposes `Interpolation.AI`. Scene modifications, data editing, and scene creation are public APIs. — [Interpolation enum](https://cascadeur.com/python-api/_generate/csc.layers.layer.Interpolation.html); [SceneManager](https://cascadeur.com/python-api/_generate/csc.app.SceneManager.html); [Python API introduction](https://cascadeur.com/help/category/215).
 - Proof on an isolated copy of the shipped Backflip animation: six keys at frames 0, 22, 46, 69, 95, 123; 58 joints and 124 frames. Switching the same sparse timeline from Bezier to AI changed interior joint positions by a mean 88.385 cm and maximum 394.545 cm. Authored positions changed by at most 0.000063 cm. A real 1,665,216-byte FBX was exported. These measurements prove native computation occurred, not that the generated motion is always desirable. — [Proof script](../../.local/cascadeur-proof/native-ai-verify.py); [Bezier samples](../../.local/cascadeur-proof/native-bezier-positions.json); [AI samples](../../.local/cascadeur-proof/native-ai-positions.json); [FBX output](../../.local/cascadeur-proof/native-ai-result.fbx).
 - Complete editor-format requests succeeded for a 21-bone demo and the real 119-bone Mixamo fixture. Both returned finite normalized rotations, identical timestamps, exact authored poses, and zero changes to non-root bone offsets. — [Machine-readable verification](../../.local/cascadeur-proof/verification.json); [adapter](../../backend/cascadeur.py); [native runtime](../../backend/cascadeur_runtime.py).
@@ -61,7 +63,7 @@ Native AutoPhysics calculation was verified, but its final bake is not integrate
 
 ### Cited Findings
 
-- Public action IDs include `AutoPhysicsTool.Switch Auto Physics` and `AutoPhysicsTool.Snap to Auto Physics`. The documented Python tool exposes `turn_off` and `turn_off_all_fulcrum_points`, without a bake method accepting the prompt choice. — [Public action list](https://cascadeur.com/help/category/301); [installed tool stubs](</C:/Users/MattJ/AppData/Local/Programs/Cascadeur/resources/scripts/stubs/csc/tools/__init__.pyi>).
+- Public action IDs include `AutoPhysicsTool.Switch Auto Physics` and `AutoPhysicsTool.Snap to Auto Physics`. The documented Python tool exposes `turn_off` and `turn_off_all_fulcrum_points`, without a bake method accepting the prompt choice. — [Public action list](https://cascadeur.com/help/category/301); installed tool stubs (local development artifact; not distributed).
 - The 2026.2 release notes explicitly describe the new Snap choice between all frames and keyframes. — [Release notes, physics snapping changes](https://cascadeur.com/help/category/319).
 - In the isolated native sample, enabling physics completed trajectory smoothing, separation, physics correction, compensation, rotation smoothing, secondary motion, unbound restoration, and collision correction. The native log reported solver convergence. Running the Snap action then comparing all 58 joints at 124 frames produced zero source-position change. — [Enable script](../../.local/cascadeur-proof/native-physics-enable.py); [Snap script](../../.local/cascadeur-proof/native-physics-snap.py); [verification script](../../.local/cascadeur-proof/native-physics-verify.py); [post-Snap samples](../../.local/cascadeur-proof/native-physics-positions.json).
 - The shipped provider invokes learned inbetweening only and does not claim native AutoPhysics output. — [Provider implementation](../../backend/cascadeur.py).

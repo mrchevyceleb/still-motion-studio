@@ -10,14 +10,29 @@ import copy
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+import sys
 import time
 
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 MODEL_SHA256 = '856419dc72aeb14e591eebf4dd0ea05734a2506ddb00bcd39dd6dac2ad60f4fb'
+_DLL_DIRECTORIES = []
+
+
+def load_onnxruntime():
+    # Desktop bundles the pinned Microsoft C++ runtime beside python.exe.
+    # Make those app-local DLLs visible to ORT on clean Windows as well.
+    if sys.platform == 'win32' and not _DLL_DIRECTORIES:
+        folder = Path(sys.executable).parent
+        if folder.is_dir():
+            _DLL_DIRECTORIES.append(os.add_dll_directory(str(folder)))
+    import onnxruntime
+    return onnxruntime
+
 PROVIDER = {'id': 'motionbricks', 'name': 'MotionBricks', 'learned': True,
             'description': 'Local NVIDIA humanoid inbetweening, preserving your poses and original rig.'}
 RIG = json.loads((Path(__file__).parent / 'assets/motionbricks-soma.json').read_text())
@@ -286,10 +301,13 @@ def generate_motion(request, progress):
     if not model.is_file():
         raise RuntimeError('Install the human motion model with scripts/setup-motionbricks.ps1, then try again.')
     progress('Checking the human motion model…', .04)
+    digest = hashlib.sha256()
     with model.open('rb') as stream:
-        if hashlib.file_digest(stream, 'sha256').hexdigest() != MODEL_SHA256:
-            raise RuntimeError('The MotionBricks model is incomplete or changed. Run scripts/setup-motionbricks.ps1 again.')
-    import onnxruntime as ort
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest() != MODEL_SHA256:
+        raise RuntimeError('The MotionBricks model is incomplete or changed. Reinstall Still or run scripts/setup-motionbricks.ps1 again.')
+    ort = load_onnxruntime()
     started = time.monotonic()
     progress('Loading MotionBricks on this computer…', .1)
     options = ort.SessionOptions()
@@ -328,12 +346,12 @@ def generate_motion(request, progress):
             # intermediate boundary to the interpolated source pose.
             end_pose = _sample([{'time': 0., 'pose': predicted_end}, {'time': 1., 'pose': end_pose}], .5)
         native_frames += len(root)
-        retimed |= abs((len(root)-1)/30-(end-boundary)) > 1/30
+        retimed |= abs((len(root)-1)/30-(end-boundary)) > 4/30
         axis = np.linspace(0, 1, len(root))
         rotations = [Slerp(axis, Rotation.from_quat(quats[:, i])) for i in range(30)]
         # Correct after retargeting so exact source keys don't create a pop on
         # rigs with different proportions, rest poses or extra spine joints.
-        endpoints = [retargeter.decode(pose, root[k], Rotation.from_quat(quats[k])) for pose, k in [(start_pose, 0), (end_pose, -1)]]
+        endpoints = [retargeter.decode(_sample(source, at), root[k], Rotation.from_quat(quats[k])) for at, k in [(boundary, 0), (end, -1)]]
         corrections = [Slerp([0, 1], Rotation.from_quat([
             (Rotation.from_quat(pose[i]['quaternion'])*Rotation.from_quat(pred[i]['quaternion']).inv()).as_quat()
             for pose, pred in zip([start_pose, end_pose], endpoints)])) for i in range(len(start_pose))]

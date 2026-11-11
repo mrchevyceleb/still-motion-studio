@@ -40,6 +40,8 @@ await still.exportFile('glb', './edited-motion.glb', {
 });
 ```
 
+Pass `follow` (0 to 1) on `pose.move` to drag a head's whole neck, tail or tentacle after it, up to where chains meet: 0 bends it in one smooth snaky curve, 1 bends it at a few stiff robotic hinges, and the moved joint keeps its world aim. It matches the editor's Follow tool (F). Limbs keep the four-ancestor IK.
+
 `pose.move` targets use the editor's world coordinates: approximately meters, +Y up and +Z forward. Full poses and `pose.set` bone edits use **native local bone units**, which may differ on imported skeletons. Quaternions are `[x,y,z,w]`; `rotationDegrees` is local XYZ Euler rotation. Prefer bone indices from `skeleton.inspect`: duplicate bone names cannot identify an unambiguous joint. A pose array contains one transform per bone, in that inspection order.
 
 Every command result includes `revision`. Pass the last observed revision as `expectedRevision` on dependent edits or exports. A concurrent user edit fails that command rather than allowing a stale script to replace newer work. Read the scene again before deciding how to continue; do not blindly retry a revision conflict.
@@ -55,7 +57,7 @@ Every command result includes `revision`. Pass the last observed revision as `ex
 | `downloadFile(fileId, path, options)` | Save a staged file locally. |
 | `exportFile(format, path, options)` | Export `glb`, `still`, `unreal` ZIP, or viewport `png`, then save it. |
 
-`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Native cleanup may finish afterward, so inspect the job until terminal before assuming cancellation completed.
+`createClient` accepts `connectionFile`, `sessionId`, `timeoutMs`, and `requestTimeoutMs`; an explicit loopback `baseUrl`/`token` pair is also supported. `STILL_AGENT_CONNECTION` selects a different connection file. `call` options include `sessionId`, `expectedRevision`, UUID `id`, `timeoutMs`, an AbortSignal `signal`, and `onProgress(job)`. Waiting polls every 400 ms and defaults to ten minutes; a timeout or aborted wait requests cancellation. Inspect the job until terminal before assuming cancellation completed.
 
 The client never automatically retries a mutation. An uncertain network outcome includes `error.details.jobId`; inspect that job. If resubmission is appropriate, reuse its **same UUID, session, method, and parameters**, including revision. A new UUID means a new command. Application failures use `StillError` with `code` and `details`.
 
@@ -102,7 +104,7 @@ Configure an MCP client to launch Node with an absolute script path. A typical s
   "mcpServers": {
     "still": {
       "command": "node",
-      "args": ["C:/DEV-PROJECTS/personal-projects/still-motion-studio/scripts/still-mcp.mjs"]
+      "args": ["C:/path/to/still-motion-studio/scripts/still-mcp.mjs"]
     }
   }
 }

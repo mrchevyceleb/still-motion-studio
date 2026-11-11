@@ -2,6 +2,36 @@ import type { PoseKey } from '../types';
 
 export const MAX_ANIMATION_DURATION = 600;
 
+/** Place a pose on the requested frame, replacing a pose already on that frame. */
+export function moveMoment(keys: PoseKey[], id: string, wanted: number, duration: number, fps: number): { keys: PoseKey[]; duration: number; time: number; replaced: number } | null {
+  const source = keys.find(key => key.id === id);
+  if (!source || !Number.isFinite(wanted)) return null;
+  const time = Math.max(0, Math.min(duration, Math.round(wanted * fps) / fps));
+  const remaining = keys.filter(key => key.id === id || Math.abs(key.time - time) >= .5 / fps);
+  if (remaining.length < 2) return null;
+  return { keys: remaining.map(key => key.id === id ? { ...key, time } : key).sort((a, b) => a.time - b.time), duration, time, replaced: keys.length - remaining.length };
+}
+
+export function pasteMoments(keys: PoseKey[], copied: PoseKey[], wanted: number, duration: number, fps: number): { keys: PoseKey[]; pasted: PoseKey[]; duration: number; replaced: number } {
+  if (!copied.length || !Number.isFinite(wanted) || wanted < 0) throw new Error('Choose a time on the timeline to paste.');
+  const start = Math.round(wanted * fps) / fps;
+  const first = copied.reduce((time, key) => Math.min(time, key.time), Infinity);
+  const byFrame = new Map<number, PoseKey>();
+  // A slower destination frame rate can collapse adjacent source keys. Keep the later pose.
+  for (const key of [...copied].sort((a, b) => a.time - b.time)) {
+    const frame = Math.round((start + key.time - first) * fps);
+    byFrame.set(frame, { ...structuredClone(key), id: crypto.randomUUID(), time: frame / fps });
+  }
+  const pasted = [...byFrame.values()];
+  const end = pasted.at(-1)!.time;
+  if (end > MAX_ANIMATION_DURATION) throw new Error('The pasted keyframes would exceed the 10-minute limit.');
+  const frames = new Set(pasted.map(key => Math.round(key.time * fps)));
+  const remaining = keys.filter(key => !frames.has(Math.round(key.time * fps)));
+  const result = [...remaining, ...pasted].sort((a, b) => a.time - b.time);
+  if (result.length < 2) throw new Error('Keep at least two poses. Paste at another time.');
+  return { keys: result, pasted, duration: Math.max(duration, end), replaced: keys.length - remaining.length };
+}
+
 /** Move this moment and the entire tail by one shared, frame-snapped offset. */
 export function rippleMoment(keys: PoseKey[], id: string, wanted: number, duration: number, fps: number): { keys: PoseKey[]; duration: number; time: number } | null {
   const index = keys.findIndex(key => key.id === id);

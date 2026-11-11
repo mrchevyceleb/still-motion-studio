@@ -1,0 +1,15 @@
+Motion Capture uses Google MediaPipe Pose Landmarker, running entirely on
+this device. Videos and camera frames never leave the computer.
+
+JavaScript and Wasm runtime: @mediapipe/tasks-vision, Apache License 2.0.
+Installed from npm and staged here by scripts/fetch-mocap-assets.mjs.
+Source: https://github.com/google-ai-edge/mediapipe
+
+Pose model: pose_landmarker_full.task (float16, version 1), Apache License 2.0.
+Downloaded at build time from the official MediaPipe model store:
+https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task
+SHA-256: 5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1
+
+The model only estimates body landmarks from a video the user provides.
+The animation Still creates from those landmarks is the user's own work.
+Full license texts ship in THIRD-PARTY-LICENSES.txt and THIRD_PARTY_NOTICES.md.

@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible problem in Still.
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: For vulnerabilities, use the private security reporting link instead. Do not attach credentials or files you cannot redistribute.
+  - type: input
+    id: version
+    attributes:
+      label: Still version or commit
+      placeholder: Release version, or git rev-parse --short HEAD
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and installation
+      placeholder: Windows 11 desktop installer, or macOS / Chrome development build
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected result, and actual result
+      description: Prefer a built-in practice character or a small redistributable example.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or relevant logs
+      description: Remove tokens, account details, private file paths, and private asset content.

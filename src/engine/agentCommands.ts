@@ -1,10 +1,11 @@
 import { activeTrack, combinedInterpolation, combinedKeys, createAnimationTrack, createLayerSampler, editableKeys, fitEmptyTracks, putLayerKey, recordTrackKey, trackEditDuration, underlyingTrackSampler } from './tracks';
-import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
+import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter, swapCharacterLook } from './character';
+import { morphKeyData } from './morphs';
 import { applyPhysics, blankKeys, buildAnimationClip, createDemoKeys, createPoseSampler, sampleClip, samplePose, simplifyKeys } from './motion';
 import { applyIntent, describePose, restForward } from './agentIntent';
 import { carryProp } from './propHold';
 import { reviewMotion } from './agentReview';
-import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
+import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
@@ -92,7 +93,9 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
   const put = (time: number, pose: Pose, label?: string) => {
     const old = editKeys.find(key => Math.abs(key.time - time) < 1e-7);
     const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', morphs: sample(time).morphs };
-    commit(putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs));
+    const next = putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs);
+    if (!next.generated && studio.generation?.source) next.generation = { ...studio.generation, comparison: undefined };
+    commit(next);
     editor.timeline(key.time);
     return { activeTrackId: layer?.id ?? null, key: copy(key) };
   };
@@ -122,7 +125,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (!studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist. The base track stays in the scene.');
       commit({ ...studio, tracks: studio.tracks.filter(t => t.id !== params.id), activeTrackId: studio.activeTrackId === params.id ? null : studio.activeTrackId }); return editor.snapshot();
     }
-    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
+    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), hasMotionGuide: !!studio.generation?.source, warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generated ? studio.generation : undefined) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
@@ -179,6 +182,21 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         return { ...editor.snapshot(), warnings: next.warnings };
       } finally { if (!adopted) disposeCharacter(next); }
     }
+    case 'character.swapLook': {
+      requireRig();
+      const file = await downloadAgentFile(String(params.fileId), signal);
+      const source = await importCharacter(file);
+      let next: CharacterAsset | undefined, adopted = false;
+      try {
+        signal.throwIfAborted();
+        next = swapCharacterLook(asset, source);
+        // The dressed take is a new scene; the original stays in the library untouched.
+        await editor.archive(); signal.throwIfAborted();
+        editor.replace(next, { ...studio, title: nameOf(params.name, studio.title) }, editor.time);
+        adopted = true;
+        return { ...editor.snapshot(), warnings: next.warnings };
+      } finally { disposeCharacter(source); if (next && !adopted) disposeCharacter(next); }
+    }
     case 'skeleton.inspect': return { ...inspectSkeleton(asset, poseAt(editor.time)) };
     case 'skeleton.kind': commit({ ...studio, rigKind: kindOf(params.kind), generated: undefined, generation: undefined }); return editor.snapshot();
     case 'skeleton.rig': {
@@ -186,7 +204,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const kind = kindOf(params.kind);
       await editor.archive(); signal.throwIfAborted();
       const next = autoRigCharacter(asset, kind);
-      editor.replace(next, { ...studio, keys: [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: studio.duration, pose: copy(next.restPose) }], generated: undefined, generation: undefined, sourceClip: null });
+      editor.replace(next, { ...studio, tracks: undefined, activeTrackId: null, baseTrackMuted: false, keys: [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: studio.duration, pose: copy(next.restPose) }], generated: undefined, generation: undefined, sourceClip: null });
       return { ...editor.snapshot(), warning: 'Template rig fitted; unusual anatomy may need manual cleanup.' };
     }
     case 'pose.get': { const time = atTime(); return { activeTrackId: layer?.id ?? null, time, pose: poseAt(time) }; }
@@ -199,7 +217,8 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     }
     case 'pose.move': {
       requireRig(); const time = atTime();
-      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number]);
+      const follow = params.follow === undefined ? undefined : number(params.follow, 'Follow feel', 0, 1);
+      const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number], follow);
       return { ...put(time, result.pose), boneIndex: result.boneIndex, target: result.target, achieved: result.achieved, error: result.error };
     }
     case 'pose.describe': { requireRig(); const time = atTime(); return { time, ...describePose(asset, poseAt(time)) }; }
@@ -293,8 +312,20 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const time = number(params.time ?? Math.min(duration, editor.time * (retime ? duration / studio.duration : 1)), 'Time', 0, duration);
       if (duration !== studio.duration) {
         if (!retime && [studio.keys, ...studio.tracks?.map(t => t.keys) ?? []].some(keys => keys.some(key => key.time > duration))) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
-        const keys = studio.keys.map(key => ({ ...key, time: retime ? key.time * duration / studio.duration : key.time }));
-        commit({ ...studio, duration, keys, tracks: studio.tracks?.map(t => ({ ...t, keys: t.keys.map(k => ({ ...k, time: retime ? k.time * duration / studio.duration : k.time })) })), sourceClip: null });
+        const transform = (frames: PoseKey[], interpolation: InterpolationMode): PoseKey[] => {
+          if (retime) return frames.map(key => ({ ...key, time: key.time * duration / studio.duration }));
+          const kept = frames.filter(key => key.time <= duration).map(key => ({ ...key }));
+          if (duration < studio.duration && (!kept.length || kept[0].time > 0)) kept.unshift({ id: uid(), time: 0, pose: samplePose(frames, 0, interpolation), ...morphKeyData(frames, 0, interpolation, asset.restMorphs) });
+          if (duration < studio.duration && !kept.some(key => Math.abs(key.time - duration) < 1e-9)) kept.push({ id: uid(), time: duration, pose: samplePose(frames, duration, interpolation), ...morphKeyData(frames, duration, interpolation, asset.restMorphs) });
+          return kept;
+        };
+        const keys = retime ? transform(studio.keys, studio.settings.interpolation) : studio.keys;
+        const oldGuide = studio.generation?.source;
+        const guide = oldGuide ? transform(oldGuide.before, oldGuide.interpolation) : undefined;
+        const generated = studio.generated ? transform(studio.generated, 'linear') : undefined;
+        const warning = 'Clip timing changed after generation. Review playback and rerun physics to refresh its measurements.';
+        const generation = studio.generation ? { ...studio.generation, comparison: undefined, source: oldGuide && guide && guide.length >= 2 ? { ...oldGuide, before: guide } : undefined, metrics: { originalClipBackupId: studio.generation.metrics.originalClipBackupId, quality: { requiresReview: true, reasons: [warning] } }, warnings: [...new Set([...studio.generation.warnings, warning])] } : undefined;
+        commit({ ...studio, duration, keys, generated, generation, tracks: studio.tracks?.map(t => ({ ...t, keys: retime ? transform(t.keys, t.interpolation) : t.keys })), sourceClip: null });
       }
       editor.timeline(time, fps); return editor.snapshot();
     }
@@ -336,7 +367,6 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         return { ...editor.snapshot(), carry: carry.metrics, warnings: carry.warnings };
       } finally { applyPose(asset, editor.pose); }
     }
-    case 'motion.recover': await recoverNativeEngine(); return { engine: await getEngineStatus() };
     case 'motion.run': {
       requireRig();
       const engine = await getEngineStatus(); signal.throwIfAborted();
@@ -346,11 +376,15 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (provider.limits?.maxDuration && studio.duration > provider.limits.maxDuration) throw new Error(`This provider supports up to ${provider.limits.maxDuration} seconds.`);
       const count = params.simplifyCount ?? (studio.keys.length > 24 ? 6 : undefined);
       const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120), asset.restMorphs);
-      let originalClipBackupId = provider.id === 'motionbricks' && studio.generation?.source && typeof studio.generation.metrics.originalClipBackupId === 'string' ? studio.generation.metrics.originalClipBackupId : undefined;
+      if (provider.id === 'motionbricks') {
+        if (anchors.length < 2 || Math.abs(anchors[0].time) > 1e-6 || Math.abs(anchors[anchors.length - 1].time - studio.duration) > 1e-5) throw new Error('Add a pose at the beginning and at the clip end before generating with MotionBricks.');
+        if (anchors.some((key, i) => i > 0 && key.time - anchors[i - 1].time < 1 / 30 - 1e-6)) throw new Error('Space your key poses at least one frame apart (1/30 second) before generating.');
+      }
+      let originalClipBackupId = (provider.id === 'motionbricks' || !provider.learned) && studio.generation?.source && typeof studio.generation.metrics.originalClipBackupId === 'string' ? studio.generation.metrics.originalClipBackupId : undefined;
       if (originalClipBackupId && !(await listScenes()).some(scene => scene.id === originalClipBackupId)) originalClipBackupId = undefined;
       let source = baseSequence, sourceMode = baseMode;
       let sourceWarning: string | undefined;
-      if (provider.id === 'motionbricks' && studio.generated) {
+      if (provider.id === 'motionbricks' && (studio.generated || studio.generation?.source)) {
         if (studio.generation?.source) { source = studio.generation.source.before; sourceMode = studio.generation.source.interpolation; }
         else if (studio.generation?.name === 'MotionBricks') {
           source = studio.keys; sourceMode = studio.settings.interpolation;
@@ -399,10 +433,10 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       try {
         const clip = buildAnimationClip(asset, sequence, studio.duration, { ...studio.settings, interpolation: mode });
         const binary = await exportCharacterGLB(asset, clip); signal.throwIfAborted();
-        if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: studio.generation ?? null };
+        if (format === 'glb') return { ...await artifact(new Blob([binary], { type: 'model/gltf-binary' }), `${name}.glb`), warnings: asset.warnings, generation: generationReport(studio.generated ? studio.generation : undefined) };
         const result = await exportUnrealPackage(binary, { name, fps: fps as number, rootMotion: params.rootMotion as 'preserve' | 'extract' | 'in-place' | undefined, retarget: params.retarget as 'none' | 'manny' | 'metahuman' | 'skeleton' | undefined, targetMesh: params.targetMesh as string | undefined, targetSkeleton: params.targetSkeleton as string | undefined, ...(params.retarget === 'skeleton' ? { referenceFbx: asset.referenceFbx } : {}) }, editor.progress, signal);
         if (!result.package) throw new Error('The Unreal package could not be downloaded.');
-        return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: studio.generation ?? null };
+        return { ...await artifact(result.package, `${name}-Unreal.zip`), warnings: result.warnings, generation: generationReport(studio.generated ? studio.generation : undefined) };
       } finally { applyPose(asset, editor.pose); }
     }
     default: throw new Error(`Unknown scripting command: ${method}`);

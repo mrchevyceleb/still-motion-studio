@@ -1,6 +1,6 @@
 import { createPoseSampler } from './motion';
 import { createMorphSampler } from './morphs';
-import { editMotion, type ClipEdit } from './clipEditing';
+import { editMotion, rangeSpeedTime, type ClipEdit } from './clipEditing';
 import type { AnimationTrack, BonePose, CharacterAsset, InterpolationMode, MorphValues, Pose, PoseKey, TrackState } from '../types';
 
 export interface LayeredMotion extends TrackState {
@@ -36,8 +36,8 @@ export function editAnimationTrack(asset: CharacterAsset, track: AnimationTrack,
     throw new Error('To repeat this scene, each animated track must span the full timeline. Extend the shorter tracks first.');
   }
   const result = editMotion(asset, { keys: track.keys, duration, interpolation: track.interpolation }, edit, fps);
-  const from = edit.kind === 'trim' ? Math.max(0, start - edit.start) : edit.kind === 'reverse' ? duration - end : edit.kind === 'speed' ? start / edit.factor : start;
-  const to = edit.kind === 'trim' ? Math.min(result.duration, end - edit.start) : edit.kind === 'reverse' ? duration - start : edit.kind === 'speed' ? end / edit.factor : edit.kind === 'repeat' ? result.duration : end;
+  const from = edit.kind === 'trim' ? Math.max(0, start - edit.start) : edit.kind === 'reverse' ? duration - end : edit.kind === 'speed' ? start / edit.factor : edit.kind === 'speed-range' ? rangeSpeedTime(edit, start) : start;
+  const to = edit.kind === 'trim' ? Math.min(result.duration, end - edit.start) : edit.kind === 'reverse' ? duration - start : edit.kind === 'speed' ? end / edit.factor : edit.kind === 'speed-range' ? rangeSpeedTime(edit, end) : edit.kind === 'repeat' ? result.duration : end;
   if (to <= from) return undefined;
   return { ...track, keys: result.keys.filter(k => k.time >= from && k.time <= to), interpolation: result.interpolation };
 }

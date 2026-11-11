@@ -1,0 +1,9 @@
+.part-fit { margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; }
+.part-fit-label { margin-top: 10px; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.part-fit .axis-fields { margin: 6px 0; }
+.part-fit .axis-fields label > span { flex-shrink: 0; }
+.part-fit .axis-fields.part-fit-size label { flex: 0 1 33%; }
+.part-fit-actions { display: flex; gap: 6px; margin-top: 10px; }
+.part-fit-actions .button { flex: 1; padding: 8px 10px; font-size: 10px; }
+.part-fit .text-button { margin-top: 8px; }
+.part-fit .micro-copy { margin-top: 8px; }

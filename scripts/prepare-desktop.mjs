@@ -1,10 +1,11 @@
-/** Assemble and publish a fresh offline Windows runtime. */
+/** Assemble a fresh offline Windows runtime. No repository credentials are bundled. */
 import { cp, mkdir, readFile, writeFile, access, lstat, rename, rm, realpath, unlink, rmdir, readdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { prepareMsvc } from './prepare-msvc.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const localRoot = path.join(root, '.local');
@@ -69,6 +70,7 @@ try {
     await cp(await realpath(path.dirname(base)), cache, { recursive: true, dereference: true, filter: filename => !filename.includes('site-packages') && !filename.endsWith('__pycache__') });
   }
   execFileSync('uv', ['pip', 'install', '--exact', '--break-system-packages', '--python', python, '-r', path.join(root, 'requirements-desktop.txt'), '--extra-index-url', 'https://download.pytorch.org/whl/cpu', '--index-strategy', 'unsafe-best-match'], { stdio: 'inherit', windowsHide: true });
+  await prepareMsvc(cache, path.join(localRoot, 'desktop-cache'));
   execFileSync(python, ['-c', 'import torch,numpy,scipy,safetensors,mujoco; assert torch.version.cuda is None; print("Offline CPU runtime verified")'], { stdio: 'inherit', windowsHide: true });
   const deps = path.join(bundle, 'deps');
   await cp(cache, path.join(deps, 'python'), { recursive: true, dereference: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
@@ -77,6 +79,8 @@ try {
     await cp(path.join(root, name), path.join(bundle, 'app', name), { recursive: true, filter: filename => !filename.endsWith('__pycache__') && !filename.endsWith('.pyc') });
   }
   await cp(path.join(root, 'package.json'), path.join(bundle, 'app/package.json'));
+  for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) await cp(path.join(root, name), path.join(bundle, name));
+  await cp(path.join(root, 'dist/THIRD-PARTY-LICENSES.txt'), path.join(bundle, 'THIRD-PARTY-LICENSES.txt'));
   await mkdir(path.join(bundle, 'app/scripts'), { recursive: true });
   for (const name of ['still-agent.mjs', 'still-mcp.mjs', 'unreal_import.py', 'unreal_retarget.py']) {
     await cp(path.join(root, 'scripts', name), path.join(bundle, 'app/scripts', name));
@@ -87,17 +91,37 @@ try {
   const rights = JSON.parse(await readFile(path.join(root, 'backend/model-rights.json'), 'utf8'));
   const runtimes = [];
   const omitted = [];
+  const motionbricksFile = 'motionbricks/runtime.json';
+  if (process.env.STILL_BUNDLE_MOTIONBRICKS === '1') {
+    console.log('Bundling the pinned MotionBricks CPU model (723 MiB).');
+    // This verifies the pinned bytes and runs actual inference using the same
+    // Python 3.10 CPU runtime that the installed app will use.
+    execFileSync(python, ['-B', 'scripts/setup_motionbricks.py', '--data-root', root], { cwd: root, stdio: 'inherit', windowsHide: true });
+    const runtime = JSON.parse(await readFile(path.join(root, '.local', motionbricksFile), 'utf8'));
+    const directory = path.join(local, 'motionbricks');
+    await mkdir(directory);
+    const names = ['mmm_v6_soma_fp32.onnx', 'MODEL-LICENSE.md', 'NVIDIA-Open-Model-Agreement.pdf'];
+    for (const name of names) await cp(path.join(root, '.local/motionbricks', name), path.join(directory, name));
+    if (await fileHash(path.join(directory, names[0])) !== runtime.config.modelSha256) throw new Error('The copied MotionBricks model failed verification.');
+    runtime.python = '$RUNTIME/python/python.exe';
+    runtime.config.modelPath = '$RUNTIME/local/motionbricks/' + names[0];
+    runtime.requiredFiles = names.map(name => '$RUNTIME/local/motionbricks/' + name);
+    runtimes.push({ file: motionbricksFile, runtime });
+  } else omitted.push({ provider: 'motionbricks', reason: 'Optional MotionBricks model is not installed. See docs/motionbricks.md.' });
   const relative = absolute => {
     const rel = path.relative(root, absolute).replaceAll('\\', '/');
     if (!rel.startsWith('.local/') || rel.includes('../')) throw new Error('A model path escaped the local model directory.');
     return rel;
   };
   for (const [provider, file] of [['owned_humanoid', 'owned-humanoid/runtime.json'], ['quadruped', 'quadruped/runtime.json'], ['physics', 'physics-proof/runtime.json']]) {
-    if (provider === 'owned_humanoid' && !await exists(path.join(root, '.local', file))) {
-      omitted.push({ provider, reason: 'No humanoid model has passed the current quality gate. Use curve interpolation or installed licensed Cascadeur.' });
+    if (provider !== 'physics' && !await exists(path.join(root, '.local', file))) {
+      omitted.push({ provider, reason: 'No locally installed, release-approved model. Use curve interpolation or install an approved model.' });
       continue;
     }
-    const runtime = JSON.parse(await readFile(path.join(root, '.local', file), 'utf8'));
+    const runtime = provider === 'physics' ? {
+      config: { maxSeconds: 35, maxIterations: 40, maxSolveFrames: 241 },
+      provider: { id: 'mujoco', name: 'MuJoCo dynamics', learned: false, description: 'Articulated dynamics correction with frictional floor contacts. Body inertia and joint cones are approximate.' },
+    } : JSON.parse(await readFile(path.join(root, '.local', file), 'utf8'));
     if (provider !== 'physics') {
       execFileSync(python, ['-m', 'backend.model_rights', provider, '--assert-release', '--runtime', path.join(root, '.local', file)], { cwd: root, stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true });
       const model = runtime.config.checkpointPath;
@@ -109,8 +133,12 @@ try {
         await mkdir(path.dirname(target), { recursive: true });
         await cp(path.join(model, filename), target);
       }
-      // Validate the copied bytes, not only the source model.
-      execFileSync(path.join(deps, 'python/python.exe'), ['-c', 'from backend.model_bundle import verify_bundle; import sys; verify_bundle(sys.argv[1], sys.argv[2], approved_files_hash=sys.argv[3])', destination, rights.providers[provider].approvedCorpusSha256, rights.providers[provider].approvedCorpusFilesSha256], { cwd: path.join(bundle, 'app'), stdio: 'inherit', windowsHide: true });
+      // Validate the copied bytes, not only the source model. The embedded Python
+      // needs an extended Windows path when a worktree pushes staging past MAX_PATH.
+      // -B keeps this check from writing .pyc files into the runtime: they record the
+      // copy time, so they would give every build a new runtime id and force the full
+      // Setup on every update.
+      execFileSync(path.join(deps, 'python/python.exe'), ['-B', '-c', 'from backend.model_bundle import verify_bundle; import sys; verify_bundle(sys.argv[1], sys.argv[2], approved_files_hash=sys.argv[3])', path.toNamespacedPath(destination), rights.providers[provider].approvedCorpusSha256, rights.providers[provider].approvedCorpusFilesSha256], { cwd: path.join(bundle, 'app'), stdio: 'inherit', windowsHide: true });
       runtime.config.checkpointPath = '$DATA/' + rel;
       if (!runtime.installation) {
         for (const artifact of rights.providers[provider]?.evidenceArtifacts || []) {
@@ -127,26 +155,18 @@ try {
   }
   const blender = process.env.STILL_BLENDER_DIRECTORY || 'C:/Program Files/Blender Foundation/Blender 5.2';
   await cp(blender, path.join(deps, 'blender'), { recursive: true, filter: filename => !filename.endsWith('.pdb') && !filename.endsWith('__pycache__') });
-  const cliPin = JSON.parse(await readFile(path.join(root, 'desktop/github-cli.json'), 'utf8'));
-  const cliCache = path.join(localRoot, 'desktop-cache', `github-${cliPin.version}`);
-  const gh = path.join(cliCache, 'bin/gh.exe');
-  const digest = async filename => createHash('sha256').update(await readFile(filename)).digest('hex');
-  if (!await exists(gh) || await digest(gh) !== cliPin.executableSha256) {
-    await mkdir(cliCache, { recursive: true });
-    const response = await fetch(cliPin.url, { signal: AbortSignal.timeout(120000) });
-    if (!response.ok) throw new Error('The pinned official GitHub CLI could not be downloaded.');
-    const archive = Buffer.from(await response.arrayBuffer());
-    if (createHash('sha256').update(archive).digest('hex') !== cliPin.archiveSha256) throw new Error('Official GitHub CLI archive hash mismatch.');
-    const zip = path.join(cliCache, 'gh.zip');
-    await writeFile(zip, archive);
-    execFileSync(path.join(process.env.SystemRoot || 'C:/Windows', 'System32/tar.exe'), ['-xf', zip, '-C', cliCache], { windowsHide: true });
-  }
-  if (await digest(gh) !== cliPin.executableSha256) throw new Error('Official Windows x64 GitHub CLI executable hash mismatch.');
-  await mkdir(path.join(deps, 'github'));
-  await cp(gh, path.join(deps, 'github/gh.exe'));
-  await cp(path.join(cliCache, 'LICENSE'), path.join(deps, 'github/LICENSE.txt'));
-  await writeFile(path.join(bundle, 'THIRD-PARTY-NOTICE.txt'), 'Still includes Python, PyTorch CPU, NumPy, SciPy, safetensors, MuJoCo, and unmodified Blender. Their license files are included in the runtime folders. Blender source: https://projects.blender.org/blender/blender (5.2). Motion training sources: Quaternius CC0 Universal Animation Library and Ultimate Animated Animals. No CondMDI weights or Epic/Cascadeur assets are included.\n');
-  for (const required of ['deps/python/python.exe', 'deps/blender/blender.exe', 'deps/github/gh.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
+  const blenderVersionOutput = execFileSync(path.join(blender, 'blender.exe'), ['--version'], { encoding: 'utf8', windowsHide: true });
+  const blenderVersion = /^Blender (\d+\.\d+\.\d+)/m.exec(blenderVersionOutput)?.[1];
+  const blenderCommit = /build hash: ([a-f0-9]+)/.exec(blenderVersionOutput)?.[1];
+  if (!blenderVersion || !blenderCommit) throw new Error('Cannot identify the bundled Blender version and source commit.');
+  await writeFile(path.join(bundle, 'blender-source.json'), JSON.stringify({
+    version: blenderVersion, commit: blenderCommit,
+    archive: `blender-${blenderVersion}.tar.xz`,
+    upstream: `https://download.blender.org/source/blender-${blenderVersion}.tar.xz`,
+    dependencies: 'https://download.blender.org/source/',
+    buildInstructions: 'https://developer.blender.org/docs/handbook/building_blender/',
+  }, null, 2) + '\n');
+  for (const required of ['deps/python/python.exe', 'deps/blender/blender.exe', 'app/dist/index.html', 'app/server/engine.mjs']) await access(path.join(bundle, required));
   await writeFile(path.join(bundle, 'runtime.json'), JSON.stringify({ id: await contentHash(deps) }) + '\n');
   // This completion marker is written only after every dependency and model
   // validates. Publishing replaces the whole release, including removed files.
