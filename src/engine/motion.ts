@@ -13,7 +13,7 @@ const quaternion = (q: Quat) => new THREE.Quaternion().fromArray(q).normalize();
 
 // Three.js/glTF store animation times as Float32. Keep only one sample per
 // representable instant, favoring exact authored times and exact endpoints.
-function bakeTimes(start: number, end: number, authored: number[] = []): number[] {
+export function bakeTimes(start: number, end: number, authored: number[] = []): number[] {
   const times = new Map<number, number>();
   const insert = (time: number) => times.set(Math.fround(time), time);
   for (let frame = 0; frame < Math.ceil((end - start) * 30); frame++) insert(start + frame / 30);
@@ -72,6 +72,11 @@ export function createPoseSampler(keys: PoseKey[], mode: InterpolationMode): (ti
     return { position: interpolate('position'), quaternion: quaternion(bone.quaternion).slerp(quaternion(end.quaternion), ease).toArray() as Quat, scale: interpolate('scale') };
   });
   };
+}
+
+/** A fresh timeline for a character: its rest pose at the start and at the end. */
+export function blankKeys(asset: CharacterAsset, duration = 4): PoseKey[] {
+  return [0, duration].map(time => ({ id: crypto.randomUUID(), time, pose: copyPose(asset.restPose) }));
 }
 
 export function createDemoKeys(asset: CharacterAsset): PoseKey[] {

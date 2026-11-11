@@ -11,7 +11,7 @@ import Viewport from './components/Viewport';
 import type { ViewportAPI } from './components/Viewport';
 import { connectAgentBridge } from './engine/agentBridge';
 import type { AgentConnection } from './engine/agentBridge';
-import { executeAgentCommand, READ_COMMANDS } from './engine/agentCommands';
+import { executeAgentCommand, POSE_EVALUATING_READS, READ_COMMANDS } from './engine/agentCommands';
 import type { AgentEditor } from './engine/agentCommands';
 import PoseThumbnail from './components/PoseThumbnail';
 import AnimationTracks from './components/AnimationTracks';
@@ -1302,7 +1302,7 @@ export default function App() {
         if (!agentEditor.current) throw new Error('The editor is still opening.');
           // Skeleton inspection evaluates transforms on the shared Three.js asset.
           // Keep it outside UI generation/export even though it restores its pose.
-          if (agentController.current || (!readOnly || command.method === 'skeleton.inspect') && agentSnapshot.current().busy) throw Object.assign(new Error('The editor is busy. Finish or cancel its current operation first.'), { code: 'EDITOR_BUSY' });
+          if (agentController.current || (!readOnly || POSE_EVALUATING_READS.has(command.method)) && agentSnapshot.current().busy) throw Object.assign(new Error('The editor is busy. Finish or cancel its current operation first.'), { code: 'EDITOR_BUSY' });
         if (command.expectedRevision !== undefined && command.expectedRevision !== agentVersion.current.revision) throw Object.assign(new Error(`The scene changed. Expected revision ${command.expectedRevision}, current revision ${agentVersion.current.revision}. Inspect the scene before retrying.`), { code: 'REVISION_CONFLICT' });
         const controller = new AbortController(); agentController.current = controller;
         const signal = AbortSignal.any([bridgeSignal, controller.signal]);

@@ -72,10 +72,12 @@ The full parameter schemas are in `shared/agent-schema.json` and `GET /api/agent
 | Scene and recovery | `scene.inspect`, `scene.new`, `scene.import`, `scene.rename`, `scene.project`, `scene.restore`, `scene.save`, `scene.archives`, `scene.restoreArchive` |
 | Skeleton and clips | `skeleton.inspect`, `skeleton.rig`, `skeleton.kind`, `clips.list`, `clips.select` |
 | Pose editing | `pose.get`, `pose.set`, `pose.move`, `pose.reset` |
+| Intent posing | `pose.intent`, `pose.describe` (body-part actions in character space; see [vibe animation](vibe-animation.md)) |
+| Review | `review.metrics`, `review.sheet` (animator checks and a labelled contact-sheet PNG; MCP `still_review` returns both, with the sheet as an image) |
 | Authored keys | `keys.list`, `keys.put`, `keys.replace`, `keys.delete`, `keys.move`, `keys.simplify` |
 | Playback and view | `timeline.set`, `playback.set`, `settings.set`, `view.set` |
 | History | `history.undo`, `history.redo` |
-| Motion and physics | `motion.run`, `motion.clear`, `motion.quickGround`, `motion.recover` |
+| Motion and physics | `motion.run`, `motion.carry`, `motion.clear`, `motion.quickGround`, `motion.recover` |
 | Deliverables | `export` |
 
 `keys.replace` validates an entire set of poses before one history change, making it useful for six-pose authoring. `scene.new` and import/restore operations replace the selected tab's scene; the editor archives previous work. Starter rigging remains heuristic, and procedural interpolation/ground assistance is distinct from learned motion providers. Scripts do not bypass those existing limits.

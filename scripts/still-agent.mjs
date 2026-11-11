@@ -167,7 +167,12 @@ export async function createClient(options = {}) {
     const saved = await downloadFile(file.fileId, filename, settings);
     return { ...result, ...saved };
   }
-  return { schema: (settings = {}) => request('/schema', settings), sessions, enqueue, job, wait, call, cancel, uploadFile, deleteFile, importFile, downloadFile, exportFile };
+  /** Read an uploaded artifact (for example a review sheet) into memory. */
+  async function fetchFile(fileId, settings = {}) {
+    identifier(fileId, 'fileId');
+    return request('/files/' + fileId, { signal: settings.signal, binary: true });
+  }
+  return { schema: (settings = {}) => request('/schema', settings), sessions, enqueue, job, wait, call, cancel, uploadFile, importFile, downloadFile, readFile: fetchFile, deleteFile, exportFile };
 }
 
 export async function runCli(argv = process.argv.slice(2)) {

@@ -11,9 +11,13 @@ import type { CharacterAsset, Pose, Vec3 } from '../types';
 import type { Theme } from '../theme';
 import './Viewport.css';
 
+export type SheetView = 'front' | 'side' | 'back' | 'perspective';
+export interface SheetOptions { poses: Pose[]; labels: string[]; views: SheetView[]; cellWidth: number; columns: number; facing: Vec3; title?: string }
 export interface CameraSnapshot { position: Vec3; target: Vec3; fov: number; width: number; height: number; limits: { coordinates: number; fov: [number, number]; distance: [number, number] } }
 export interface ViewportAPI {
   capture: () => Promise<string>;
+  /** Render several poses from fixed body-relative cameras into one labelled PNG. */
+  captureSheet: (options: SheetOptions) => Promise<string>;
   getCamera: () => CameraSnapshot;
   setCamera: (view: { position?: Vec3; target?: Vec3; fov?: number }) => CameraSnapshot;
 }
@@ -528,6 +532,81 @@ export default function Viewport(props: ViewportProps) {
         if (!drag) applyPose(asset, latest.current.pose);
         renderScene(performance.now());
         return canvas.toDataURL('image/png');
+      },
+      captureSheet: async ({ poses, labels, views, cellWidth, columns, facing, title }) => {
+        if (disposed) throw new Error('This viewport is no longer active.');
+        resize();
+        if (width <= 0 || height <= 0) throw new Error('The viewport needs a visible, nonzero canvas size before capture.');
+        if (renderer.getContext().isContextLost()) throw new Error('The viewport graphics context is unavailable.');
+        if (drag) throw new Error('Finish dragging the joint before capturing a review sheet.');
+        const forward = new THREE.Vector3(facing[0], 0, facing[2]);
+        if (forward.lengthSq() < 1e-8) forward.set(0, 0, 1);
+        forward.normalize();
+        const left = new THREE.Vector3(0, 1, 0).cross(forward).normalize();
+        // One framing for every pose so spacing and travel read correctly across cells.
+        const bounds = new THREE.Box3();
+        for (const pose of poses) {
+          applyPose(asset, pose); asset.root.updateMatrixWorld(true);
+          for (const bone of asset.bones) bounds.expandByPoint(bone.getWorldPosition(temporary));
+        }
+        bounds.expandByScalar(Math.max(.05, asset.height * .12));
+        bounds.min.y = Math.min(bounds.min.y, 0);
+        const center = bounds.getCenter(new THREE.Vector3());
+        const corners = [0, 1, 2, 3, 4, 5, 6, 7].map(i => new THREE.Vector3(i & 1 ? bounds.max.x : bounds.min.x, i & 2 ? bounds.max.y : bounds.min.y, i & 4 ? bounds.max.z : bounds.min.z));
+        const aspect = asset.kind === 'humanoid' ? .8 : 1.25;
+        const cellCssW = Math.max(1, Math.floor(Math.min(width, height * aspect))), cellCssH = Math.max(1, Math.floor(cellCssW / aspect));
+        const ratio = renderer.getPixelRatio();
+        const outW = cellWidth, outH = Math.round(cellWidth / aspect), labelH = 20, viewH = 22, titleH = title ? 30 : 0;
+        const cols = Math.min(columns, poses.length), rowsPerView = Math.ceil(poses.length / cols);
+        const sheet = document.createElement('canvas');
+        sheet.width = cols * outW;
+        sheet.height = titleH + views.length * (viewH + rowsPerView * (outH + labelH));
+        const context = sheet.getContext('2d');
+        if (!context) throw new Error('The review sheet canvas is unavailable.');
+        context.fillStyle = '#121519'; context.fillRect(0, 0, sheet.width, sheet.height);
+        context.textBaseline = 'middle';
+        if (title) { context.fillStyle = '#f2f6df'; context.font = '600 15px system-ui, sans-serif'; context.fillText(title, 10, titleH / 2); }
+        const saved = { position: camera.position.clone(), target: orbit.target.clone(), aspect: camera.aspect, damping: orbit.enableDamping };
+        orbit.enableDamping = false;
+        try {
+          let y = titleH;
+          for (const view of views) {
+            context.fillStyle = '#9fb08f'; context.font = '600 13px system-ui, sans-serif';
+            context.fillText(`${view.toUpperCase()} VIEW`, 10, y + viewH / 2);
+            y += viewH;
+            const dir = view === 'front' ? forward.clone() : view === 'back' ? forward.clone().negate() : view === 'side' ? left.clone() : forward.clone().multiplyScalar(.92).addScaledVector(left, .64).add(new THREE.Vector3(0, .3, 0)).normalize();
+            const right = new THREE.Vector3(0, 1, 0).cross(dir).normalize(), up = dir.clone().cross(right).normalize();
+            let halfW = 0, halfH = 0, near = 0;
+            for (const corner of corners) {
+              const offset = corner.clone().sub(center);
+              halfW = Math.max(halfW, Math.abs(offset.dot(right))); halfH = Math.max(halfH, Math.abs(offset.dot(up))); near = Math.max(near, offset.dot(dir));
+            }
+            const tan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+            const distance = Math.max(halfH / tan, halfW / (tan * aspect)) * 1.04 + near;
+            camera.aspect = aspect; camera.updateProjectionMatrix();
+            camera.position.copy(center).addScaledVector(dir, distance); orbit.target.copy(center); camera.lookAt(center);
+            renderer.setScissorTest(true);
+            renderer.setViewport(0, 0, cellCssW, cellCssH); renderer.setScissor(0, 0, cellCssW, cellCssH);
+            poses.forEach((pose, i) => {
+              const x = (i % cols) * outW, top = y + Math.floor(i / cols) * (outH + labelH);
+              renderPose(pose, true, cellCssW, 0, false);
+              context.drawImage(canvas, 0, canvas.height - cellCssH * ratio, cellCssW * ratio, cellCssH * ratio, x, top, outW, outH);
+              context.strokeStyle = '#2c333b'; context.strokeRect(x + .5, top + .5, outW - 1, outH + labelH - 1);
+              context.fillStyle = '#1b2026'; context.fillRect(x, top + outH, outW, labelH);
+              context.fillStyle = labels[i]?.includes('◆') ? '#eab466' : '#d6dccb'; context.font = '12px system-ui, sans-serif';
+              context.fillText((labels[i] ?? '').slice(0, Math.floor(outW / 6.5)), x + 6, top + outH + labelH / 2);
+            });
+            y += rowsPerView * (outH + labelH);
+          }
+        } finally {
+          renderer.setScissorTest(false);
+          camera.position.copy(saved.position); orbit.target.copy(saved.target);
+          camera.aspect = saved.aspect; camera.updateProjectionMatrix(); camera.lookAt(saved.target);
+          orbit.update(); orbit.enableDamping = saved.damping;
+          applyPose(asset, latest.current.pose);
+          renderScene(performance.now(), true);
+        }
+        return sheet.toDataURL('image/png');
       },
       setCamera: view => {
         if (disposed) throw new Error('This viewport is no longer active.');

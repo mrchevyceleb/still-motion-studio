@@ -275,17 +275,18 @@
       "resultDescription": "Compact scene state including revision."
     },
     "scene.new": {
-      "description": "Create a new humanoid or quadruped scene. Existing work is archived by the application.",
+      "description": "Start a new scene. keepCharacter:true starts a fresh animation (rest pose, empty timeline) on the character already loaded, so there is nothing to re-import. Otherwise pass kind for a practice humanoid or quadruped. The current scene is saved in the library first.",
       "mutating": true,
       "paramsSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "kind"
-        ],
         "properties": {
           "kind": {
             "$ref": "#/$defs/kind"
+          },
+          "keepCharacter": {
+            "type": "boolean",
+            "description": "Keep the current character and start an empty timeline on it."
           },
           "blank": {
             "type": "boolean"
@@ -574,6 +575,366 @@
       },
       "resultDescription": "Updated pose/key and revision. An unreachable target may only be approached."
     },
+    "pose.describe": {
+      "description": "Describe the pose at time (or the playhead) in character space: key part positions [right, up, forward] meters from the floor under the hips, elbow/knee bends, torso pitch/lean, chest and head yaw, foot heights, warnings (hyperextension, floor penetration), and the body-part names this rig resolved. Use this instead of raw quaternions to check a pose.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "{time, frame, parts, angles, ground, warnings, bodyParts}."
+    },
+    "pose.intent": {
+      "description": "Pose by intent instead of joint math, then key it. Actions apply in order in character space ([right, up, forward], meters, turned with the hips): turn {part, pitch, yaw, roll} rotates about body axes (torso spreads over the spine; hips keep feet planted); aim {part, direction} points a segment (upper arm, thigh, forearm, shin...); bend {part: elbow/knee, degrees}; reach {part, to|by, relativeTo?, pole?} uses two-bone IK for hands/feet; move {part: hips, to|by, plantFeet} crouches/shifts weight with feet pinned; lookAt {part: head, at}; mirror {from: left|right, limbs}; reset {part|\"all\"}; grip {part: hand, on: prop bone, along?} wraps a hand around a held prop the way the rig holds it, with a straight wrist (on the holding hand it rolls the hand about the shaft; with no pole it picks the elbow direction that keeps the wrist straightest; the other hand grips at meters along the shaft, negative toward the butt). hold {prop, at, toward, relativeTo?, spread?, hands?} is the way to pose a held weapon or tool: say where the point between the hands goes and where the working end points, and the engine places both hands, keeps the prop clear of the body, head, hat and floor (turning it up to 30°, moving the hands up to 10 cm or ducking the head if it must) and reports what it changed. After keying, run motion.carry so in-betweens follow the prop too. dryRun previews without keying.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "actions"
+        ],
+        "properties": {
+          "time": {
+            "$ref": "#/$defs/time"
+          },
+          "actions": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "do"
+              ],
+              "properties": {
+                "do": {
+                  "type": "string",
+                  "enum": [
+                    "turn",
+                    "aim",
+                    "bend",
+                    "reach",
+                    "move",
+                    "lookAt",
+                    "mirror",
+                    "reset",
+                    "grip",
+                    "hold"
+                  ]
+                },
+                "part": {
+                  "description": "Body part: hips, spine, chest, torso (whole spine), neck, head, left/right Shoulder, UpperArm, Forearm (alias Elbow), Hand, Thigh, Shin (alias Knee), Foot, Toe; quadrupeds front/hind Left/Right Upper, Lower, Foot; tail, tailTip. Exact bone names and indices also work. pose.describe lists what this rig resolved.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "pitch": {
+                  "type": "number",
+                  "minimum": -360,
+                  "maximum": 360,
+                  "description": "turn: degrees; + tips the top forward (bow/nod)."
+                },
+                "yaw": {
+                  "type": "number",
+                  "minimum": -360,
+                  "maximum": 360,
+                  "description": "turn: degrees; + turns the front toward the character's right."
+                },
+                "roll": {
+                  "type": "number",
+                  "minimum": -360,
+                  "maximum": 360,
+                  "description": "turn: degrees; + tips the top toward the character's right."
+                },
+                "direction": {
+                  "description": "Named direction (forward, back, up, down, left, right, out, in, or combinations such as \"forward-up\" or \"out-down\") or [right, up, forward].",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40
+                    },
+                    {
+                      "$ref": "#/$defs/vec3"
+                    }
+                  ]
+                },
+                "degrees": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 175,
+                  "description": "bend: absolute elbow/knee bend, 0 = straight."
+                },
+                "to": {
+                  "$ref": "#/$defs/vec3",
+                  "description": "reach/move: target [right, up, forward] meters from the floor under the hips, or from relativeTo."
+                },
+                "by": {
+                  "$ref": "#/$defs/vec3",
+                  "description": "reach/move: offset [right, up, forward] meters from the part's current position."
+                },
+                "relativeTo": {
+                  "description": "Body part: hips, spine, chest, torso (whole spine), neck, head, left/right Shoulder, UpperArm, Forearm (alias Elbow), Hand, Thigh, Shin (alias Knee), Foot, Toe; quadrupeds front/hind Left/Right Upper, Lower, Foot; tail, tailTip. Exact bone names and indices also work. pose.describe lists what this rig resolved.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "at": {
+                  "description": "lookAt: a body part or a [right, up, forward] point. hold: [right, up, forward] for the point between the hands.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    {
+                      "$ref": "#/$defs/vec3"
+                    }
+                  ]
+                },
+                "pole": {
+                  "description": "reach on a limb: where the elbow/knee points (named direction or [right, up, forward]). Defaults keep the current bend, else knees forward and elbows back.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40
+                    },
+                    {
+                      "$ref": "#/$defs/vec3"
+                    }
+                  ]
+                },
+                "plantFeet": {
+                  "type": "boolean",
+                  "description": "move/turn on the hips: keep feet where they were (default true)."
+                },
+                "keepOrientation": {
+                  "type": "boolean",
+                  "description": "reach: keep the end bone's world rotation (default true for feet, false for hands)."
+                },
+                "pointer": {
+                  "description": "aim: a bone carried by the part (a weapon or prop bone such as a sword held in the hand) to point in direction, instead of the part itself. Bones without children point along their own +Y axis.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "on": {
+                  "description": "grip: the held prop bone (such as a weapon carried by one hand) to wrap the hand around.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "reverse": {
+                  "type": "boolean",
+                  "description": "grip with the other hand: true takes the shaft the opposite way round to the holding hand's mirrored grip (palm turned over). Omit to pick whichever keeps the wrist straighter; the result note says which it used."
+                },
+                "along": {
+                  "type": "number",
+                  "minimum": -5,
+                  "maximum": 5,
+                  "description": "grip: meters along the shaft. On the other hand: from the holding hand (positive toward the tip, negative toward the butt); required. On the holding hand: slides the prop through it from its rest grip (negative chokes down toward the butt so a long weapon swings clear of the body). The note reports how much shaft sits behind each hand."
+                },
+                "from": {
+                  "type": "string",
+                  "enum": [
+                    "left",
+                    "right"
+                  ],
+                  "description": "mirror: source side."
+                },
+                "limbs": {
+                  "type": "string",
+                  "enum": [
+                    "arms",
+                    "legs",
+                    "all"
+                  ],
+                  "description": "mirror: which limbs (default all)."
+                },
+                "weight": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Blend 0–1 toward the requested change (default 1)."
+                },
+                "prop": {
+                  "description": "hold: the held prop bone (for example \"Pitchfork\"), carried under a hand.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "toward": {
+                  "description": "hold: where the prop's working end points: a named direction (\"back-up\", \"forward-down\") or [right, up, forward].",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40
+                    },
+                    {
+                      "$ref": "#/$defs/vec3"
+                    }
+                  ]
+                },
+                "spread": {
+                  "type": "number",
+                  "minimum": 0.05,
+                  "maximum": 2,
+                  "description": "hold: meters between the two hands (default 0.3 on a 1.8 m character); the back hand rides just in front of the butt."
+                },
+                "hands": {
+                  "type": "string",
+                  "enum": [
+                    "one",
+                    "both"
+                  ],
+                  "description": "hold: both (default when the prop is long enough) or one."
+                },
+                "clear": {
+                  "type": "boolean",
+                  "description": "hold: false keeps the exact request even if it cuts into the body, hat or floor (default true: the nearest clean variation is used and reported)."
+                }
+              }
+            }
+          },
+          "label": {
+            "$ref": "#/$defs/name"
+          },
+          "dryRun": {
+            "type": "boolean"
+          }
+        }
+      },
+      "resultDescription": "Keyed pose (unless dryRun), per-action results (IK error when out of reach), and the pose.describe report of the new pose."
+    },
+    "review.metrics": {
+      "description": "Animator checks over the whole take (or start–end) at the scene frame rate: foot sliding while planted, floor penetration, floating or floaty jumps vs. gravity, single-frame pops, backward knees, off-balance slow moments, dead holds, plus contact spans, hips travel/speed, hand top speed and loop seam. Read this after every change.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "$ref": "#/$defs/time"
+          },
+          "end": {
+            "$ref": "#/$defs/time"
+          }
+        }
+      },
+      "resultDescription": "{issues:[{severity, kind, time, part, message}], summary}."
+    },
+    "review.sheet": {
+      "description": "Render a labelled contact sheet PNG of the motion so an agent can see it: evenly spaced frames (default 8 across the take), explicit times, or atKeys, from 1–3 body-relative views (default side + front). Every cell uses the same framing so travel and spacing read correctly; key frames are marked ◆.",
+      "mutating": false,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "frames": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 24
+          },
+          "start": {
+            "$ref": "#/$defs/time"
+          },
+          "end": {
+            "$ref": "#/$defs/time"
+          },
+          "times": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 24,
+            "items": {
+              "$ref": "#/$defs/time"
+            }
+          },
+          "atKeys": {
+            "type": "boolean"
+          },
+          "views": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "string",
+              "enum": [
+                "front",
+                "side",
+                "back",
+                "perspective"
+              ]
+            }
+          },
+          "cellWidth": {
+            "type": "integer",
+            "minimum": 96,
+            "maximum": 400
+          },
+          "columns": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "name": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      },
+      "resultDescription": "Uploaded PNG {fileId, name, size, downloadUrl}, times and views. The MCP still_review tool returns it as an image."
+    },
     "keys.list": {
       "description": "List authored keyframes; includePoses returns full local transforms.",
       "mutating": false,
@@ -779,7 +1140,7 @@
                 "maximum": 100
               }
             },
-            "description": "Exact camera coordinates; position-to-target distance must be 1.2\u201315 world units. Read camera limits in scene.inspect."
+            "description": "Exact camera coordinates; position-to-target distance must be 1.2–15 world units. Read camera limits in scene.inspect."
           }
         },
         "not": {
@@ -1114,6 +1475,38 @@
         }
       },
       "resultDescription": "Track details or updated scene state."
+    },
+    "motion.carry": {
+      "description": "Bake clean in-betweens for a held prop: between the authored keys the prop travels on an arc around the shoulders and both hands are re-solved to hold it every frame, and wherever it would cut into the body, hat or floor or bend a wrist badly, it is slid, tipped or the elbows swivelled as one smooth bump across that span; planted feet are pinned too. Writes generated motion (authored keys stay editable; motion.clear removes it). Re-run it after editing keys.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prop"
+        ],
+        "properties": {
+          "prop": {
+            "description": "The held prop bone, for example \"Pitchfork\".",
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              }
+            ]
+          },
+          "ground": {
+            "type": "boolean",
+            "description": "Pin planted feet as well (default true)."
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state plus carry {prop, frames, bothHands, nudgedFrames, nudges [{from, to, slideCm, tipDegrees, elbowSwivel}], worstCutCm, worstSinkCm, worstWrist {degrees, at}} measured on the final grounded take and warnings."
     }
   }
 }

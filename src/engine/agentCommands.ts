@@ -1,7 +1,10 @@
 import { activeTrack, combinedInterpolation, combinedKeys, createAnimationTrack, createLayerSampler, editableKeys, fitEmptyTracks, putLayerKey, recordTrackKey, trackEditDuration, underlyingTrackSampler } from './tracks';
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter, swapCharacterLook } from './character';
 import { morphKeyData } from './morphs';
-import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
+import { applyPhysics, blankKeys, buildAnimationClip, createDemoKeys, createPoseSampler, sampleClip, samplePose, simplifyKeys } from './motion';
+import { applyIntent, describePose, restForward } from './agentIntent';
+import { carryProp } from './propHold';
+import { reviewMotion } from './agentReview';
 import { generateMotion, getEngineStatus, makeMotionRequest, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
@@ -9,6 +12,7 @@ import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPo
 import { editScene, listArchives, listScenes, readArchive, saveSceneCopy } from './project';
 import { sceneThumbnail } from './sceneThumbnail';
 import { DEFAULT_SETTINGS } from '../types';
+import type { SheetOptions, SheetView } from '../components/Viewport';
 import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, TrackState } from '../types';
 
 export interface AgentStudio extends TrackState {
@@ -31,12 +35,15 @@ export interface AgentEditor {
   timeline(time: number, fps?: number): void;
   play(playing: boolean): void;
   view(patch: Partial<AgentView>): void;
-  viewport: { capture(): Promise<string>; getCamera(): unknown; setCamera(patch: { position?: [number, number, number]; target?: [number, number, number]; fov?: number }): unknown } | null;
+  viewport: { capture(): Promise<string>; captureSheet(options: SheetOptions): Promise<string>; getCamera(): unknown; setCamera(patch: { position?: [number, number, number]; target?: [number, number, number]; fov?: number }): unknown } | null;
   undo(): void; redo(): void;
   progress(message: string, progress: number): void;
 }
 
-export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'keys.list', 'clips.list', 'tracks.list']);
+export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'pose.describe', 'review.metrics', 'keys.list', 'clips.list', 'tracks.list']);
+/** Reads that temporarily pose the shared Three.js character; never run them during UI jobs. */
+export const POSE_EVALUATING_READS = new Set(['skeleton.inspect', 'pose.describe', 'review.metrics']);
+const SHEET_VIEWS = new Set<SheetView>(['front', 'side', 'back', 'perspective']);
 const copy = <T,>(value: T): T => structuredClone(value);
 const generationReport = (generation: MotionGeneration | undefined) => {
   if (!generation) return null;
@@ -135,10 +142,19 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       return editor.snapshot();
     }
     case 'scene.new': {
+      if (params.keepCharacter) {
+        // A fresh animation on the character already in the scene; the current scene stays in the library.
+        requireRig();
+        const title = nameOf(params.name, `${asset.name.slice(0, 180)} · new move`);
+        await editor.archive(); signal.throwIfAborted();
+        editor.replace(asset, { title, keys: blankKeys(asset), duration: 4, settings: { ...DEFAULT_SETTINGS } }, 0);
+        return editor.snapshot();
+      }
+      if (params.kind === undefined) throw new Error('scene.new needs kind ("humanoid" or "quadruped"), or keepCharacter:true to start a fresh animation on the current character.');
       const kind = kindOf(params.kind), title = nameOf(params.name, params.blank ? 'My next move' : kind === 'humanoid' ? 'A little hello' : 'Four little steps');
       await editor.archive(); signal.throwIfAborted();
       const next = createDemoCharacter(kind);
-      const keys = params.blank ? [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: 4, pose: copy(next.restPose) }] : createDemoKeys(next);
+      const keys = params.blank ? blankKeys(next) : createDemoKeys(next);
       editor.replace(next, { title, keys, duration: 4, settings: { ...DEFAULT_SETTINGS } }, params.blank ? 0 : .8);
       return editor.snapshot();
     }
@@ -204,6 +220,49 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const follow = params.follow === undefined ? undefined : number(params.follow, 'Follow feel', 0, 1);
       const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number], follow);
       return { ...put(time, result.pose), boneIndex: result.boneIndex, target: result.target, achieved: result.achieved, error: result.error };
+    }
+    case 'pose.describe': { requireRig(); const time = atTime(); return { time, ...describePose(asset, poseAt(time)) }; }
+    case 'pose.intent': {
+      requireRig(); const time = atTime();
+      const { pose, results, description } = applyIntent(asset, poseAt(time), params.actions);
+      if (params.dryRun === true) return { time, dryRun: true, results, ...description };
+      const { activeTrackId, key } = put(time, pose, params.label as string | undefined);
+      return { activeTrackId, key: { id: key.id, time: key.time, label: key.label }, results, ...description };
+    }
+    case 'review.metrics': {
+      requireRig();
+      const start = number(params.start ?? 0, 'Start', 0, studio.duration), end = number(params.end ?? studio.duration, 'End', 0, studio.duration);
+      if (end <= start) throw new Error('End must be after start.');
+      return { ...reviewMotion(asset, createPoseSampler(sequence, mode), start, end, editor.fps, editKeys.map(({ time, label }) => ({ time, label }))) };
+    }
+    case 'review.sheet': {
+      requireRig();
+      if (!editor.viewport) throw new Error('The viewport is not ready.');
+      const views = (params.views ?? ['side', 'front']) as SheetView[];
+      if (!Array.isArray(views) || !views.length || views.length > 3 || views.some(view => !SHEET_VIEWS.has(view))) throw new Error('views must list 1–3 of front, side, back, perspective.');
+      let times: number[];
+      const start = number(params.start ?? 0, 'Start', 0, studio.duration), end = number(params.end ?? studio.duration, 'End', 0, studio.duration);
+      if (end <= start) throw new Error('End must be after start.');
+      if (Array.isArray(params.times)) times = params.times.map(t => number(t, 'Time', 0, studio.duration));
+      else if (params.atKeys === true) {
+        times = editKeys.map(key => key.time).filter(time => time >= start - 1e-6 && time <= end + 1e-6);
+        if (!times.length) throw new Error('There are no keys between start and end. Widen the range or review evenly spaced frames instead.');
+        if (times.length > 24) throw new Error(`There are ${times.length} keys in this range; a sheet holds 24. Narrow start/end to review them in parts.`);
+      } else {
+        const count = number(params.frames ?? 8, 'Frame count', 2, 24);
+        if (!Number.isInteger(count)) throw new Error('Frame count must be an integer.');
+        times = Array.from({ length: count }, (_, i) => start + (end - start) * i / (count - 1));
+      }
+      if (times.length < 1 || times.length > 24) throw new Error('Review 1–24 frames at a time.');
+      const sampleAt = createPoseSampler(sequence, mode);
+      const labels = times.map(time => {
+        const key = editKeys.find(k => Math.abs(k.time - time) < .5 / editor.fps);
+        return `${time.toFixed(2)}s${key ? ` ◆ ${key.label ?? 'key'}` : ''}`;
+      });
+      const cellWidth = number(params.cellWidth ?? 200, 'Cell width', 96, 400), columns = number(params.columns ?? 6, 'Columns', 1, 12);
+      const data = await editor.viewport.captureSheet({ poses: times.map(sampleAt), labels, views, cellWidth, columns: Math.round(columns), facing: restForward(asset).toArray() as [number, number, number], title: `${studio.title} · ${studio.generated ? 'generated take' : 'authored keys'} · ◆ = key` });
+      signal.throwIfAborted();
+      return { ...await artifact(await (await fetch(data)).blob(), `${nameOf(params.name, studio.title || 'Animation').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}-review.png`), times: times.map(t => Math.round(t * 1000) / 1000), views };
     }
     case 'keys.list': return { activeTrackId: layer?.id ?? null, keys: params.includePoses ? copy(editKeys) : editKeys.map(({ id, time, label }) => ({ id, time, label })) };
     case 'keys.replace': {
@@ -295,9 +354,18 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     case 'motion.clear': commit({ ...studio, generated: undefined, generation: undefined }); return editor.snapshot();
     case 'motion.quickGround': {
       requireRig();
-      try { commit({ ...studio, keys: applyPhysics(asset, studio.keys, studio.settings), sourceClip: null }); }
+      // Grounding means planted feet stay put, whatever the scene's floor-contact toggle says.
+      try { commit({ ...studio, keys: applyPhysics(asset, studio.keys, { ...studio.settings, floorContact: true }), sourceClip: null }); }
       finally { applyPose(asset, editor.pose); }
       return editor.snapshot();
+    }
+    case 'motion.carry': {
+      requireRig();
+      try {
+        const carry = carryProp(asset, studio.keys, studio.settings, params.prop, params.ground !== false);
+        commit({ ...studio, generated: carry.keys, generation: { name: `Carry ${carry.metrics.prop}`, kind: 'inbetween', metrics: carry.metrics, warnings: carry.warnings } });
+        return { ...editor.snapshot(), carry: carry.metrics, warnings: carry.warnings };
+      } finally { applyPose(asset, editor.pose); }
     }
     case 'motion.run': {
       requireRig();
