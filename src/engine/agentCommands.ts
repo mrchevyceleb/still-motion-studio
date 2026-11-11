@@ -1,15 +1,19 @@
+import { activeTrack, combinedInterpolation, combinedKeys, createAnimationTrack, createLayerSampler, editableKeys, fitEmptyTracks, putLayerKey, recordTrackKey, trackEditDuration, underlyingTrackSampler } from './tracks';
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
-import { morphKeyData } from './morphs';
-import { applyPhysics, buildAnimationClip, createDemoKeys, sampleClip, samplePose, simplifyKeys } from './motion';
+import { applyPhysics, blankKeys, buildAnimationClip, createDemoKeys, createPoseSampler, sampleClip, samplePose, simplifyKeys } from './motion';
+import { applyIntent, describePose, restForward } from './agentIntent';
+import { reviewMotion } from './agentReview';
 import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
 import { downloadAgentFile, uploadAgentFile } from './agentBridge';
 import { editLocalPose, inspectSkeleton, moveJoint, resolveBone, validateAgentPose } from './agentPose';
-import { listArchives, readArchive } from './project';
+import { editScene, listArchives, listScenes, readArchive, saveSceneCopy } from './project';
+import { sceneThumbnail } from './sceneThumbnail';
 import { DEFAULT_SETTINGS } from '../types';
-import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind } from '../types';
+import type { SheetOptions, SheetView } from '../components/Viewport';
+import type { CharacterAsset, InterpolationMode, MotionGeneration, MotionSettings, Pose, PoseKey, ProjectDocument, RigKind, TrackState } from '../types';
 
-export interface AgentStudio {
+export interface AgentStudio extends TrackState {
   title: string; keys: PoseKey[]; generated?: PoseKey[]; generation?: MotionGeneration;
   duration: number; settings: MotionSettings; sourceClip?: number | null; rigKind?: RigKind;
 }
@@ -29,16 +33,19 @@ export interface AgentEditor {
   timeline(time: number, fps?: number): void;
   play(playing: boolean): void;
   view(patch: Partial<AgentView>): void;
-  viewport: { capture(): Promise<string>; getCamera(): unknown; setCamera(patch: { position?: [number, number, number]; target?: [number, number, number]; fov?: number }): unknown } | null;
+  viewport: { capture(): Promise<string>; captureSheet(options: SheetOptions): Promise<string>; getCamera(): unknown; setCamera(patch: { position?: [number, number, number]; target?: [number, number, number]; fov?: number }): unknown } | null;
   undo(): void; redo(): void;
   progress(message: string, progress: number): void;
 }
 
-export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'keys.list', 'clips.list']);
+export const READ_COMMANDS = new Set(['scene.inspect', 'scene.project', 'scene.archives', 'skeleton.inspect', 'pose.get', 'pose.describe', 'review.metrics', 'keys.list', 'clips.list', 'tracks.list']);
+/** Reads that temporarily pose the shared Three.js character; never run them during UI jobs. */
+export const POSE_EVALUATING_READS = new Set(['skeleton.inspect', 'pose.describe', 'review.metrics']);
+const SHEET_VIEWS = new Set<SheetView>(['front', 'side', 'back', 'perspective']);
 const copy = <T,>(value: T): T => structuredClone(value);
 const generationReport = (generation: MotionGeneration | undefined) => {
   if (!generation) return null;
-  const { comparison: _comparison, ...report } = generation;
+  const { comparison: _comparison, source: _source, ...report } = generation;
   return report;
 };
 const uid = () => crypto.randomUUID();
@@ -60,27 +67,61 @@ const nameOf = (value: unknown, fallback: string): string => {
 export async function executeAgentCommand(editor: AgentEditor, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>> {
   signal.throwIfAborted();
   const { asset, studio } = editor;
-  const sequence = studio.generated ?? studio.keys;
-  const mode: InterpolationMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const baseSequence = studio.generated ?? studio.keys;
+  const baseMode: InterpolationMode = studio.generated ? 'linear' : studio.settings.interpolation;
+  const sequence = combinedKeys(studio, asset.restPose, asset.restMorphs, editor.fps);
+  const mode = combinedInterpolation(studio);
+  const layer = activeTrack(studio), editKeys = editableKeys(studio);
+  const sample = createLayerSampler(studio, asset.restPose, asset.restMorphs);
   const atTime = () => number(params.time ?? editor.time, 'Time', 0, studio.duration);
-  const poseAt = (time: number) => samplePose(sequence, time, mode);
+  const poseAt = (time: number) => sample(time).pose;
   const requireRig = () => { if (!asset.rigged || !asset.bones.length) throw new Error('Add a rig before editing poses or exporting animation.'); };
   const fullPose = (value: unknown): Pose => {
     if (!Array.isArray(value) || value.length !== asset.bones.length) throw new Error(`Pose must contain exactly ${asset.bones.length} bone transforms, in skeleton index order.`);
     return validateAgentPose(asset, value);
   };
-  const commit = (next: AgentStudio) => { signal.throwIfAborted(); editor.commit(next); };
+  const commit = (next: AgentStudio) => { signal.throwIfAborted(); editor.commit(fitEmptyTracks(next)); };
+  const commitKeys = (keys: PoseKey[], capture = false, interpolation?: InterpolationMode) => {
+    if (layer?.muted || !layer && studio.baseTrackMuted) throw new Error('Unmute the selected track before editing it.');
+    if (!layer) { commit({ ...studio, keys, sourceClip: null, ...(interpolation ? { settings: { ...studio.settings, interpolation } } : {}) }); return; }
+    let next = { ...layer, keys, ...(interpolation ? { interpolation } : {}) };
+    if (capture) for (const key of keys) next = recordTrackKey(next, key, sample(key.time), underlyingTrackSampler(studio, layer.id, asset.restPose, asset.restMorphs));
+    commit({ ...studio, tracks: studio.tracks!.map(t => t.id === layer.id ? next : t) });
+  };
   const put = (time: number, pose: Pose, label?: string) => {
-    const old = studio.keys.find(key => Math.abs(key.time - time) < 1e-7);
-    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', ...morphKeyData(sequence, time, mode, asset.restMorphs) };
-    commit({ ...studio, sourceClip: null, keys: [...studio.keys.filter(item => item.id !== old?.id), key].sort((a, b) => a.time - b.time) });
+    const old = editKeys.find(key => Math.abs(key.time - time) < 1e-7);
+    const key = { id: old?.id ?? uid(), time: old?.time ?? time, pose, label: label ?? old?.label ?? 'Agent pose', morphs: sample(time).morphs };
+    commit(putLayerKey(studio, key, sample(time), asset.restPose, asset.restMorphs));
     editor.timeline(key.time);
-    return { key: copy(key) };
+    return { activeTrackId: layer?.id ?? null, key: copy(key) };
   };
   const artifact = async (blob: Blob, name: string) => ({ ...await uploadAgentFile(blob, name, signal) });
 
   switch (method) {
-    case 'scene.inspect': return { ...editor.snapshot(), keys: studio.keys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
+    case 'tracks.list': return { activeTrackId: layer?.id ?? null, base: { id: null, name: studio.baseTrackName ?? 'Base motion', muted: !!studio.baseTrackMuted }, tracks: copy(studio.tracks ?? []) };
+    case 'tracks.add': {
+      if ((studio.tracks?.length ?? 0) >= 31) throw new Error('Use up to 32 tracks per scene.');
+      const name = nameOf(params.name, `Track ${(studio.tracks?.length ?? 0) + 2}`).slice(0, 80);
+      const track = createAnimationTrack(name, studio, asset.restPose, asset.restMorphs);
+      commit({ ...studio, tracks: [...studio.tracks ?? [], track], activeTrackId: track.id });
+      return { track: copy(track) };
+    }
+    case 'tracks.select': {
+      if (params.id !== null && !studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist.');
+      commit({ ...studio, activeTrackId: params.id as string | null }); return editor.snapshot();
+    }
+    case 'tracks.update': {
+      const track = studio.tracks?.find(t => t.id === params.id);
+      if (params.id !== null && !track) throw new Error('That track does not exist.');
+      const patch = { ...(params.name !== undefined ? { name: nameOf(params.name, '').slice(0, 80) } : {}), ...(params.muted !== undefined ? { muted: params.muted === true } : {}) };
+      commit(track ? { ...studio, tracks: studio.tracks!.map(t => t.id === track.id ? { ...t, ...patch } : t) } : { ...studio, ...(patch.name !== undefined ? { baseTrackName: patch.name } : {}), ...(patch.muted !== undefined ? { baseTrackMuted: patch.muted } : {}) });
+      return editor.snapshot();
+    }
+    case 'tracks.delete': {
+      if (!studio.tracks?.some(t => t.id === params.id)) throw new Error('That track does not exist. The base track stays in the scene.');
+      commit({ ...studio, tracks: studio.tracks.filter(t => t.id !== params.id), activeTrackId: studio.activeTrackId === params.id ? null : studio.activeTrackId }); return editor.snapshot();
+    }
+    case 'scene.inspect': return { ...editor.snapshot(), activeTrackId: layer?.id ?? null, keys: editKeys.map(({ id, time, label }) => ({ id, time, label })), warnings: asset.warnings, hasReferenceFbx: !!asset.referenceFbx?.byteLength, generation: generationReport(studio.generation) };
     case 'scene.project': return { document: editor.document() };
     case 'scene.archives': return { archives: await listArchives() };
     case 'scene.save': {
@@ -97,10 +138,19 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       return editor.snapshot();
     }
     case 'scene.new': {
+      if (params.keepCharacter) {
+        // A fresh animation on the character already in the scene; the current scene stays in the library.
+        requireRig();
+        const title = nameOf(params.name, `${asset.name.slice(0, 180)} · new move`);
+        await editor.archive(); signal.throwIfAborted();
+        editor.replace(asset, { title, keys: blankKeys(asset), duration: 4, settings: { ...DEFAULT_SETTINGS } }, 0);
+        return editor.snapshot();
+      }
+      if (params.kind === undefined) throw new Error('scene.new needs kind ("humanoid" or "quadruped"), or keepCharacter:true to start a fresh animation on the current character.');
       const kind = kindOf(params.kind), title = nameOf(params.name, params.blank ? 'My next move' : kind === 'humanoid' ? 'A little hello' : 'Four little steps');
       await editor.archive(); signal.throwIfAborted();
       const next = createDemoCharacter(kind);
-      const keys = params.blank ? [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: 4, pose: copy(next.restPose) }] : createDemoKeys(next);
+      const keys = params.blank ? blankKeys(next) : createDemoKeys(next);
       editor.replace(next, { title, keys, duration: 4, settings: { ...DEFAULT_SETTINGS } }, params.blank ? 0 : .8);
       return editor.snapshot();
     }
@@ -138,7 +188,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       editor.replace(next, { ...studio, keys: [{ id: uid(), time: 0, pose: copy(next.restPose) }, { id: uid(), time: studio.duration, pose: copy(next.restPose) }], generated: undefined, generation: undefined, sourceClip: null });
       return { ...editor.snapshot(), warning: 'Template rig fitted; unusual anatomy may need manual cleanup.' };
     }
-    case 'pose.get': { const time = atTime(); return { time, pose: poseAt(time) }; }
+    case 'pose.get': { const time = atTime(); return { activeTrackId: layer?.id ?? null, time, pose: poseAt(time) }; }
     case 'pose.reset': requireRig(); return put(atTime(), copy(asset.restPose));
     case 'pose.set':
     case 'keys.put': {
@@ -151,7 +201,50 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const result = moveJoint(asset, poseAt(time), params.bone as number | string, params.target as [number, number, number]);
       return { ...put(time, result.pose), boneIndex: result.boneIndex, target: result.target, achieved: result.achieved, error: result.error };
     }
-    case 'keys.list': return { keys: params.includePoses ? copy(studio.keys) : studio.keys.map(({ id, time, label }) => ({ id, time, label })) };
+    case 'pose.describe': { requireRig(); const time = atTime(); return { time, ...describePose(asset, poseAt(time)) }; }
+    case 'pose.intent': {
+      requireRig(); const time = atTime();
+      const { pose, results, description } = applyIntent(asset, poseAt(time), params.actions);
+      if (params.dryRun === true) return { time, dryRun: true, results, ...description };
+      const { activeTrackId, key } = put(time, pose, params.label as string | undefined);
+      return { activeTrackId, key: { id: key.id, time: key.time, label: key.label }, results, ...description };
+    }
+    case 'review.metrics': {
+      requireRig();
+      const start = number(params.start ?? 0, 'Start', 0, studio.duration), end = number(params.end ?? studio.duration, 'End', 0, studio.duration);
+      if (end <= start) throw new Error('End must be after start.');
+      return { ...reviewMotion(asset, createPoseSampler(sequence, mode), start, end, editor.fps, editKeys.map(({ time, label }) => ({ time, label }))) };
+    }
+    case 'review.sheet': {
+      requireRig();
+      if (!editor.viewport) throw new Error('The viewport is not ready.');
+      const views = (params.views ?? ['side', 'front']) as SheetView[];
+      if (!Array.isArray(views) || !views.length || views.length > 3 || views.some(view => !SHEET_VIEWS.has(view))) throw new Error('views must list 1–3 of front, side, back, perspective.');
+      let times: number[];
+      const start = number(params.start ?? 0, 'Start', 0, studio.duration), end = number(params.end ?? studio.duration, 'End', 0, studio.duration);
+      if (end <= start) throw new Error('End must be after start.');
+      if (Array.isArray(params.times)) times = params.times.map(t => number(t, 'Time', 0, studio.duration));
+      else if (params.atKeys === true) {
+        times = editKeys.map(key => key.time).filter(time => time >= start - 1e-6 && time <= end + 1e-6);
+        if (!times.length) throw new Error('There are no keys between start and end. Widen the range or review evenly spaced frames instead.');
+        if (times.length > 24) throw new Error(`There are ${times.length} keys in this range; a sheet holds 24. Narrow start/end to review them in parts.`);
+      } else {
+        const count = number(params.frames ?? 8, 'Frame count', 2, 24);
+        if (!Number.isInteger(count)) throw new Error('Frame count must be an integer.');
+        times = Array.from({ length: count }, (_, i) => start + (end - start) * i / (count - 1));
+      }
+      if (times.length < 1 || times.length > 24) throw new Error('Review 1–24 frames at a time.');
+      const sampleAt = createPoseSampler(sequence, mode);
+      const labels = times.map(time => {
+        const key = editKeys.find(k => Math.abs(k.time - time) < .5 / editor.fps);
+        return `${time.toFixed(2)}s${key ? ` ◆ ${key.label ?? 'key'}` : ''}`;
+      });
+      const cellWidth = number(params.cellWidth ?? 200, 'Cell width', 96, 400), columns = number(params.columns ?? 6, 'Columns', 1, 12);
+      const data = await editor.viewport.captureSheet({ poses: times.map(sampleAt), labels, views, cellWidth, columns: Math.round(columns), facing: restForward(asset).toArray() as [number, number, number], title: `${studio.title} · ${studio.generated ? 'generated take' : 'authored keys'} · ◆ = key` });
+      signal.throwIfAborted();
+      return { ...await artifact(await (await fetch(data)).blob(), `${nameOf(params.name, studio.title || 'Animation').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}-review.png`), times: times.map(t => Math.round(t * 1000) / 1000), views };
+    }
+    case 'keys.list': return { activeTrackId: layer?.id ?? null, keys: params.includePoses ? copy(editKeys) : editKeys.map(({ id, time, label }) => ({ id, time, label })) };
     case 'keys.replace': {
       requireRig();
       if (!Array.isArray(params.keys) || params.keys.length < 2 || params.keys.length > 72001) throw new Error('Provide between 2 and 72001 complete pose keys.');
@@ -162,25 +255,25 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
         times.add(time);
         return { id: uid(), time, pose: fullPose(key.pose), label: key.label as string | undefined };
       }).sort((a, b) => a.time - b.time);
-      commit({ ...studio, keys, sourceClip: null });
-      return { keys: keys.map(({ id, time, label }) => ({ id, time, label })) };
+      commitKeys(keys, true);
+      return { activeTrackId: layer?.id ?? null, keys: keys.map(({ id, time, label }) => ({ id, time, label })) };
     }
     case 'keys.delete': {
-      if (studio.keys.length <= 2) throw new Error('Keep at least two pose keys.');
-      if (!studio.keys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
-      commit({ ...studio, sourceClip: null, keys: studio.keys.filter(key => key.id !== params.id) }); return editor.snapshot();
+      if (editKeys.length <= 2) throw new Error('Keep at least two pose keys.');
+      if (!editKeys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
+      commitKeys(editKeys.filter(key => key.id !== params.id)); return editor.snapshot();
     }
     case 'keys.move': {
       const time = atTime();
-      if (!studio.keys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
-      if (studio.keys.some(key => key.id !== params.id && Math.abs(key.time - time) < 1e-7)) throw new Error('There is already a pose at that time.');
-      commit({ ...studio, sourceClip: null, keys: studio.keys.map(key => key.id === params.id ? { ...key, time } : key).sort((a, b) => a.time - b.time) });
+      if (!editKeys.some(key => key.id === params.id)) throw new Error('That pose key does not exist.');
+      if (editKeys.some(key => key.id !== params.id && Math.abs(key.time - time) < 1e-7)) throw new Error('There is already a pose at that time.');
+      commitKeys(editKeys.map(key => key.id === params.id ? { ...key, time } : key).sort((a, b) => a.time - b.time));
       editor.timeline(time); return editor.snapshot();
     }
     case 'keys.simplify': {
       const count = number(params.count ?? 6, 'Pose count', 2, 120);
       if (!Number.isInteger(count)) throw new Error('Pose count must be an integer.');
-      commit({ ...studio, keys: simplifyKeys(studio.keys, count, asset.restMorphs), sourceClip: null, settings: { ...studio.settings, interpolation: 'smooth' } });
+      commitKeys(simplifyKeys(editKeys, count, asset.restMorphs), false, 'smooth');
       return editor.snapshot();
     }
     case 'clips.list': return { clips: asset.clips.map((clip, index) => ({ index, name: clip.name, duration: clip.duration })), selected: studio.sourceClip ?? null };
@@ -188,7 +281,7 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const index = number(params.index, 'Clip index', 0, asset.clips.length - 1);
       if (!Number.isInteger(index)) throw new Error('Clip index must be an integer.');
       const clip = asset.clips[index], keys = sampleClip(asset, clip);
-      commit({ ...studio, keys, duration: Math.max(clip.duration, 1 / editor.fps), sourceClip: index, settings: { ...studio.settings, interpolation: 'linear' } });
+      commit({ ...studio, baseMotionName: (clip.name || 'Imported animation').slice(0, 200), keys, duration: trackEditDuration({ ...studio, activeTrackId: null }, Math.max(clip.duration, 1 / editor.fps)), sourceClip: index, settings: { ...studio.settings, interpolation: 'linear' } });
       editor.timeline(0); return editor.snapshot();
     }
     case 'timeline.set': {
@@ -198,15 +291,19 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       const retime = params.retime !== false;
       const time = number(params.time ?? Math.min(duration, editor.time * (retime ? duration / studio.duration : 1)), 'Time', 0, duration);
       if (duration !== studio.duration) {
-        if (!retime && studio.keys.some(key => key.time > duration)) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
+        if (!retime && [studio.keys, ...studio.tracks?.map(t => t.keys) ?? []].some(keys => keys.some(key => key.time > duration))) throw new Error('Some keys exceed the new duration. Move/delete them first or use retime:true.');
         const keys = studio.keys.map(key => ({ ...key, time: retime ? key.time * duration / studio.duration : key.time }));
-        commit({ ...studio, duration, keys, sourceClip: null });
+        commit({ ...studio, duration, keys, tracks: studio.tracks?.map(t => ({ ...t, keys: t.keys.map(k => ({ ...k, time: retime ? k.time * duration / studio.duration : k.time })) })), sourceClip: null });
       }
       editor.timeline(time, fps); return editor.snapshot();
     }
     case 'playback.set': editor.play(params.playing === true); return editor.snapshot();
     case 'settings.set': {
       const patch = params as Partial<MotionSettings>;
+      if (layer && patch.interpolation) {
+        const { interpolation, ...settings } = patch;
+        commit({ ...studio, settings: { ...studio.settings, ...settings }, tracks: studio.tracks!.map(t => t.id === layer.id ? { ...t, interpolation: interpolation! } : t) }); return editor.snapshot();
+      }
       commit({ ...studio, ...(patch.interpolation ? { generated: undefined, generation: undefined } : {}), settings: { ...studio.settings, ...patch } });
       return editor.snapshot();
     }
@@ -225,7 +322,8 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
     case 'motion.clear': commit({ ...studio, generated: undefined, generation: undefined }); return editor.snapshot();
     case 'motion.quickGround': {
       requireRig();
-      try { commit({ ...studio, keys: applyPhysics(asset, studio.keys, studio.settings), sourceClip: null }); }
+      // Grounding means planted feet stay put, whatever the scene's floor-contact toggle says.
+      try { commit({ ...studio, keys: applyPhysics(asset, studio.keys, { ...studio.settings, floorContact: true }), sourceClip: null }); }
       finally { applyPose(asset, editor.pose); }
       return editor.snapshot();
     }
@@ -239,16 +337,41 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       if (provider.limits?.maxDuration && studio.duration > provider.limits.maxDuration) throw new Error(`This provider supports up to ${provider.limits.maxDuration} seconds.`);
       const count = params.simplifyCount ?? (studio.keys.length > 24 ? 6 : undefined);
       const anchors = count === undefined ? studio.keys : simplifyKeys(studio.keys, number(count, 'Pose count', 2, 120), asset.restMorphs);
-      const settings = { ...studio.settings, interpolation: mode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
-      const request = makeMotionRequest(asset, sequence, anchors, studio.duration, settings, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
+      let originalClipBackupId = provider.id === 'motionbricks' && studio.generation?.source && typeof studio.generation.metrics.originalClipBackupId === 'string' ? studio.generation.metrics.originalClipBackupId : undefined;
+      if (originalClipBackupId && !(await listScenes()).some(scene => scene.id === originalClipBackupId)) originalClipBackupId = undefined;
+      let source = baseSequence, sourceMode = baseMode;
+      let sourceWarning: string | undefined;
+      if (provider.id === 'motionbricks' && studio.generated) {
+        if (studio.generation?.source) { source = studio.generation.source.before; sourceMode = studio.generation.source.interpolation; }
+        else if (studio.generation?.name === 'MotionBricks') {
+          source = studio.keys; sourceMode = studio.settings.interpolation;
+          sourceWarning = 'This older take has no original motion guide. Your authored poses guide this new take.';
+        }
+      }
+      signal.throwIfAborted();
+      const settings = { ...studio.settings, interpolation: sourceMode, ...(provider.limits?.earthGravityOnly ? { gravity: 9.81 } : {}), ...(provider.limits?.requiresFloorContact ? { floorContact: true } : {}) };
+      const request = makeMotionRequest(asset, source, anchors, studio.duration, { ...settings, interpolation: sourceMode }, provider.id, number(params.seed ?? 42, 'Seed', 0, 2147483647));
+      let createdBackupId: string | undefined;
+      let committed = false;
       try {
         const result = await generateMotion(request, editor.progress, signal); signal.throwIfAborted();
-        const generated = restoreEngineFrames(asset, sequence, anchors, result, mode, studio.duration, provider.learned);
+        const generated = restoreEngineFrames(asset, source, anchors, result, sourceMode, studio.duration, provider.learned);
+        if (provider.id === 'motionbricks' && anchors.length < studio.keys.length) {
+          try { originalClipBackupId = await saveSceneCopy(editor.document(), `${studio.title.slice(0, 180)} · original clip`, await sceneThumbnail(editor.viewport?.capture)); createdBackupId = originalClipBackupId; }
+          catch (error) { throw new Error(error instanceof Error && error.name === 'QuotaExceededError' ? 'There isn’t enough storage to keep your original clip safe. Export a .still copy and free some space, then generate again. Your animation is unchanged.' : 'Your original clip could not be saved. Export a .still copy before trying again. Your animation is unchanged.'); }
+          signal.throwIfAborted();
+        }
         const keys = provider.learned ? anchors : studio.keys.map(key => ({ ...key, pose: samplePose(generated, key.time, 'linear') }));
-        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings }, warnings: result.warnings ?? [], ...(!provider.learned ? { comparison: { before: copy(sequence), interpolation: mode } } : {}) };
-        commit({ ...studio, keys, generated, generation, sourceClip: null });
+        const generation: MotionGeneration = { name: result.provider?.name ?? provider.name, kind: request.kind, metrics: { ...result.metrics, requestedSettings: settings, ...(originalClipBackupId ? { originalClipBackupId } : {}) }, ...(provider.id === 'motionbricks' ? { source: { before: copy(source), interpolation: sourceMode } } : !provider.learned && studio.generation?.source ? { source: copy(studio.generation.source) } : {}), warnings: [...result.warnings ?? [], ...(sourceWarning ? [sourceWarning] : []), ...(originalClipBackupId ? ['Your full original clip is saved as a separate scene in Scenes.'] : [])], ...(!provider.learned ? { comparison: { before: copy(baseSequence), interpolation: baseMode } } : {}) };
+        commit({ ...studio, keys, generated, generation, sourceClip: null }); committed = true;
         return { ...editor.snapshot(), generation: generationReport(generation), generatedFrames: generated.length };
-      } finally { applyPose(asset, editor.pose); }
+      } finally {
+        applyPose(asset, editor.pose);
+        if (createdBackupId && !committed) {
+          try { await editScene(createdBackupId, 'delete'); }
+          catch { throw new Error('Generation stopped without changing your animation. The safety copy could not be removed and is still in Scenes.'); }
+        }
+      }
     }
     case 'export': {
       const format = params.format;

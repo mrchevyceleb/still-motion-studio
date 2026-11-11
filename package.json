@@ -7,6 +7,8 @@
     "dev": "node scripts/dev.mjs",
     "engine": "node server/engine.mjs",
     "build": "tsc -b && vite build",
+    "motions:catalog": "node scripts/prepare-motion-library.mjs",
+    "motions:verify": "node scripts/prepare-motion-library.mjs --check",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "desktop": "electron .",

@@ -1,0 +1,55 @@
+.animation-tracks { --track-label-width: 180px; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); overflow: hidden; }
+.tracks-heading, .tracks-heading > div, .tracks-actions, .tracks-actions > div { display: flex; align-items: center; gap: 8px; }
+.tracks-heading { justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.tracks-heading strong { font-size: 12px; }
+.tracks-heading span, .tracks-actions > span { font-size: 10px; color: var(--muted); }
+.tracks-heading .button, .tracks-actions .button { padding: 7px 9px; font-size: 10px; }
+.tracks-ruler, .animation-track-row { display: grid; grid-template-columns: var(--track-label-width) minmax(0, 1fr); }
+.tracks-ruler { color: var(--muted); font-size: 9px; padding: 8px 12px 8px 0; }
+.tracks-ruler > span { padding-left: 12px; }
+.tracks-ruler > div { display: flex; justify-content: space-between; position: relative; cursor: ew-resize; touch-action: none; }
+.tracks-ruler-head { position: absolute; bottom: -6px; transform: translateX(-50%); border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid var(--accent); pointer-events: none; z-index: 4; }
+.tracks-rows { max-height: 220px; overflow-y: auto; overflow-x: hidden; padding-right: 12px; }
+.tracks-ruler, .tracks-rows { scrollbar-gutter: stable; }
+.tracks-ruler { overflow-y: hidden; }
+.animation-track-row { min-height: 44px; border-top: 1px solid var(--line); }
+.animation-track-row.active { background: color-mix(in srgb, var(--track-color) 12%, var(--paper)); }
+.animation-track-row:not(.active):hover { background: color-mix(in srgb, var(--track-color) 7%, var(--paper)); }
+.animation-tracks .tracks-heading .button:not(:disabled):hover { transform: translateY(-2px) scale(1.035); background: var(--green); color: var(--paper); box-shadow: 0 4px 14px color-mix(in srgb, var(--green) 25%, transparent); }
+@media (prefers-reduced-motion: reduce) {
+  .animation-tracks .tracks-heading .button:not(:disabled):hover { transform: none; }
+}
+.track-label { display: flex; align-items: center; gap: 3px; padding: 4px 7px; min-width: 0; border-right: 1px solid var(--line); }
+.track-select { padding: 8px 4px; flex-shrink: 0; }
+.track-select > span { display: block; width: 7px; height: 18px; border-radius: 3px; background: var(--track-color); }
+.track-select[aria-pressed='true'] > span { box-shadow: 0 0 0 2px color-mix(in srgb, var(--track-color) 35%, transparent); }
+.track-label input { min-width: 0; width: 100%; font-size: 11px; font-weight: 600; padding: 5px 3px; border: 1px solid transparent; border-radius: 4px; background: transparent; text-overflow: ellipsis; }
+.track-label input:hover, .track-label input:focus { border-color: var(--line); background: var(--paper); }
+.track-label .icon-button { flex-shrink: 0; width: 26px; height: 28px; }
+.track-lane { position: relative; touch-action: none; min-width: 0; background: repeating-linear-gradient(to right, transparent 0, transparent calc(25% - 1px), var(--line) calc(25% - 1px), var(--line) 25%); }
+.track-clip { position: absolute; top: 6px; bottom: 6px; min-width: 3px; border: 1px solid color-mix(in srgb, var(--track-color) 65%, transparent); background: color-mix(in srgb, var(--track-color) 20%, var(--paper)); border-radius: 5px; cursor: grab; overflow: hidden; transition: filter .15s; }
+.track-clip:hover { filter: brightness(1.12); }
+.track-clip span { display: block; margin: 3px 12px; font-size: 9px; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.track-dot { position: absolute; bottom: 3px; transform: translateX(-50%); width: 20px; height: 22px; padding: 6px; z-index: 2; touch-action: none; }
+.track-dot span { display: block; width: 6px; height: 6px; transform: rotate(45deg); background: var(--track-color); border: 1px solid var(--paper); }
+.track-dot:not(:disabled):active { transform: translateX(-50%); }
+.track-dot:hover span, .track-dot:focus-visible span { box-shadow: 0 0 0 3px color-mix(in srgb, var(--track-color) 35%, transparent); }
+.track-playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent, #d9ac6d); pointer-events: none; z-index: 3; }
+.animation-track-row.muted .track-clip, .animation-track-row.muted .track-dot { opacity: .4; }
+.tracks-actions { justify-content: space-between; gap: 4px; border-top: 1px solid var(--line); padding: 6px 10px; }
+.tracks-actions > span { overflow: hidden; text-overflow: ellipsis; }
+.tracks-actions > div { flex-shrink: 0; gap: 3px; }
+.track-overlap-note { display: flex; align-items: flex-start; gap: 7px; padding: 8px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 12%, var(--paper)); color: var(--ink); font-size: 10px; line-height: 1.5; }
+.track-overlap-note svg { flex-shrink: 0; margin-top: 1px; }
+.track-pose-previews { margin: 10px 0; }
+.track-pose-previews > summary { cursor: pointer; font-size: 10px; color: var(--muted); padding: 5px 0; }
+@media (max-width: 720px) {
+  .animation-tracks { --track-label-width: 125px; }
+  .tracks-heading span { display: none; }
+  .tracks-ruler > span { font-size: 8px; }
+  .tracks-actions .button span { display: none; }
+  .track-label { padding-left: 3px; gap: 0; }
+  .track-label input { font-size: 10px; }
+}
+
+.track-overlap-note span { min-width: 0; overflow-wrap: anywhere; }

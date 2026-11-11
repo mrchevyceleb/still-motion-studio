@@ -3,12 +3,16 @@ import { Activity, Check, Upload } from 'lucide-react';
 import { disposeCharacter, importCharacter } from '../engine/character';
 import { importAnimationOnRig } from '../engine/animationImport';
 import { retargetAnimation, suggestBoneMapping } from '../engine/retarget';
+import { suggestLibraryMapping } from '../engine/libraryRetarget';
 import AnimationSources from './AnimationSources';
 import type { CharacterAsset, PoseKey } from '../types';
 import './AnimationImport.css';
 
-export default function AnimationImport({ target, duration, fps, initialMode, onBusy, onApply }: {
+export default function AnimationImport({ target, duration, fps, initialMode, initialFile, initialClipIndex = 0, onMappingSaved, onBusy, onApply }: {
   target: CharacterAsset; duration: number; fps: number; initialMode: 'apply' | 'append';
+  initialFile?: File | null;
+  initialClipIndex?: number;
+  onMappingSaved?: (source: CharacterAsset, mapping: number[]) => void;
   onBusy: (busy: boolean) => void;
   onApply: (keys: PoseKey[], duration: number, mode: 'apply' | 'append', blend: number, name: string) => void;
 }) {
@@ -42,10 +46,11 @@ export default function AnimationImport({ target, duration, fps, initialMode, on
       next = await importCharacter(file);
       if (ticket !== request.current) { disposeCharacter(next); return; }
       if (!next.clips.length) throw new Error('This file contains no animation. Export the animation clips along with the skeleton.');
-      setSource(next); setFilename(file.name); setClipIndex(0);
-      setMapping(suggestBoneMapping(target, next));
-      setTransfer(file.name.toLowerCase().endsWith('.bvh') ? 'retarget' : 'matching');
-      setBlend(String(Math.min(.15, duration / 2, next.clips[0].duration / 2)));
+      const selectedIndex = file === initialFile && Number.isInteger(initialClipIndex) && initialClipIndex >= 0 && initialClipIndex < next.clips.length ? initialClipIndex : 0;
+      setSource(next); setFilename(file.name); setClipIndex(selectedIndex);
+      setMapping(file === initialFile ? suggestLibraryMapping(target, next) : suggestBoneMapping(target, next));
+      setTransfer(file === initialFile || file.name.toLowerCase().endsWith('.bvh') ? 'retarget' : 'matching');
+      setBlend(String(Math.min(.15, duration / 2, next.clips[selectedIndex].duration / 2)));
     } catch (cause) {
       if (next) disposeCharacter(next);
       if (ticket === request.current) setError(cause instanceof Error ? cause.message : 'The animation could not be opened.');
@@ -54,11 +59,14 @@ export default function AnimationImport({ target, duration, fps, initialMode, on
     }
   }
 
+  useEffect(() => { if (initialFile) void load(initialFile); }, [initialFile]);
+
   function apply() {
     if (!source || !clip || !validBlend || loading) return;
     setError(null);
     try {
       const keys = transfer === 'retarget' ? retargetAnimation(target, source, clip, mapping, rootMotion) : importAnimationOnRig(target, source, clip);
+      if (transfer === 'retarget') onMappingSaved?.(source, mapping);
       onApply(keys, Math.max(clip.duration, 1 / fps), mode, Number(blend), filename);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'This animation could not be applied.'); }
   }
@@ -79,6 +87,7 @@ export default function AnimationImport({ target, duration, fps, initialMode, on
       <label>Rig compatibility<select aria-label="Animation transfer method" value={transfer} onChange={e => { setTransfer(e.target.value as typeof transfer); setError(null); }}><option value="matching">Matching rig · preserve all bone channels</option><option value="retarget">Retarget with joint mapping · rotations &amp; root travel</option></select></label>
       {transfer === 'retarget' && <>
         <p>Both models must face the same direction in their rest pose. Review every mapping. Target limb lengths stay intact; unmapped joints follow their parents. Extra heads or tentacles need their own motion.</p>
+        {mapping.some(index => index < 0) && <p role="status">Unmapped source joints: {source.bones.filter((_, index) => mapping[index] < 0).map(bone => bone.name).join(', ')}. Choose target joints below for any body parts that must move.</p>}
         <details className="animation-mapping" open><summary>{mapping.filter(i => i >= 0).length} / {source.bones.length} source joints mapped</summary><div className="animation-mapping-list">{source.bones.map((bone, index) => <label key={bone.uuid}><span>{bone.name}</span><select aria-label={`Map ${bone.name}`} value={mapping[index] ?? -1} onChange={e => { setMapping(current => current.map((v, i) => i === index ? Number(e.target.value) : v)); setError(null); }}><option value={-1}>Skip this joint</option>{target.bones.map((other, i) => <option key={other.uuid} value={i} disabled={mapping.some((value, j) => j !== index && value === i)}>{other.name}</option>)}</select></label>)}</div></details>
         <label className="rig-finger-option"><input type="checkbox" checked={rootMotion} onChange={e => setRootMotion(e.target.checked)}/>Transfer root &amp; hip travel, scaled to this rig</label>
         {skippedMorphs.length > 0 && <p role="status">{skippedMorphs.length} face shapes are missing from this character and will be skipped. Matching face shapes and body motion will transfer.</p>}

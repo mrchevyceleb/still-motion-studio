@@ -1,3 +1,4 @@
+import { useState, type MouseEvent } from 'react';
 import { ExternalLink } from 'lucide-react';
 import './AnimationImport.css';
 
@@ -10,9 +11,17 @@ const sources = [
 ];
 
 export default function AnimationSources() {
+  const [error, setError] = useState<string | null>(null);
+  const open = (event: MouseEvent<HTMLAnchorElement>, url: string) => {
+    if (!window.stillDesktop) return;
+    event.preventDefault();
+    setError(null);
+    void window.stillDesktop.openExternal(url).catch(() => setError('This source could not be opened in your browser.'));
+  };
   return <details className="animation-sources"><summary>Find characters, rigs &amp; animations</summary>
     <p>Download from the library, then choose the file here. A creature pack’s own rig and motions are the most reliable pairing.</p>
-    <div>{sources.map(source => <a href={source.url} key={source.name} target="_blank" rel="noreferrer"><strong>{source.name}<ExternalLink size={12}/></strong><small>{source.tag}</small><span>{source.text}</span></a>)}</div>
-    <p>For unusual AI rigging, <a href="https://github.com/VAST-AI-Research/UniRig" target="_blank" rel="noreferrer">UniRig</a> is an external research option. Import its rigged FBX here. It is not installed or bundled with Still. Local creature chain fitting is available under Add a rig.</p>
+    <div>{sources.map(source => <a href={source.url} key={source.name} target="_blank" rel="noreferrer" onClick={event => open(event, source.url)}><strong>{source.name}<ExternalLink size={12}/></strong><small>{source.tag}</small><span>{source.text}</span></a>)}</div>
+    <p>For unusual AI rigging, <a href="https://github.com/VAST-AI-Research/UniRig" target="_blank" rel="noreferrer" onClick={event => open(event, 'https://github.com/VAST-AI-Research/UniRig')}>UniRig</a> is an external research option. Import its rigged FBX here. It is not installed or bundled with Still. Local creature chain fitting is available under Add a rig.</p>
+    {error && <p role="alert" className="animation-import-error">{error}</p>}
   </details>;
 }

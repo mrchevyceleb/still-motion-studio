@@ -9,3 +9,10 @@
 .viewport-split-labels > span + span { border-left: 1px solid var(--line); }
 .viewport-split-label { display: inline-block; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
 .viewport-split-labels strong { display: block; margin-bottom: 3px; color: var(--ink); font-size: 12px; }
+.ghost-controls { position: absolute; right: 18px; bottom: 58px; display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--muted); }
+.ghost-controls > svg { margin: 0 5px; }
+.ghost-controls button { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-radius: 4px; font-size: 10px; color: var(--muted); }
+.ghost-controls button > span { width: 7px; height: 7px; border-radius: 50%; opacity: .4; }
+.ghost-controls button[aria-pressed='true'] { background: color-mix(in srgb, var(--ink) 10%, var(--paper)); color: var(--ink); }
+.ghost-controls button[aria-pressed='true'] > span { opacity: 1; }
+.ghost-controls button:not(:disabled):hover { background: color-mix(in srgb, var(--ink) 6%, var(--paper)); color: var(--ink); }

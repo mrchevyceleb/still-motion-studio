@@ -125,9 +125,14 @@ try {
     await expect(page.getByRole('button', { name: 'Rotate joint', exact: true })).toHaveClass('active');
     await page.getByRole('button', { name: 'Move joint', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Move joint', exact: true })).toHaveClass('active');
-    const onion = page.getByRole('button', { name: 'Toggle onion skin', exact: true });
-    await onion.click(); await expect(onion).toHaveAttribute('aria-pressed', 'true');
-    await onion.click(); await expect(onion).toHaveAttribute('aria-pressed', 'false');
+    const earlier = page.getByRole('button', { name: 'Show earlier pose', exact: true });
+    const later = page.getByRole('button', { name: 'Show later pose', exact: true });
+    await earlier.click(); await expect(earlier).toHaveAttribute('aria-pressed', 'true');
+    await expect(later).toHaveAttribute('aria-pressed', 'false');
+    await later.click(); await expect(later).toHaveAttribute('aria-pressed', 'true');
+    await earlier.click(); await expect(earlier).toHaveAttribute('aria-pressed', 'false');
+    await expect(later).toHaveAttribute('aria-pressed', 'true');
+    await later.click(); await expect(later).toHaveAttribute('aria-pressed', 'false');
     const rig = page.getByRole('button', { name: 'Show joints', exact: true });
     await rig.click(); await expect(rig).toHaveAttribute('aria-pressed', 'false');
     await expect.poll(async () => JSON.parse(await canvas.getAttribute('data-joints')).every(joint => !joint.visible)).toBe(true);

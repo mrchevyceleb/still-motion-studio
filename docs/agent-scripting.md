@@ -70,6 +70,8 @@ The full parameter schemas are in `shared/agent-schema.json` and `GET /api/agent
 | Scene and recovery | `scene.inspect`, `scene.new`, `scene.import`, `scene.rename`, `scene.project`, `scene.restore`, `scene.save`, `scene.archives`, `scene.restoreArchive` |
 | Skeleton and clips | `skeleton.inspect`, `skeleton.rig`, `skeleton.kind`, `clips.list`, `clips.select` |
 | Pose editing | `pose.get`, `pose.set`, `pose.move`, `pose.reset` |
+| Intent posing | `pose.intent`, `pose.describe` (body-part actions in character space; see [vibe animation](vibe-animation.md)) |
+| Review | `review.metrics`, `review.sheet` (animator checks and a labelled contact-sheet PNG; MCP `still_review` returns both, with the sheet as an image) |
 | Authored keys | `keys.list`, `keys.put`, `keys.replace`, `keys.delete`, `keys.move`, `keys.simplify` |
 | Playback and view | `timeline.set`, `playback.set`, `settings.set`, `view.set` |
 | History | `history.undo`, `history.redo` |
@@ -121,3 +123,9 @@ The live editor check also passed: the CLI example authored six keys with distin
 For Unreal exports, `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"manny"})` adds a gameplay root and prepares automatic target retargeting during Unreal import. `targetMesh` is an optional `/Game/...` SkeletalMesh object path; use it to select a particular MetaHuman body. With `retarget:"none"`, pass a matching Skeleton or SkeletalMesh path in `targetMesh` to import animation directly onto an existing character. Use `rootMotion:"preserve"` unless the target has the same added root bone. The same fields can be passed in SDK `exportFile` settings.
 
 For the existing character's own bone names and rest pose, import its original binary FBX in the current session, then use `client.call("export", {format:"unreal", fps:30, rootMotion:"extract", retarget:"skeleton", targetSkeleton:"/Game/KarateBear/SKEL_KarateBear.SKEL_KarateBear"})`. The reference FBX defaults to the imported asset's bytes; `scene.inspect` reports availability as `hasReferenceFbx`; saved `.still` projects do not retain them. `targetSkeleton` also works in SDK `exportFile` settings and the `still_export_file` MCP tool.
+
+## Layered tracks
+
+Use `tracks.add` with an optional `name` (for example `Blinks`). It selects the new track. `pose.set`, `pose.move`, and key editing commands now edit the selected track and automatically capture only changed properties. Other tracks keep playing. Use `tracks.select` with `id: null` for the base motion; `tracks.list` returns layer IDs in bottom-to-top order. `tracks.update` renames or mutes a track, and `tracks.delete` removes an overlay with Undo support. Higher tracks override lower tracks only where they animate the same property. Scene saves retain separate tracks; GLB and Unreal exports combine enabled tracks into one animation.
+
+Pose and key read/write results identify the selected row with `activeTrackId` (`null` means the base). Select the intended row explicitly when resuming a saved scene. Whole-scene Repeat requires animated tracks to span the full timeline; shifted tracks must be extended first. Muted authored tracks keep their timing so unmuting restores the complete motion; empty tracks do not prevent shortening the scene.

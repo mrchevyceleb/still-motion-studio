@@ -1,6 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, dialog, shell, nativeImage, nativeTheme, ipcMain, utilityProcess, safeStorage } = require('electron');
 const { readFileSync } = require('node:fs');
-const { mkdir, writeFile, cp, access } = require('node:fs/promises');
+const { mkdir, writeFile, cp, access, readFile, unlink } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const { prepareRuntimes } = require('./runtime.cjs');
@@ -90,12 +90,31 @@ app.on('before-quit', event => { if (!quitting) { event.preventDefault(); void s
 ipcMain.on('still:theme', (event, theme) => {
   if (event.sender !== window?.webContents || (theme !== 'light' && theme !== 'dark')) return;
   nativeTheme.themeSource = theme;
-  window.setBackgroundColor(theme === 'dark' ? '#141d19' : '#f4f3ee');
+  window.setBackgroundColor(theme === 'dark' ? '#191c22' : '#f1f2f4');
 });
 ipcMain.handle('still:pick-folder', async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This folder request is unavailable.');
   const result = await dialog.showOpenDialog(window, { properties: ['openDirectory', 'createDirectory'] });
   return result.canceled ? null : result.filePaths[0] || null;
+});
+const externalHosts = new Set(['www.mixamo.com', 'mixamo.com', 'mesh2motion.org', 'quaternius.com', 'actorcore.reallusion.com', 'www.fab.com', 'github.com']);
+ipcMain.handle('still:open-external', async (event, address) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('External links are unavailable.');
+  const url = new URL(address);
+  if (url.protocol !== 'https:' || !externalHosts.has(url.hostname) || url.port || url.username || url.password) throw new Error('This external link is not allowed.');
+  await shell.openExternal(url.href);
+});
+const meshyKeyPath = () => path.join(app.getPath('userData'), 'meshy-key.bin');
+for (const method of ['get', 'set', 'clear']) ipcMain.handle(`still:meshy-key:${method}`, async (event, value) => {
+  if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Meshy key access is unavailable.');
+  if (method === 'clear') { await unlink(meshyKeyPath()).catch(error => { if (error.code !== 'ENOENT') throw error; }); return null; }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure key storage is unavailable on this computer.');
+  if (method === 'set') {
+    if (typeof value !== 'string' || value.length < 8 || value.length > 512) throw new Error('Enter a valid Meshy API key.');
+    await writeFile(meshyKeyPath(), safeStorage.encryptString(value), { mode: 0o600 }); return null;
+  }
+  const bytes = await readFile(meshyKeyPath()).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  return bytes ? safeStorage.decryptString(bytes) : null;
 });
 for (const method of ['state', 'check', 'connect', 'install']) ipcMain.handle(`still:updates:${method}`, async event => {
   if (event.sender !== window?.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('This update request is unavailable.');
@@ -127,7 +146,7 @@ if (acquired) app.whenReady().then(async () => {
     engine.once('message', message => { if (message.type === 'ready') { clearTimeout(timer); resolve(); } });
     engine.once('exit', () => { clearTimeout(timer); reject(new Error(log || 'The local engine stopped during startup.')); });
   });
-  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141d19' : '#f4f3ee', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
+  window = new BrowserWindow({ width: 1440, height: 960, minWidth: 900, minHeight: 640, title: 'Still Motion Studio', backgroundColor: nativeTheme.shouldUseDarkColors ? '#191c22' : '#f1f2f4', icon: icon(), show: false, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, partition: 'persist:still' } });
   window.on('close', event => { if (!quitting) { event.preventDefault(); window.hide(); } });
   const url = `http://127.0.0.1:${port}`;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

@@ -5,7 +5,7 @@ import { createMorphKeySampler } from './morphs';
 import type { CharacterAsset, InterpolationMode, MotionSettings, Pose, PoseKey } from '../types';
 
 export interface EngineProvider {
-  id: 'inbetween' | 'physics' | 'cascadeur' | 'cascadeur_physics' | 'owned_humanoid' | 'quadruped';
+  id: 'motionbricks' | 'inbetween' | 'physics' | 'cascadeur' | 'cascadeur_physics' | 'owned_humanoid' | 'quadruped';
   kind: 'inbetween' | 'physics';
   name: string;
   learned: boolean;

@@ -23,6 +23,11 @@ const tools = [
     id: { ...string, description: 'Optional command UUID. Reuse this exact ID and payload to reconcile an uncertain submission; never retry a mutation with a fresh ID.' },
     wait: { type: 'boolean', default: true },
   }, ['method']),
+  tool('still_review', 'SEE the animation: renders a labelled contact sheet (same framing in every cell, keys marked) and returns it as an image together with review.metrics (foot sliding, floor penetration, floaty jumps, pops, backward knees, balance, holds). Call after every animation change.', {
+    sessionId: session, frames: { type: 'integer', minimum: 2, maximum: 24, default: 8 }, start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 },
+    atKeys: { type: 'boolean', description: 'Show exactly the authored key poses instead of evenly spaced frames.' },
+    views: { type: 'array', description: '1-3 of front, side, back, perspective. Default side + front.' }, metrics: { type: 'boolean', default: true },
+  }, [], true),
   tool('still_job', 'Read an existing command job, including completion, error, cancellation, or result.', { id: string }, ['id'], true),
   tool('still_cancel', 'Request cancellation of a command job. Cancellation may remain pending while native cleanup finishes.', { id: string }, ['id']),
   tool('still_import_file', 'Upload a local FBX, GLB, or Still project file and import it into the selected tab. This replaces the scene. Server-side arbitrary paths are not accepted.', { path: string, ...shared }, ['path']),
@@ -57,7 +62,7 @@ function validateArguments(definition, args) {
   for (const [name, value] of Object.entries(args)) {
     const rule = properties[name];
     if (!rule) throw new Error(`Unknown argument: ${name}.`);
-    const valid = rule.type === 'integer' ? Number.isSafeInteger(value) : rule.type === 'object' ? record(value) : typeof value === rule.type;
+    const valid = rule.type === 'integer' ? Number.isSafeInteger(value) : rule.type === 'object' ? record(value) : rule.type === 'array' ? Array.isArray(value) && value.length <= 24 : rule.type === 'number' ? Number.isFinite(value) : typeof value === rule.type;
     if (!valid || (rule.minLength && value.length < rule.minLength) || (rule.minimum !== undefined && value < rule.minimum) || (rule.maximum !== undefined && value > rule.maximum) || (rule.enum && !rule.enum.includes(value))) throw new Error(`Invalid argument: ${name}.`);
   }
 }
@@ -85,6 +90,14 @@ async function runTool(message, controller) {
     else if (name === 'still_sessions') result = await sdk.sessions(settings);
     else if (name === 'still_inspect') result = await sdk.call('scene.inspect', {}, settings);
     else if (name === 'still_command') result = await sdk[args.wait === false ? 'enqueue' : 'call'](args.method, args.params || {}, settings);
+    else if (name === 'still_review') {
+      const range = { ...(args.start !== undefined ? { start: args.start } : {}), ...(args.end !== undefined ? { end: args.end } : {}) };
+      const sheet = await sdk.call('review.sheet', { ...range, ...(args.frames !== undefined ? { frames: args.frames } : {}), ...(args.atKeys !== undefined ? { atKeys: args.atKeys } : {}), ...(args.views !== undefined ? { views: args.views } : {}) }, settings);
+      const image = Buffer.from(await sdk.readFile(sheet.fileId, settings)).toString('base64');
+      const metrics = args.metrics === false ? null : await sdk.call('review.metrics', range, settings);
+      response(message.id, { content: [{ type: 'image', data: image, mimeType: 'image/png' }, { type: 'text', text: JSON.stringify({ times: sheet.times, views: sheet.views, metrics }) }], isError: false });
+      return;
+    }
     else if (name === 'still_job') result = await sdk.job(args.id, settings);
     else if (name === 'still_cancel') result = await sdk.cancel(args.id);
     else if (name === 'still_import_file') result = await sdk.importFile(args.path, settings);
@@ -109,7 +122,7 @@ async function handle(message) {
     if (initialized) { rpcError(message.id, -32600, 'Already initialized.'); return; }
     if (!record(message.params) || typeof message.params.protocolVersion !== 'string' || !record(message.params.capabilities) || !record(message.params.clientInfo)) { rpcError(message.id, -32602, 'Invalid initialization parameters.'); return; }
     initialized = true;
-    response(message.id, { protocolVersion: versions.includes(message.params.protocolVersion) ? message.params.protocolVersion : versions[0], capabilities: { tools: {} }, serverInfo: { name: 'still-local-agent', version: '1.0.0' }, instructions: 'Keep Still open in a browser. Discover its schema, list sessions, and select the intended tab. Read scene revision before mutations. File paths are local to this MCP process; exports refuse overwrites by default.' });
+    response(message.id, { protocolVersion: versions.includes(message.params.protocolVersion) ? message.params.protocolVersion : versions[0], capabilities: { tools: {} }, serverInfo: { name: 'still-local-agent', version: '1.0.0' }, instructions: 'Keep Still open in a browser. Discover its schema, list sessions, and select the intended tab. Read scene revision before mutations. File paths are local to this MCP process; exports refuse overwrites by default. To animate from a description, follow docs/vibe-animation.md: block key poses with pose.intent (character-space body actions, not quaternions), check each with pose.describe, generate in-betweens, then look with still_review and fix its issues before exporting.' });
     return;
   }
   if (!ready) { rpcError(message.id, -32002, 'Initialize the MCP connection first.'); return; }

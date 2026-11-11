@@ -74,6 +74,11 @@ export function createPoseSampler(keys: PoseKey[], mode: InterpolationMode): (ti
   };
 }
 
+/** A fresh timeline for a character: its rest pose at the start and at the end. */
+export function blankKeys(asset: CharacterAsset, duration = 4): PoseKey[] {
+  return [0, duration].map(time => ({ id: crypto.randomUUID(), time, pose: copyPose(asset.restPose) }));
+}
+
 export function createDemoKeys(asset: CharacterAsset): PoseKey[] {
   const names = asset.bones.map(b => b.name.replace(/^.*[:|]/, '').toLowerCase());
   const poses = asset.kind === 'quadruped'

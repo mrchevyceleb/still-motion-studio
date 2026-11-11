@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#f4f3ee"/>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="theme-color" content="#f1f2f4"/>
 <script>
   (() => {
     let saved;
@@ -7,8 +7,8 @@
     const theme = saved === 'light' || saved === 'dark' ? saved : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#141d19' : '#f4f3ee';
+    document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#191c22' : '#f1f2f4';
   })();
 </script>
-<style>html{background:#f4f3ee}html[data-theme='dark']{background:#141d19;color:#e5eddf}</style>
+<style>html{background:#f1f2f4}html[data-theme='dark']{background:#191c22;color:#e8edf5}</style>
 <meta name="description" content="Still — a simpler way to bring characters to life. Import, pose, and make your next move."/><link rel="icon" type="image/svg+xml" href="/favicon.svg"/><title>Still · Motion made simple</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
