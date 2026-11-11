@@ -8,7 +8,7 @@ This is the playbook for an AI agent (through the MCP server or the SDK) that tu
 2. **Choose a start.** Either begin with a blank scene (`scene.new {kind, blank:true}`, then `timeline.set {duration}`) or start from a similar motion (`clips.select` on an imported library file, then `keys.simplify {count: 6}`) and edit it. Editing a near match is faster and looks more natural than building from nothing.
 3. **Block the story poses** with `pose.intent`, one key per beat: *ready → anticipation → strike/contact → follow-through → settle*. Start each beat with `{do:"reset", part:"all"}` unless you are building on the previous pose, then add actions. Read the returned `results` and `parts` each time. If an action reports `ok:false` (out of reach), move the target or the hips.
 4. **Time it.** Anticipation takes about a third of the action. The strike is fast, usually 2–5 frames. Holds need a slight drift, never a dead stop. Move keys with `keys.move`, or stretch the clip with `timeline.set {duration}`.
-5. **Fill the in-betweens.** Smooth interpolation is the default. For humanoids, `motion.run {provider:"motionbricks"}` generates natural transitions between your poses, and `motion.quickGround` pins planted feet.
+5. **Fill the in-betweens.** With a held weapon or tool, run `motion.carry {prop}`: it carries the prop between your keys on an arc around the shoulders, keeps both hands on it, steers it clear of the body and floor, and pins planted feet. Otherwise smooth interpolation is the default. For humanoids, `motion.run {provider:"motionbricks"}` generates natural transitions between your poses, and `motion.quickGround` pins planted feet.
 6. **Look.** Call `still_review` (MCP) or `review.sheet` plus `review.metrics`. Fix **high** issues first: sliding feet, floor penetration, pops and backward knees. Then judge silhouette, arcs and weight on the sheet. Use `atKeys:true` to check the poses themselves, and evenly spaced frames to check spacing.
 7. **Take notes and repeat.** Turn feedback into concrete edits (see the table below), then review again. Export only when the review shows no high-severity issues.
 
@@ -28,6 +28,7 @@ Every position is `[right, up, forward]` in meters, measured from the floor poin
 | `lookAt` | Aims the head (60% head, 40% neck) at a point or a part. | `{do:"lookAt", part:"head", at:"rightHand"}` |
 | `mirror` | Copies one side's arms and/or legs to the other side, in the body's own frame (works on a turned body). | `{do:"mirror", from:"left", limbs:"arms"}` |
 | `grip` | Wraps a hand around a carried prop. On the hand that carries it, rolls the hand about the shaft so the wrist is straight; `along` slides the prop through the hand (negative chokes down toward the butt). On the other hand, `along` (required) is meters down the shaft from the holding hand, and the grip is mirrored from it. With no `pole`, it tries the natural elbow directions and keeps the straightest wrist. The note reports the wrist bend, the forearm twist, and how much shaft sits behind the hand. | `{do:"grip", part:"rightHand", on:"Pitchfork", along:-0.26}` |
+| `hold` | **The way to pose anything held.** Say where the hands go (`at`, their midpoint, usually `relativeTo:"chest"`) and where the working end points (`toward`). The engine fits it inside arm reach, puts the back hand near the butt and the front hand along the shaft (`spread`, `hands:"one"` for one hand), and searches nearby turns, tilts, hand shifts and head ducks for the closest pose that is clear of the body, head, hat and floor with straight wrists. The note says what it changed; `ok:false` means nothing nearby was clean, so move `at` or `toward`. `clear:false` skips the search. | `{do:"hold", prop:"Pitchfork", at:[-0.25,0.3,0.05], relativeTo:"chest", toward:[-0.4,0.4,-1]}` |
 | `reset` | Returns one part, or `"all"`, to the rest pose (rotation and position). | `{do:"reset", part:"all"}` |
 
 Every action accepts `weight` (0–1) for partial changes. `dryRun:true` previews the result without keying. `pose.describe` reports elbow and knee bends, `torsoPitch`/`torsoLean` (the chest's tilt), chest and head yaw, head pitch, foot heights, and warnings for backward knees, limbs under the floor, and props cutting into the head or torso (with where on the prop the deepest point is).
@@ -44,10 +45,21 @@ Every action accepts `weight` (0–1) for partial changes. `dryRun:true` preview
 - `off-balance`: during a slow moment, the body's mass sits outside every low support point (feet, toes, knees, hands).
 - `dead-hold`: nothing moves for half a second or more.
 - `prop-clip`: a weapon, tool, hat or pet cuts into the head or torso (measured against the rig's real torso shape, beyond any contact it already has at rest). Props strapped to the body are not checked against the part they are strapped to.
+- `prop-floor`: a prop's lowest point sinks into the floor (a fork's tines through the ground on a slam). Raise the hands or flatten the prop so it stops on the ground; `pose.intent` reports each prop's lowest point under `ground` while you search.
 - `wrist`: a hand folds more than 55° past its rest angle against the forearm, which reads as broken.
 - `grip-slip`: the second hand holds a carried prop at two keys but drifts off it in between. Add a key or keep the grip closer between them.
 
 The summary also includes foot contact spans, hips travel and speed, top hand speed, and the loop seam. On the bundled Quaternius library the checks pass jog, jump landing, punch, crouch and kneel clips cleanly. A few fast clips (sprint, sword swing, the fox run and jump) show genuine single-frame jumps in the source data.
+
+## Oomph: go overboard
+
+Clean but timid poses read as weak in a game. Start exaggerated and pull back only if asked:
+
+- **Anticipation is huge.** Coil the opposite way first: arch back, rise on the toes, take the weapon far behind the head or body, and hold the coil for a beat.
+- **The whole body commits.** The hips travel (a lunge or hop into the strike), not just the arms. Twist, pitch and crouch all peak together.
+- **Strikes are 2–3 frames.** Almost no in-betweens between the coil and the hit.
+- **Impact overshoots and squashes.** Drive lower than the final pose, then settle up into it, with a short shudder or recoil key or two.
+- **Recovery is heavy and slow.** The weapon drags; the body takes its time to come back.
 
 ## Props and weapons
 
@@ -55,8 +67,12 @@ The summary also includes foot contact spans, hips travel and speed, top hand sp
 - **Place the back hand, then let the shaft radiate out.** Put the back hand near the body on the weapon's side and the front hand further along the shaft. If you place the front hand first, the butt goes wherever the angle sends it, often into the belly.
 - **Short arms change the layout, not the idea.** When `reach` or `grip` reports out of reach, or an elbow is locked at 0–5°, bring the hands closer together and toward the shoulders. A straight arm also leaves the solver no elbow choice.
 - **Watch the forearm twist across keys.** The grip note reports the signed forearm twist. Neighbouring keys more than about 120° apart mean the hand rolls over between them. Give that roll at least three frames, or pick a `pole` that keeps the twist on the same side.
+- **Hats count as head.** A brim is as solid as the skull to `prop-clip`. A wide hat on a short-armed character keeps the hands under the brim, so an overhead wind-up straight back over the head always punches through it. Cock the weapon back over one shoulder instead, with the hands out beside the brim.
 - **Turn strapped props before the body.** A scythe on the back or a hat on the head moves with its bone. Tip it clear (`turn` on the prop) before turning the torso, so it stays strapped.
-- **Search instead of guessing.** For a hard beat, dry-run a small grid of hand layouts (`dryRun:true`) and keep the one with no misses, no `prop-clip` warning and the straightest wrists.
+- **Direct, don't solve.** Never search hand layouts yourself. Per beat: `reset`, body (`move` hips, `turn` torso, `lookAt`), then one `hold` for the prop. Then `motion.carry` once and `review.metrics`. If a `hold` note or the carry warning says it still cuts, change the *idea* (the side, the height, the timing), not the numbers in a loop.
+- **Wind up on the carrying hand's side.** A prop carried in the left hand cocks back over the left shoulder. Over the other shoulder the arm wraps round the head and unwinds through it.
+- **Give a big swing room.** Turning a long prop around 140° needs about 0.12 s or more between keys, or the wrists flick. The strike itself (whip to impact) can still be 2–3 frames.
+- **Read the carry report.** `motion.carry` returns `nudges` (where it slid, tipped or swivelled the prop and elbows to stay clear), `worstCutCm` and `worstWrist`. A big nudge means the keys on either side ask for something awkward.
 
 ## Turning notes into edits
 

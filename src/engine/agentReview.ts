@@ -234,8 +234,14 @@ export function reviewMotion(asset: CharacterAsset, sample: (time: number) => Po
         const extra = depths.map(d => d[k][region]);
         for (const [a, b] of spans(extra.map(e => e > .03 * scale))) {
           const worst = Math.max(...extra.slice(a, b + 1));
-          issues.push({ severity: worst > .08 * scale ? 'high' : 'medium', kind: 'prop-clip', part: prop.name, time: range(times[a], times[b]), message: `${prop.name} cuts ${r2(worst * 100)} cm into the ${region}; ${clipAdvice(depths[a][k])}.` });
+          issues.push({ severity: worst > .08 * scale ? 'high' : 'medium', kind: 'prop-clip', part: prop.name, time: range(times[a], times[b]), message: `${prop.name} cuts ${r2(worst * 100)} cm into the ${region === 'head' && depths[a][k].headwear ? `${depths[a][k].headwear} on the head` : region}; ${clipAdvice(depths[a][k])}.` });
         }
+      }
+      // A weapon that hits the ground should stop on it, not sink through.
+      const floor = depths.map(d => d[k].floor);
+      for (const [a, b] of spans(floor.map(y => y < -.02 * scale))) {
+        const worst = -Math.min(...floor.slice(a, b + 1));
+        issues.push({ severity: worst > .08 * scale ? 'high' : 'medium', kind: 'prop-floor', part: prop.name, time: range(times[a], times[b]), message: `${prop.name} sinks ${r2(worst * 100)} cm into the floor; raise the hands or flatten its angle so it stops on the ground.` });
       }
     });
 

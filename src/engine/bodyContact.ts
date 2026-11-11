@@ -9,8 +9,8 @@ import type { CharacterAsset } from '../types';
  * for a weapon, hat or pet cutting into the body. Built once per character from its skinned mesh in the rest pose.
  */
 export interface PropInfo { bone: number; name: string; carrier?: number; rigidTo: Set<number>; points: THREE.Vector3[]; axis: THREE.Vector3 }
-/** at: for a carried prop, how far from the carrying hand (meters along the prop) its deepest point sits. */
-export interface PropDepth { name: string; carried: boolean; head: number; torso: number; at?: number }
+/** at: for a carried prop, how far from the carrying hand (meters along the prop) its deepest point sits. floor: height of its lowest point (meters; negative = sunk into the floor). */
+export interface PropDepth { name: string; carried: boolean; head: number; torso: number; floor: number; at?: number; headwear?: string }
 export interface ContactModel {
   props: PropInfo[];
   /** Bones whose world matrices measure() reads. */
@@ -85,16 +85,31 @@ function build(asset: CharacterAsset, parts: BodyParts): ContactModel {
   const headPoints = head !== undefined ? shapes.get(head) ?? [] : [];
   const headCenter = headPoints.length ? headPoints.reduce((a, p) => a.add(p), new THREE.Vector3()).divideScalar(headPoints.length) : null;
   const headRadius = headCenter ? percentile(headPoints.map(p => p.distanceTo(headCenter)), .75) : 0;
+  // Hats, helmets and horns count as part of the head: a weapon must not pass through a hat brim either.
+  // Built in rest-pose world meters (bones may be scaled); a point is mapped back into that rest frame to test it.
+  const headwear = head === undefined ? [] : props.filter(p => p.carrier === undefined && p.rigidTo.has(head)).map(p => {
+    const rest = asset.bones[p.bone].matrixWorld.clone();
+    return { prop: p, rest, inside: ringShape(p.points.map(q => q.clone().applyMatrix4(rest))) };
+  });
   const torso = hips !== undefined && neck !== undefined && chest !== undefined ? torsoShape(asset, chest, asset.bones[hips].getWorldPosition(new THREE.Vector3()), asset.bones[neck].getWorldPosition(new THREE.Vector3()), [...torsoBones].flatMap(b => (shapes.get(b) ?? []).map(p => asset.bones[b].localToWorld(p.clone())))) : null;
 
   const depthOf = (prop: PropInfo, matrix: (bone: number) => THREE.Matrix4) => {
-    let inHead = -Infinity, inTorso = -Infinity, deepest: THREE.Vector3 | null = null, deepestBy = -Infinity;
+    let inHead = -Infinity, inTorso = -Infinity, floor = Infinity, deepest: THREE.Vector3 | null = null, deepestBy = -Infinity;
     const center = headCenter && head !== undefined && !prop.rigidTo.has(head) ? headCenter.clone().applyMatrix4(matrix(head)) : null;
     const inTorsoOf = torso && ![...torsoBones].some(b => prop.rigidTo.has(b)) ? torso.depth(matrix(chest!)) : null;
-    const w = new THREE.Vector3(), m = matrix(prop.bone);
+    const w = new THREE.Vector3(), m = matrix(prop.bone), local = new THREE.Vector3();
+    const worn = headwear.filter(h => h.prop !== prop && !prop.rigidTo.has(h.prop.bone)).map(h => ({ ...h, toLocal: h.rest.clone().multiply(matrix(h.prop.bone).clone().invert()) }));
+    let headwearName: string | undefined, headwearDepth = -Infinity;
     for (const p of prop.points) {
       w.copy(p).applyMatrix4(m);
-      const h = center ? headRadius - w.distanceTo(center) : -Infinity, t = inTorsoOf ? inTorsoOf(w) : -Infinity;
+      floor = Math.min(floor, w.y);
+      let h = center ? headRadius - w.distanceTo(center) : -Infinity;
+      const t = inTorsoOf ? inTorsoOf(w) : -Infinity;
+      for (const hw of worn) {
+        const d = hw.inside(local.copy(w).applyMatrix4(hw.toLocal));
+        if (d > h) h = d;
+        if (d > headwearDepth) { headwearDepth = d; headwearName = hw.prop.name; }
+      }
       inHead = Math.max(inHead, h); inTorso = Math.max(inTorso, t);
       if (Math.max(h, t) > deepestBy) { deepestBy = Math.max(h, t); deepest = w.clone(); }
     }
@@ -102,7 +117,7 @@ function build(asset: CharacterAsset, parts: BodyParts): ContactModel {
     const at = prop.carrier !== undefined && deepest
       ? Math.abs(deepest.sub(new THREE.Vector3().setFromMatrixPosition(matrix(prop.carrier))).dot(prop.axis.clone().transformDirection(m)))
       : undefined;
-    return { head: inHead, torso: inTorso, at };
+    return { head: inHead, torso: inTorso, floor, at, headwear: headwearDepth > 0 && headwearDepth >= inHead ? headwearName : undefined };
   };
   const rest = new Map(props.map(p => [p.bone, depthOf(p, i => asset.bones[i].matrixWorld)]));
   return {
@@ -111,9 +126,49 @@ function build(asset: CharacterAsset, parts: BodyParts): ContactModel {
     measure(matrix) {
       return props.map(prop => {
         const d = depthOf(prop, matrix), base = rest.get(prop.bone)!;
-        return { name: prop.name, carried: prop.carrier !== undefined, head: d.head - Math.max(0, base.head), torso: d.torso - Math.max(0, base.torso), at: d.at };
+        return { name: prop.name, carried: prop.carrier !== undefined, head: d.head - Math.max(0, base.head), torso: d.torso - Math.max(0, base.torso), floor: d.floor, at: d.at, headwear: d.headwear };
       });
     },
+  };
+}
+
+/**
+ * A worn prop (a hat: crown on a brim) as rings stacked up the world vertical, each ring as wide as the mesh at that
+ * height. The points are in rest-pose world space, where a hat sits upright on the head, so world up is its axis
+ * whatever its proportions (a tall pointed hat is taller than it is deep). Returns how far a point sits inside it:
+ * the smaller of the way in from the ring's edge and the way in from the nearest open end, so a shaft skimming the
+ * thin brim reads as a few centimeters, not the brim's whole radius. Negative or -Infinity outside.
+ */
+function ringShape(points: THREE.Vector3[]) {
+  const ROWS = 8;
+  const box = new THREE.Box3().setFromPoints(points), mid = box.getCenter(new THREE.Vector3());
+  const height = Math.max(box.max.y - box.min.y, 1e-4), row = height / ROWS;
+  const rowOf = (y: number) => Math.min(ROWS - 1, Math.floor((y - box.min.y) / row));
+  const radii = Array.from({ length: ROWS }, () => [] as number[]);
+  for (const p of points) radii[rowOf(p.y)].push(Math.hypot(p.x - mid.x, p.z - mid.z));
+  // A low-poly hat can leave rows with no vertices (a crown with only a base ring and a tip): blend across those
+  // gaps from the nearest filled rows, so the volume has no hollow bands a prop could slip through.
+  const filled = radii.map(r => r.length ? percentile(r, .9) : NaN);
+  const radius = filled.map((r, i) => {
+    if (!Number.isNaN(r)) return r;
+    let lo = i, hi = i;
+    while (lo >= 0 && Number.isNaN(filled[lo])) lo--;
+    while (hi < ROWS && Number.isNaN(filled[hi])) hi++;
+    if (lo < 0 && hi >= ROWS) return -Infinity;
+    if (lo < 0) return filled[hi];
+    if (hi >= ROWS) return filled[lo];
+    return filled[lo] + (filled[hi] - filled[lo]) * (i - lo) / (hi - lo);
+  });
+  return (p: THREE.Vector3) => {
+    if (p.y < box.min.y || p.y > box.max.y) return -Infinity;
+    const i = rowOf(p.y), side = radius[i] - Math.hypot(p.x - mid.x, p.z - mid.z);
+    if (side <= 0) return side;
+    // A ring that is wider than both its neighbours is a lip (the brim): only as thick as its own row.
+    let lo = i, hi = i;
+    while (lo > 0 && radius[lo - 1] > radius[i] - side) lo--;
+    while (hi < ROWS - 1 && radius[hi + 1] > radius[i] - side) hi++;
+    const ends = Math.min(p.y - (box.min.y + lo * row), box.min.y + (hi + 1) * row - p.y);
+    return Math.min(side, ends);
   };
 }
 
@@ -155,5 +210,7 @@ function torsoShape(asset: CharacterAsset, chest: number, hipsAt: THREE.Vector3,
 export const clipAdvice = (depth: PropDepth) => depth.carried
   ? depth.at === undefined || depth.at > .15
     ? `the deepest point is ${(depth.at ?? 0).toFixed(2)} m along it from the hand: turn that end away from the body or slide the grip (pose.intent grip along)`
-    : 'the hands themselves are in the body: hold it further out (reach the hands away from the chest)'
+    : depth.headwear
+      ? `the hands themselves are at the ${depth.headwear}: carry them higher or further out to the side so the shaft passes beside it`
+      : 'the hands themselves are in the body: hold it further out (reach the hands away from the chest)'
   : `turn it where it is strapped (pose.intent turn on "${depth.name}") or change the pose around it`;

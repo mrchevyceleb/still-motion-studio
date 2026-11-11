@@ -2,6 +2,7 @@ import { activeTrack, combinedInterpolation, combinedKeys, createAnimationTrack,
 import { applyPose, autoRigCharacter, createDemoCharacter, disposeCharacter, exportCharacterGLB, importCharacter } from './character';
 import { applyPhysics, blankKeys, buildAnimationClip, createDemoKeys, createPoseSampler, sampleClip, samplePose, simplifyKeys } from './motion';
 import { applyIntent, describePose, restForward } from './agentIntent';
+import { carryProp } from './propHold';
 import { reviewMotion } from './agentReview';
 import { generateMotion, getEngineStatus, makeMotionRequest, recoverNativeEngine, restoreEngineFrames } from './assistance';
 import { exportUnrealPackage } from './unrealExport';
@@ -326,6 +327,14 @@ export async function executeAgentCommand(editor: AgentEditor, method: string, p
       try { commit({ ...studio, keys: applyPhysics(asset, studio.keys, { ...studio.settings, floorContact: true }), sourceClip: null }); }
       finally { applyPose(asset, editor.pose); }
       return editor.snapshot();
+    }
+    case 'motion.carry': {
+      requireRig();
+      try {
+        const carry = carryProp(asset, studio.keys, studio.settings, params.prop, params.ground !== false);
+        commit({ ...studio, generated: carry.keys, generation: { name: `Carry ${carry.metrics.prop}`, kind: 'inbetween', metrics: carry.metrics, warnings: carry.warnings } });
+        return { ...editor.snapshot(), carry: carry.metrics, warnings: carry.warnings };
+      } finally { applyPose(asset, editor.pose); }
     }
     case 'motion.recover': await recoverNativeEngine(); return { engine: await getEngineStatus() };
     case 'motion.run': {

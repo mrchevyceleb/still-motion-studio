@@ -3,6 +3,7 @@ import { applyPose, capturePose } from './character';
 import { solveIK } from './motion';
 import { resolveBone } from './agentPose';
 import { clipAdvice, contactModel } from './bodyContact';
+import { hold } from './propHold';
 import type { CharacterAsset, Pose, Vec3 } from '../types';
 
 /**
@@ -167,7 +168,7 @@ const worldPos = (bone: THREE.Object3D) => bone.getWorldPosition(V());
 const worldQuat = (bone: THREE.Object3D) => bone.getWorldQuaternion(new THREE.Quaternion());
 const flat = (v: THREE.Vector3) => V(v.x, 0, v.z);
 
-interface Rest { quats: Q[]; positions: THREE.Vector3[]; forward: THREE.Vector3 }
+export interface Rest { quats: Q[]; positions: THREE.Vector3[]; forward: THREE.Vector3 }
 const restCache = new WeakMap<CharacterAsset, Rest>();
 /** Rest-pose world transforms; leaves the asset's current pose untouched. */
 function rest(asset: CharacterAsset): Rest {
@@ -253,6 +254,24 @@ function poleDirection(frame: BodyFrame, value: unknown, fallback: 'forward' | '
 }
 
 /** Analytic two-bone IK with an explicit pole, so knees and elbows bend the natural way. */
+/** The upper bone's hinge axis in its own space: across the rest limb, so it folds away from the limb's pole (elbows back, knees forward). */
+const hingeCache = new WeakMap<CharacterAsset, Map<number, THREE.Vector3 | null>>();
+function restHinge(asset: CharacterAsset, upperIndex: number, midIndex: number) {
+  const cache = hingeCache.get(asset) ?? new Map<number, THREE.Vector3 | null>();
+  hingeCache.set(asset, cache);
+  if (cache.has(upperIndex)) return cache.get(upperIndex)!;
+  const limb = bodyParts(asset).limbs.find(l => l.upper === upperIndex && l.mid === midIndex);
+  const r = rest(asset);
+  let hinge: THREE.Vector3 | null = null;
+  if (limb) {
+    const u = r.positions[midIndex].clone().sub(r.positions[upperIndex]).normalize();
+    const pole = r.forward.clone().multiplyScalar(limb.pole === 'forward' ? 1 : -1);
+    const axis = u.clone().cross(pole).negate();
+    if (axis.lengthSq() > 1e-4) hinge = axis.normalize().applyQuaternion(r.quats[upperIndex].clone().invert());
+  }
+  cache.set(upperIndex, hinge);
+  return hinge;
+}
 function twoBoneIK(asset: CharacterAsset, upperIndex: number, midIndex: number, tipIndex: number, target: THREE.Vector3, pole: THREE.Vector3, keepPole: boolean) {
   const upper = asset.bones[upperIndex], mid = asset.bones[midIndex], tip = asset.bones[tipIndex];
   const a = worldPos(upper), b = worldPos(mid), c = worldPos(tip);
@@ -260,14 +279,29 @@ function twoBoneIK(asset: CharacterAsset, upperIndex: number, midIndex: number, 
   const toTarget = target.clone().sub(a);
   const dist = Math.max(1e-4, Math.min(lenA + lenB - 1e-4, Math.max(Math.abs(lenA - lenB) + 1e-4, toTarget.length())));
   const d = toTarget.lengthSq() > 1e-10 ? toTarget.normalize() : c.clone().sub(a).normalize();
-  // Prefer the limb's current bend plane when it is clearly bent, else the requested pole.
-  const currentBend = b.clone().sub(a).sub(d.clone().multiplyScalar(b.clone().sub(a).dot(d)));
-  let p = keepPole && currentBend.length() > lenA * .08 ? currentBend : pole.clone().sub(d.clone().multiplyScalar(pole.dot(d)));
+  // Prefer the limb's current bend when it is clearly bent, else the requested pole. The bend is the joint's offset from
+  // the limb's OWN upper-to-tip line; measuring it against the new target line reads a straight leg reaching forward
+  // as a knee bent backwards.
+  const line = c.clone().sub(a).normalize(), ab = b.clone().sub(a);
+  const currentBend = ab.sub(line.multiplyScalar(ab.dot(line)));
+  const kept = currentBend.length() > lenA * .08 ? currentBend.sub(d.clone().multiplyScalar(currentBend.dot(d))) : null;
+  let p = keepPole && kept && kept.lengthSq() > 1e-8 ? kept : pole.clone().sub(d.clone().multiplyScalar(pole.dot(d)));
   if (p.lengthSq() < 1e-10) p = V(0, 1, 0).sub(d.clone().multiplyScalar(d.y));
   p.normalize();
   const cosA = Math.max(-1, Math.min(1, (lenA * lenA + dist * dist - lenB * lenB) / (2 * lenA * dist)));
   const knee = a.clone().addScaledVector(d, lenA * cosA).addScaledVector(p, lenA * Math.sqrt(1 - cosA * cosA));
   rotateWorld(asset, upper, swing(b.clone().sub(a), knee.clone().sub(a)));
+  // Elbows and knees are hinges: roll the upper bone about itself so its hinge lies across the bend plane. Otherwise
+  // the mismatch lands in the lower bone as a fake twist that spins the forearm or shin between frames.
+  const hinge = restHinge(asset, upperIndex, midIndex);
+  if (hinge) {
+    // The limb bends in the plane of d (toward the target) and p (the way the joint points), so its hinge is p × d. That
+    // holds even when the limb is nearly straight, where the target-to-joint line would make the hinge flip about.
+    const u = knee.clone().sub(a).normalize(), want = p.clone().cross(d).normalize();
+    const now = hinge.clone().applyQuaternion(worldQuat(upper));
+    now.sub(u.clone().multiplyScalar(now.dot(u)));
+    if (now.lengthSq() > 1e-8) rotateWorld(asset, upper, new THREE.Quaternion().setFromAxisAngle(u, Math.atan2(now.normalize().clone().cross(want).dot(u), now.dot(want))));
+  }
   const b2 = worldPos(mid), c2 = worldPos(tip);
   rotateWorld(asset, mid, swing(c2.clone().sub(b2), target.clone().sub(b2)));
 }
@@ -480,7 +514,8 @@ function runAction(asset: CharacterAsset, action: IntentAction, frame: BodyFrame
     return { do: kind, part: name, ok: error < .02, error: round(error), ...(error >= .02 ? { note: `target is out of reach by ${round(error)} m; the limb points at it instead` } : {}) };
   }
   if (kind === 'grip') return grip(asset, action, frame, restData);
-  throw new Error(`Unknown action "${kind}". Use turn, aim, bend, reach, move, lookAt, mirror, grip or reset.`);
+  if (kind === 'hold') return hold(asset, action, restData);
+  throw new Error(`Unknown action "${kind}". Use turn, aim, bend, reach, move, lookAt, mirror, grip, hold or reset.`);
 }
 
 /**
@@ -653,10 +688,12 @@ function describeApplied(asset: CharacterAsset, restData: Rest): PoseDescription
   if (lowest < -.02 * Math.max(1, asset.height)) warnings.push(`${lowestName} is ${round(-lowest)} m below the floor.`);
   const scale = Math.max(.1, asset.height) / 1.8;
   for (const depth of contactModel(asset, bodyParts(asset)).measure(i => asset.bones[i].matrixWorld)) {
-    for (const region of ['head', 'torso'] as const) if (depth[region] > .03 * scale) warnings.push(`${depth.name} cuts ${round(depth[region] * 100)} cm into the ${region}; ${clipAdvice(depth)}.`);
+    for (const region of ['head', 'torso'] as const) if (depth[region] > .03 * scale) warnings.push(`${depth.name} cuts ${round(depth[region] * 100)} cm into the ${region === 'head' && depth.headwear ? `${depth.headwear} on the head` : region}; ${clipAdvice(depth)}.`);
+    ground[depth.name] = round(depth.floor);
+    if (depth.floor < -.02 * scale) warnings.push(`${depth.name} sinks ${round(-depth.floor * 100)} cm into the floor; raise the hands holding it or flatten its angle so it stops on the ground.`);
   }
   return {
-    frame: { origin: frame.origin.toArray().map(n => round(n)) as Vec3, forward: frame.forward.toArray().map(n => round(n)) as Vec3, right: frame.right.toArray().map(n => round(n)) as Vec3, note: 'parts are [right, up, forward] meters from the floor under the hips; ground values are joint heights above the floor (joints sit above the sole).' },
+    frame: { origin: frame.origin.toArray().map(n => round(n)) as Vec3, forward: frame.forward.toArray().map(n => round(n)) as Vec3, right: frame.right.toArray().map(n => round(n)) as Vec3, note: 'parts are [right, up, forward] meters from the floor under the hips; ground values are joint heights above the floor (joints sit above the sole) and the lowest point of each prop.' },
     parts, angles, ground, warnings,
   };
 }
@@ -675,3 +712,5 @@ export function describePose(asset: CharacterAsset, pose: Pose): PoseDescription
 export function frameFor(asset: CharacterAsset): BodyFrame { return currentFrame(asset, rest(asset)); }
 export function restForward(asset: CharacterAsset): THREE.Vector3 { return rest(asset).forward.clone(); }
 export { toCharPoint };
+/** Building blocks for the prop solver (propHold.ts). */
+export { rest as restData, currentFrame, runAction, twoBoneIK, setWorldQuat, forearmTakesTwist, direction, toWorldDir, vec3, finite, isAncestor, segmentEnd, worldPos, worldQuat };

@@ -564,7 +564,7 @@
       "resultDescription": "{time, frame, parts, angles, ground, warnings, bodyParts}."
     },
     "pose.intent": {
-      "description": "Pose by intent instead of joint math, then key it. Actions apply in order in character space ([right, up, forward], meters, turned with the hips): turn {part, pitch, yaw, roll} rotates about body axes (torso spreads over the spine; hips keep feet planted); aim {part, direction} points a segment (upper arm, thigh, forearm, shin...); bend {part: elbow/knee, degrees}; reach {part, to|by, relativeTo?, pole?} uses two-bone IK for hands/feet; move {part: hips, to|by, plantFeet} crouches/shifts weight with feet pinned; lookAt {part: head, at}; mirror {from: left|right, limbs}; reset {part|\"all\"}; grip {part: hand, on: prop bone, along?} wraps a hand around a held prop the way the rig holds it, with a straight wrist (on the holding hand it rolls the hand about the shaft; with no pole it picks the elbow direction that keeps the wrist straightest; the other hand grips at meters along the shaft, negative toward the butt). dryRun previews without keying.",
+      "description": "Pose by intent instead of joint math, then key it. Actions apply in order in character space ([right, up, forward], meters, turned with the hips): turn {part, pitch, yaw, roll} rotates about body axes (torso spreads over the spine; hips keep feet planted); aim {part, direction} points a segment (upper arm, thigh, forearm, shin...); bend {part: elbow/knee, degrees}; reach {part, to|by, relativeTo?, pole?} uses two-bone IK for hands/feet; move {part: hips, to|by, plantFeet} crouches/shifts weight with feet pinned; lookAt {part: head, at}; mirror {from: left|right, limbs}; reset {part|\"all\"}; grip {part: hand, on: prop bone, along?} wraps a hand around a held prop the way the rig holds it, with a straight wrist (on the holding hand it rolls the hand about the shaft; with no pole it picks the elbow direction that keeps the wrist straightest; the other hand grips at meters along the shaft, negative toward the butt). hold {prop, at, toward, relativeTo?, spread?, hands?} is the way to pose a held weapon or tool: say where the point between the hands goes and where the working end points, and the engine places both hands, keeps the prop clear of the body, head, hat and floor (turning it up to 30°, moving the hands up to 10 cm or ducking the head if it must) and reports what it changed. After keying, run motion.carry so in-betweens follow the prop too. dryRun previews without keying.",
       "mutating": true,
       "paramsSchema": {
         "type": "object",
@@ -598,7 +598,8 @@
                     "lookAt",
                     "mirror",
                     "reset",
-                    "grip"
+                    "grip",
+                    "hold"
                   ]
                 },
                 "part": {
@@ -675,7 +676,7 @@
                   ]
                 },
                 "at": {
-                  "description": "lookAt: a body part or a [right, up, forward] point.",
+                  "description": "lookAt: a body part or a [right, up, forward] point. hold: [right, up, forward] for the point between the hands.",
                   "oneOf": [
                     {
                       "type": "string",
@@ -771,7 +772,52 @@
                   "type": "number",
                   "minimum": 0,
                   "maximum": 1,
-                  "description": "Blend 0\u20131 toward the requested change (default 1)."
+                  "description": "Blend 0–1 toward the requested change (default 1)."
+                },
+                "prop": {
+                  "description": "hold: the held prop bone (for example \"Pitchfork\"), carried under a hand.",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  ]
+                },
+                "toward": {
+                  "description": "hold: where the prop's working end points: a named direction (\"back-up\", \"forward-down\") or [right, up, forward].",
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 40
+                    },
+                    {
+                      "$ref": "#/$defs/vec3"
+                    }
+                  ]
+                },
+                "spread": {
+                  "type": "number",
+                  "minimum": 0.05,
+                  "maximum": 2,
+                  "description": "hold: meters between the two hands (default 0.3 on a 1.8 m character); the back hand rides just in front of the butt."
+                },
+                "hands": {
+                  "type": "string",
+                  "enum": [
+                    "one",
+                    "both"
+                  ],
+                  "description": "hold: both (default when the prop is long enough) or one."
+                },
+                "clear": {
+                  "type": "boolean",
+                  "description": "hold: false keeps the exact request even if it cuts into the body, hat or floor (default true: the nearest clean variation is used and reported)."
                 }
               }
             }
@@ -787,7 +833,7 @@
       "resultDescription": "Keyed pose (unless dryRun), per-action results (IK error when out of reach), and the pose.describe report of the new pose."
     },
     "review.metrics": {
-      "description": "Animator checks over the whole take (or start\u2013end) at the scene frame rate: foot sliding while planted, floor penetration, floating or floaty jumps vs. gravity, single-frame pops, backward knees, off-balance slow moments, dead holds, plus contact spans, hips travel/speed, hand top speed and loop seam. Read this after every change.",
+      "description": "Animator checks over the whole take (or start–end) at the scene frame rate: foot sliding while planted, floor penetration, floating or floaty jumps vs. gravity, single-frame pops, backward knees, off-balance slow moments, dead holds, plus contact spans, hips travel/speed, hand top speed and loop seam. Read this after every change.",
       "mutating": false,
       "paramsSchema": {
         "type": "object",
@@ -804,7 +850,7 @@
       "resultDescription": "{issues:[{severity, kind, time, part, message}], summary}."
     },
     "review.sheet": {
-      "description": "Render a labelled contact sheet PNG of the motion so an agent can see it: evenly spaced frames (default 8 across the take), explicit times, or atKeys, from 1\u20133 body-relative views (default side + front). Every cell uses the same framing so travel and spacing read correctly; key frames are marked \u25c6.",
+      "description": "Render a labelled contact sheet PNG of the motion so an agent can see it: evenly spaced frames (default 8 across the take), explicit times, or atKeys, from 1–3 body-relative views (default side + front). Every cell uses the same framing so travel and spacing read correctly; key frames are marked ◆.",
       "mutating": false,
       "paramsSchema": {
         "type": "object",
@@ -1068,7 +1114,7 @@
                 "maximum": 100
               }
             },
-            "description": "Exact camera coordinates; position-to-target distance must be 1.2\u201315 world units. Read camera limits in scene.inspect."
+            "description": "Exact camera coordinates; position-to-target distance must be 1.2–15 world units. Read camera limits in scene.inspect."
           }
         },
         "not": {
@@ -1413,6 +1459,38 @@
         }
       },
       "resultDescription": "Track details or updated scene state."
+    },
+    "motion.carry": {
+      "description": "Bake clean in-betweens for a held prop: between the authored keys the prop travels on an arc around the shoulders and both hands are re-solved to hold it every frame, and wherever it would cut into the body, hat or floor or bend a wrist badly, it is slid, tipped or the elbows swivelled as one smooth bump across that span; planted feet are pinned too. Writes generated motion (authored keys stay editable; motion.clear removes it). Re-run it after editing keys.",
+      "mutating": true,
+      "paramsSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "prop"
+        ],
+        "properties": {
+          "prop": {
+            "description": "The held prop bone, for example \"Pitchfork\".",
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              }
+            ]
+          },
+          "ground": {
+            "type": "boolean",
+            "description": "Pin planted feet as well (default true)."
+          }
+        }
+      },
+      "resultDescription": "Updated compact scene state plus carry {prop, frames, bothHands, nudgedFrames, nudges [{from, to, slideCm, tipDegrees, elbowSwivel}], worstCutCm, worstSinkCm, worstWrist {degrees, at}} measured on the final grounded take and warnings."
     }
   }
 }
