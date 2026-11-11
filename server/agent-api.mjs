@@ -8,6 +8,9 @@ const TERMINAL = new Set(['done', 'error', 'cancelled']);
 const DAY = 86400000;
 const STALE = 60000;
 const TIMEOUT = 900000;
+// Reads and dry runs are safe to repeat, so their IDs need only outlive result polling, not a day: an agent searching
+// thousands of dry-run poses must never fill the journal that guards real edits against running twice.
+const REPEATABLE_TTL = 120000;
 const CANCEL_GRACE = 30000;
 const BODY_LIMIT = 200 * 1024 * 1024;
 const FILE_QUOTA = 2 * 1024 * 1024 * 1024;
@@ -113,7 +116,7 @@ export function createAgentService({ root, dataRoot = root, port }) {
     const record = { id: job.id, payloadHash: job.payloadHash, sessionId: job.sessionId, method: job.method,
       status: job.status, createdAt: job.createdAt, updatedAt: job.updatedAt, dispatched: !!job.dispatched,
       fileIds: [...job.fileIds], ...(job.expectedRevision !== undefined ? { expectedRevision: job.expectedRevision } : {}),
-      ...(job.error ? { error: job.error } : {}), ...(job.ackHash ? { ackHash: job.ackHash } : {}) };
+      ...(job.error ? { error: job.error } : {}), ...(job.ackHash ? { ackHash: job.ackHash } : {}), ...(job.repeatable ? { repeatable: true } : {}) };
     await atomic(journalPath(job.id), record);
     identities.set(job.id, record);
   }
@@ -252,17 +255,32 @@ export function createAgentService({ root, dataRoot = root, port }) {
     }
     for (const [id, record] of identities) {
       const job = jobs.get(id);
-      if (now() - record.updatedAt <= DAY || (job && !TERMINAL.has(job.status)) || [...sessions.values()].some(s => s.active === id)) continue;
+      const repeatable = record.repeatable ?? schema.methods[record.method]?.mutating === false;
+      if (now() - record.updatedAt <= (repeatable ? REPEATABLE_TTL : DAY) || (job && !TERMINAL.has(job.status)) || [...sessions.values()].some(s => s.active === id)) continue;
       identities.delete(id); jobs.delete(id); await unlink(journalPath(id)).catch(() => {});
     }
     const protectedFiles = new Set([...identities.values()].flatMap(record => record.fileIds || []));
     for (const session of sessions.values()) for (const id of referencedFileIds(session.state)) protectedFiles.add(id);
-    for (const [id, file] of files) {
-      if (now() - file.lastAccess <= DAY || protectedFiles.has(id)) continue;
-      await unlink(filePath(id)).catch(() => {});
-      await unlink(path.join(fileDirectory, id + '.json')).catch(() => {});
-      files.delete(id);
+    for (const [id, file] of files) if (now() - file.lastAccess > DAY && !protectedFiles.has(id)) await dropFile(id);
+  }
+  async function dropFile(id) {
+    await unlink(filePath(id)).catch(() => {});
+    await unlink(path.join(fileDirectory, id + '.json')).catch(() => {});
+    files.delete(id);
+  }
+  // Staging is a cache. When an upload needs room, the least recently used files that no queued or running command
+  // and no open scene still needs make way, instead of the whole agent API refusing uploads for a day.
+  async function freeStaging(reservation) {
+    const live = new Set();
+    for (const job of jobs.values()) if (!TERMINAL.has(job.status)) for (const id of job.fileIds) live.add(id);
+    for (const session of sessions.values()) for (const id of referencedFileIds(session.state)) live.add(id);
+    let used = [...files.values()].reduce((sum, f) => sum + f.size, 0);
+    const full = () => files.size + activeUploads >= 128 || used + uploadReservations + reservation > FILE_QUOTA;
+    for (const file of [...files.values()].filter(f => !live.has(f.id)).sort((a, b) => a.lastAccess - b.lastAccess)) {
+      if (!full()) break;
+      used -= file.size; await dropFile(file.id);
     }
+    return !full();
   }
   const timer = setInterval(() => { if (!stopping) ready.then(() => mutate(sweep)).catch(() => {}); }, 5000);
   timer.unref();
@@ -377,7 +395,7 @@ export function createAgentService({ root, dataRoot = root, port }) {
           const fileIds = referencedFileIds(params);
           for (const fileId of fileIds) if (!files.has(fileId)) fail(404, 'FILE_NOT_FOUND', `Uploaded file ${fileId} is unavailable. Upload it before queueing the command.`);
           const memory = bytes(params); makeRoom(memory);
-          const job = { id: commandId, payloadHash, sessionId: session.id, method: data.method, params, expectedRevision: data.expectedRevision, status: 'queued', createdAt: now(), updatedAt: now(), fileIds, memoryBytes: memory };
+          const job = { id: commandId, payloadHash, sessionId: session.id, method: data.method, params, expectedRevision: data.expectedRevision, status: 'queued', createdAt: now(), updatedAt: now(), fileIds, memoryBytes: memory, repeatable: !schema.methods[data.method].mutating || params.dryRun === true };
           await persist(job); jobs.set(job.id, job); session.queue.push(job.id);
           json(res, 202, publicJob(job)); await dispatch(session);
         }); return true;
@@ -402,7 +420,7 @@ export function createAgentService({ root, dataRoot = root, port }) {
         if (Number.isFinite(claimed) && claimed > BODY_LIMIT) fail(413, 'FILE_TOO_LARGE', 'Files must be at most 200 MiB.');
         const reservation = Number.isFinite(claimed) && claimed >= 0 ? claimed : BODY_LIMIT;
         await mutate(async () => {
-          if (files.size + activeUploads >= 128 || [...files.values()].reduce((sum, f) => sum + f.size, 0) + uploadReservations + reservation > FILE_QUOTA) fail(507, 'FILE_CAPACITY', 'Local agent staging is full. Referenced files are preserved; unreferenced files expire after 24 hours.');
+          if (!await freeStaging(reservation)) fail(507, 'FILE_CAPACITY', 'Local agent staging is full of files that open scenes or running commands still need. Let them finish, then try again.');
           uploadReservations += reservation;
           activeUploads += 1;
         });
