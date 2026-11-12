@@ -52,17 +52,14 @@
 [data-theme] :is(button, input, select, a, summary):focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
 [data-theme] button:where(:enabled:hover) { color: var(--ink); }
 [data-theme] .topbar { background: var(--paper); }
-[data-theme] .left-sidebar,
+
 [data-theme] .timeline-section,
 [data-theme] .modal { background: var(--paper); }
 
 [data-theme] :is(.project-heading input:hover, .project-heading input:focus,
-  .character-art, .import-button, .local-badge, .tiny-badge, .motion-icon,
-  .clip-select, .little-pointer, .joint-controls select, .axis-fields label,
-  .help-card, .assist-icon, .blend-options, .beta-tag, .setting-row select,
-  .add-pose-button, .pose-card, kbd, .secondary, .modal-icon, .modal-dropzone,
-  .modal-tip, .export-choice, .new-choices button, .engine-tag, .engine-select,
-  .simplify-timeline, .mobile-inspector-toggle > span, .agent-command,
+  .character-art, .import-button, .local-badge, .tiny-badge,
+  .clip-select, .little-pointer, .joint-controls select, .axis-fields label, .blend-options, .beta-tag, .setting-row select, .pose-card, kbd, .secondary, .modal-icon, .modal-dropzone,
+  .modal-tip, .export-choice, .new-choices button, .engine-tag, .engine-select, .agent-command,
   .unreal-options select, .unreal-options input) { background: var(--surface); }
 
 [data-theme='dark'] :is(.viewport-shell, .motion-viewport) { background: #242a35; }
@@ -72,14 +69,13 @@
 
 [data-theme] :is(.project-heading input:hover, .project-heading input:focus,
   .import-button, .viewport-shell, .mode-pill, .viewport-icon, .viewport-tools,
-  .view-picker, .rig-overlay, .blend-options, .switch, .add-pose-button,
+  .view-picker, .rig-overlay, .blend-options, .switch,
   .pose-card, .new-pose-card, .secondary, kbd, .modal, .modal-dropzone,
   .modal-tip, .export-choice, .new-choices button, .engine-select,
   .engine-tag, .agent-button, .agent-command, .agent-last,
-  .unreal-options select, .unreal-options input, .export-result, .timeline-section,
-  .transport) { border-color: var(--line); }
+  .unreal-options select, .unreal-options input, .export-result, .timeline-section) { border-color: var(--line); }
 
-[data-theme] :is(.import-button:hover, .help-card:hover, .icon-button:not(:disabled):hover,
+[data-theme] :is(.import-button:hover, .icon-button:not(:disabled):hover,
   .viewport-tools button:hover, .view-picker button:hover, .blend-options button:hover,
   .pose-card:hover, .new-pose-card:hover, .secondary:hover, .modal-dropzone:hover,
   .export-choice:hover, .new-choices button:hover, .recent-scenes > button:hover):not(:disabled) {
@@ -89,37 +85,27 @@
 
 /* Secondary copy stays readable on both the editor and elevated surfaces. */
 [data-theme] :is(.project-heading > svg, .local-badge, .save-status,
-  .icon-button, .eyebrow, .rig-status, .rig-status > span, .plus-small,
-  .format-note, .tiny-badge, .animation-name div > span, .animation-name > svg,
+  .icon-button, .eyebrow, .rig-status, .rig-status > span, .plus-small, .tiny-badge,
   .selection-section > .section-heading > svg, .selection-empty p,
-  .axis-fields label > span, .axis-fields small, .help-card small, .help-card > svg,
-  .sidebar-footer, .scene-heading > div, .scene-name, .scene-heading > .text-button,
-  .mode-pill > span:last-child, .viewport-tools button, .viewport-kicker,
-  .viewport-big-word, .viewport-instruction, .view-picker button, .rig-overlay > p,
-  .assist-heading > p, .blend-options button, .curve-preview > span, .micro-copy,
+  .axis-fields label > span, .axis-fields small,
+  .mode-pill > span:last-child, .viewport-tools button, .viewport-instruction, .view-picker button, .rig-overlay > p, .blend-options button, .curve-preview > span, .micro-copy,
   .beta-tag, .setting-row, .setting-row > div > svg, .strength-label,
-  .strength-label > span, .physics-note, .simplify-card p, .timeline-title > span,
+  .strength-label > span, .physics-note, .simplify-card p,
   .pose-card-top > span:first-child, .pose-card-caption, .pose-card-caption > span:first-child,
-  .new-pose-card, .ruler-labels, .timecode > span, .transport-tip, .duration-controls,
-  .editor-footer, .editor-footer button, .ticker, .modal p, .modal-dropzone > span,
+  .new-pose-card, .ruler-labels, .modal p, .modal-dropzone > span,
   .export-choice small, .new-choices button > span, .tour-step > span, .shortcut-grid,
   .modal .help-honesty, .engine-caption, .generation-details, .generation-details summary,
-  .recent-scenes small, .agent-button, .agent-last, .unreal-options small, .modal-tip, .timecode,
+  .recent-scenes small, .agent-button, .agent-last, .unreal-options small, .modal-tip,
   .modal .export-caption, .modal .export-result p) { color: var(--muted); }
 
-[data-theme] :is(.text-button, .little-pointer, .recent-scenes svg,
-  .mobile-inspector-toggle, .agent-command, .modal-icon) { color: var(--blue); }
-[data-theme] :is(.character-art, .character-spark, .motion-icon, .help-illustration,
-  .assist-icon, .six-dots, .pose-card .pose-sketch, .new-choices .pose-sketch,
+[data-theme] :is(.text-button, .little-pointer, .recent-scenes svg, .agent-command, .modal-icon) { color: var(--blue); }
+[data-theme] :is(.character-art, .character-spark, .six-dots, .pose-card .pose-sketch, .new-choices .pose-sketch,
   .engine-tag:not(.ready)) { color: var(--violet); }
-[data-theme] :is(.motion-icon, .assist-icon) { background: var(--violet-soft); }
 [data-theme] .modal-tip > svg { color: var(--amber); }
 [data-theme='dark'] :is(.engine-tag.ready, .export-recommendation, .export-result) { color: #b7ce9e; }
 
-[data-theme] :is(.setting-row select, .duration-controls input,
-  .duration-controls select, .unreal-options select, .unreal-options input,
+[data-theme] :is(.setting-row select, .unreal-options select, .unreal-options input,
   .secondary, .export-choice strong) { color: var(--ink); }
-[data-theme='dark'] .scene-separator { color: #677b6c; }
 [data-theme='dark'] .mode-pill > span:last-child { border-color: var(--line); }
 [data-theme='dark'] .orbit-ring { border-color: #6f895e; }
 [data-theme] .curve-guide { stroke: var(--line); }
@@ -150,7 +136,6 @@
   background: #c7dfa7 !important;
 }
 [data-theme='light'] :is(.primary:not(.generate-button), .export-button, .play-button):not(:disabled):hover { color: #fff; }
-[data-theme] .add-pose-button kbd { background: var(--surface); color: var(--muted); }
 [data-theme] .timeline-track {
   background: repeating-linear-gradient(90deg, transparent 0, transparent calc(10% - 1px), var(--line) calc(10% - 1px), var(--line) 10%), var(--surface);
 }
@@ -180,8 +165,7 @@
   color: var(--ink); background: var(--field); border: 1px solid var(--field-line);
 }
 [data-theme] select option { background: var(--field); color: var(--ink); }
-[data-theme] :is(.ripple-button[aria-pressed='true'], .ripple-button[aria-pressed='true']:hover,
-  .viewport-tools button.active:not(.secondary)) {
+[data-theme] :is(.viewport-tools button.active:not(.secondary)) {
   color: var(--blue); background: var(--blue-soft); border-color: var(--blue-line);
 }
 [data-theme] :is(.assist-button, .generate-button) {

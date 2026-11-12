@@ -6,7 +6,7 @@ import './AnimationTracks.css';
 interface Props {
   tracks: AnimationTrack[]; baseName: string; baseMuted: boolean; baseKeys: PoseKey[];
   activeId: string | null; duration: number; time: number; fps: number; disabled: boolean;
-  coveredBy: string[];
+  coveredBy: string[]; open: boolean;
   onAdd(): void; onSelect(id: string | null): void; onTime(time: number): void;
   onUpdate(id: string | null, patch: { name?: string; muted?: boolean }): void;
   onCopy(id: string | null): void; onDelete(id: string): void; onReorder(id: string, direction: number): void;
@@ -28,8 +28,10 @@ export default function AnimationTracks(props: Props) {
     const row = all.find(t => t.id === d.id)!;
     return d.keyId ? Math.max(-d.time, Math.min(props.duration - d.time, raw)) : Math.max(-Math.min(...row.keys.map(k => k.time)), Math.min(600 - Math.max(...row.keys.map(k => k.time)), raw));
   }
+  const note = props.coveredBy.length > 0 ? <div className="track-overlap-note" role="status"><Layers2 size={14}/><span><strong>{props.coveredBy.join(', ')}</strong> plays above this track. Mute {props.coveredBy.length === 1 ? 'it' : 'those tracks'}{props.activeId ? ' or move this track up' : ''} to see changes to the same parts.</span></div> : null;
+  if (!props.open) return note;
   return <section className="animation-tracks" aria-label="Animation tracks">
-    <div className="tracks-heading"><div><Layers2 size={16}/><strong>Tracks</strong><span>Play together. Edit separately.</span></div><button className="button" disabled={props.disabled || props.tracks.length >= 31} onClick={props.onAdd}><Plus size={14}/>Add track</button></div>
+    <div className="tracks-heading"><div><Layers2 size={16}/><strong>Tracks</strong></div><button className="button" disabled={props.disabled || props.tracks.length >= 31} onClick={props.onAdd}><Plus size={14}/>Add track</button></div>
     <div className="tracks-ruler"><span>Higher tracks play on top</span><div role="slider" aria-label="Tracks playhead" aria-valuemin={0} aria-valuemax={props.duration} aria-valuenow={props.time} aria-valuetext={`${props.time.toFixed(2)} seconds`} aria-disabled={props.disabled} tabIndex={props.disabled ? -1 : 0} title="Click or drag to scrub all tracks"
       onPointerDown={e => { if (props.disabled || e.button !== 0) return; e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); const rect = e.currentTarget.getBoundingClientRect(); props.onTime(Math.max(0, Math.min(props.duration, (e.clientX - rect.left) / rect.width * props.duration))); }}
       onPointerMove={e => { if (!e.currentTarget.hasPointerCapture(e.pointerId)) return; const rect = e.currentTarget.getBoundingClientRect(); props.onTime(Math.max(0, Math.min(props.duration, (e.clientX - rect.left) / rect.width * props.duration))); }}
@@ -88,6 +90,6 @@ export default function AnimationTracks(props: Props) {
       <button className="button" aria-label="Duplicate track" disabled={props.disabled || props.tracks.length >= 31} onClick={() => props.onCopy(props.activeId)}><Copy size={13}/><span>Duplicate track</span></button>
       <button className="icon-button" aria-label="Delete track" title="Delete track · Undo restores it" disabled={props.disabled || props.activeId === null} onClick={() => props.onDelete(props.activeId!)}><Trash2 size={14}/></button>
     </div></div>
-    {props.coveredBy.length > 0 && <div className="track-overlap-note" role="status"><Layers2 size={14}/><span><strong>{props.coveredBy.join(', ')}</strong> plays above this track. Mute {props.coveredBy.length === 1 ? 'it' : 'those tracks'}{props.activeId ? ' or move this track up' : ''} to see changes to the same parts.</span></div>}
+    {note}
   </section>;
 }
