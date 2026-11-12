@@ -1,0 +1,66 @@
+/* The studio shell: a slim top bar, a rail of four panels (one open at a time), and the stage.
+   The stage gets every pixel the open panel and the timeline do not need. */
+
+.studio-app { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+.workspace { flex: 1; min-height: 0; display: flex; position: relative; }
+
+/* Rail */
+.studio-rail { flex: 0 0 68px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 0; border-right: 1px solid var(--line); background: var(--paper); overflow-y: auto; scrollbar-width: none; }
+.rail-tab { width: 60px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 0; border-radius: 12px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.rail-icon { width: 40px; height: 32px; display: grid; place-items: center; border-radius: 10px; transition: transform .3s cubic-bezier(.34, 1.56, .64, 1), background .15s; }
+.rail-tab:hover .rail-icon { background: var(--hover); transform: translateY(-2px) rotate(-8deg) scale(1.08); }
+.rail-tab:active .rail-icon { transform: scale(.9); }
+.rail-tab[aria-expanded='true'] { color: var(--blue); }
+.rail-tab[aria-expanded='true'] .rail-icon { background: var(--blue-soft); box-shadow: inset 0 0 0 1px var(--blue-line); }
+.rail-gap { flex: 1; }
+.rail-quiet { font-weight: 500; }
+.rail-quiet .rail-icon { height: 26px; }
+[data-theme] .rail-tab:focus-visible { outline-offset: -2px; }
+/* A short window keeps every tab in reach: the labels fold away first, then the rail scrolls. */
+@media (max-height: 460px) and (min-width: 721px) { .rail-label { display: none; } }
+
+/* The open panel */
+.studio-panel { flex: 0 0 304px; min-width: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 0 18px 20px; border-right: 1px solid var(--line); background: var(--paper); }
+.studio-panel[hidden], .panel-page[hidden], .panel-head { display: none; }
+.panel-page { animation: panel-in .28s cubic-bezier(.2, .9, .3, 1.2); }
+.panel-page > :last-child { border-bottom: 0; }
+.motion-sources { display: grid; gap: 8px; padding-bottom: 2px; border-bottom: 0; }
+.character-section > .text-button { margin: 12px 0 2px; }
+.character-section > .clip-select { margin-top: 12px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.clip-select select { flex: 1; max-width: none; font-size: 12px; color: var(--ink); }
+@keyframes panel-in { from { opacity: 0; transform: translateX(-10px); } }
+@keyframes sheet-in { from { opacity: 0; transform: translateY(16px); } }
+
+/* Stage and timeline. The timeline shares the editor's rows, so its toolbar and scrubber always keep their place:
+   the stage takes the room that is left, and open views scroll inside the timeline once the stage is at its smallest. */
+.editor { --stage-min: 260px; --stage-gap: 12px; flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(var(--stage-min), 1fr) auto auto auto; padding: 14px 16px; overflow-y: auto; scrollbar-width: thin; container: timeline / inline-size; }
+.viewport-shell { container: stage / size; }
+.timeline-section { grid-row: 2 / 5; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; margin-top: var(--stage-gap); }
+.timeline-views { min-height: 0; max-height: 46dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.timeline-views[data-open='true'] { min-height: 96px; }
+/* A short stage keeps its tools and drops the hint, which would sit under them. */
+@container stage (max-height: 300px) { .viewport-instruction { visibility: hidden; } }
+/* A small stage folds the Move model card down to its icon, so it never sits on the character. */
+@container stage (max-width: 460px) or (max-height: 300px) {
+  .model-move-toggle { width: 36px; height: 36px; padding: 0; }
+  .model-move-label, .model-move-toggle kbd { display: none; }
+}
+
+/* Narrow windows: the panel slides over the stage instead of squeezing it. */
+@media (max-width: 1000px) {
+  .studio-panel { position: absolute; z-index: 20; inset: 0 auto 0 68px; width: min(320px, calc(100% - 68px)); box-shadow: 22px 0 44px -22px #0006; }
+  .panel-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; margin: 0 -18px; padding: 8px 10px 8px 18px; border-bottom: 1px solid var(--line); background: var(--paper); font-size: 13px; }
+}
+
+/* Phones: the rail becomes a tab bar under your thumb and the panel a sheet above it.
+   Both are rows under the stage, so the stage shrinks to fit and the character stays in view. */
+@media (max-width: 720px) {
+  .workspace { flex-direction: column; }
+  .editor { --stage-min: 230px; --stage-gap: 10px; order: 1; padding: 10px; }
+  .studio-panel { order: 2; position: static; flex: 0 0 46dvh; width: auto; border-right: 0; border-top: 1px solid var(--line); border-radius: 18px 18px 0 0; box-shadow: 0 -16px 40px -14px #0007; }
+  .studio-rail { order: 3; flex: none; flex-direction: row; justify-content: space-around; gap: 0; padding: 5px 6px calc(5px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--line); }
+  .rail-tab { width: 56px; padding: 3px 0; }
+  .rail-icon, .rail-quiet .rail-icon { height: 28px; }
+  .rail-gap { display: none; }
+  .panel-page { animation-name: sheet-in; }
+}
